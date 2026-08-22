@@ -2,14 +2,13 @@
 
 #include "clap/clap.h"
 #include "webview-gui.h"
+#include "_impl/plugin_support.h"
 
 #include <memory>
 #include <string>
 #include <cctype>
 #include <algorithm>
-#include <mutex>
-#include <shared_mutex>
-#include <unordered_map>
+#include <cstring>
 
 namespace webview_gui {
 
@@ -27,94 +26,103 @@ struct clap_host_webview {
 
 struct ClapWebviewGui {
 	// Default plugin GUI extension - replace any methods you like (e.g. for sizing)
-	clap_plugin_gui *extPluginGui;
+	clap_plugin_gui *extPluginGui = nullptr;
 
-	// This SHOULD be used in preference to the actual host one, to cover the case where the host supports both extensions but has chosen to ask for a native GUI
-	// If no native webview is active, then this forwards to the actual host extension anyway
-	const clap_host_webview *extHostWebview;
+	// The real host webview extension, if one exists. This is intentionally not a
+	// synthetic proxy: a clap_host_t* is not guaranteed to uniquely identify a
+	// plugin instance. Use ClapWebviewGui::send() when you want messages routed to
+	// the currently active native WebView first, then to the real host extension.
+	const clap_host_webview *extHostWebview = nullptr;
 
-	ClapWebviewGui(const clap_plugin *plugin=nullptr, const clap_host *host=nullptr) : plugin(plugin), host(host) {
+	ClapWebviewGui(const clap_plugin *plugin=nullptr, const clap_host *host=nullptr)
+		: plugin(plugin), host(host) {
 		setSelf(plugin);
-		setSelf(host);
 		extPluginGui = &pluginGuiProxy;
-		extHostWebview = &hostWebviewProxy;
+	}
+
+	~ClapWebviewGui() {
+		destroy();
+		clearSelf(plugin);
+		plugin = nullptr;
+		host = nullptr;
+		pluginWebview = nullptr;
+		hostWebview = nullptr;
+		extHostWebview = nullptr;
 	}
 	
-	// Call from `plugin.init()`
+	// Call from `plugin.init()` once plugin/host extensions are legal to query.
 	void init(const clap_plugin *initPlugin, const clap_host *initHost) {
 		clearSelf(plugin);
-		clearSelf(host);
 		plugin = initPlugin;
 		host = initHost;
 		setSelf(plugin);
-		setSelf(host);
-
 		init();
 	}
+
 	void init() {
-		pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
-		hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
+		pluginWebview = nullptr;
+		hostWebview = nullptr;
+		extHostWebview = nullptr;
+
+		if (plugin && plugin->get_extension)
+			pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
+		if (host && host->get_extension)
+			hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
+
+		extHostWebview = hostWebview;
 	}
 	
-	/* ---- Plugin GUI methods ----
-	The simplest way to use this helper is the two pointers above.  These are the methods which the plugin GUI extension calls by default.
+	/* ---- Plugin GUI methods ---- */
 	
-	You shouldn't need to call these unless you're overriding them.
-	*/
-
-	// Static methods for our proxies
 	bool isApiSupported(const char *api, bool is_floating) {
+		if (!api) return false;
 		if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) return true;
 		if (is_floating) return false;
 		return WebviewGui::supports(clapApiToPlatform(api));
 	}
 	
 	bool getPreferredApi(const char **api, bool *is_floating) {
+		if (!api || !is_floating) return false;
 		*api = CLAP_WINDOW_API_WEBVIEW;
 		*is_floating = false;
 		return true;
 	}
 	
 	bool create(const char *api, bool is_floating) {
-		if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) {
-			return true;
-		}
-
+		if (!api) return false;
+		if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) return true;
 		if (is_floating) return false;
 		
 		std::string startUrl = getNativeStartUrl();
-		if (!isAbsolute(startUrl.c_str()) && startUrl[0] != '/') {
-			// relative URLs assumed to be absolute paths
+		if (startUrl.empty()) return false;
+		if (!isAbsolute(startUrl.c_str()) && startUrl[0] != '/')
 			startUrl = "/" + startUrl;
-		}
 
 		auto platform = clapApiToPlatform(api);
-		WebviewGui *ptr;
+		if (platform == WebviewGui::NONE) return false;
 
-		if (startUrl.substr(0, 5) == "file:") { // absolute file path
-			// strip `file:` and all leading `/`s
+		WebviewGui *ptr = nullptr;
+
+		if (startUrl.rfind("file:", 0) == 0) {
 			size_t pos = 5;
-			while (startUrl[pos] == '/') ++pos;
+			while (pos < startUrl.size() && startUrl[pos] == '/') ++pos;
 			startUrl = startUrl.substr(pos);
 			
 			std::string baseDir = startUrl;
-			// drop the file
 			while (!baseDir.empty() && baseDir.back() != '/') baseDir.pop_back();
-			// and the final `/`
 			if (!baseDir.empty()) baseDir.pop_back();
-			startUrl = startUrl.substr(baseDir.size());
+			startUrl = startUrl.substr(std::min(baseDir.size(), startUrl.size()));
 #if defined (_WIN32) || defined (_WIN64)
 			for (auto &c : baseDir) {
 				if (c == '/') c = '\\';
 			}
 #else
-			// We stripped the `/` above, add it back in
-			if (baseDir[0] != '/') baseDir = "/" + baseDir;
+			if (!baseDir.empty() && baseDir[0] != '/') baseDir = "/" + baseDir;
 #endif
 			ptr = WebviewGui::create(platform, startUrl.c_str(), baseDir);
 		} else {
 			ptr = WebviewGui::create(platform, startUrl.c_str(), [this](const char *path, WebviewGui::Resource &resource){
-				if (!pluginWebview) return false;
+				if (!pluginWebview || !pluginWebview->get_resource || !plugin) return false;
 				
 				char mediaType[256] = {0};
 				struct ResourceStream : public clap_ostream {
@@ -124,8 +132,9 @@ struct ClapWebviewGui {
 						*(clap_ostream *)this = {/*ctx*/this, write};
 					}
 					static int64_t write(const clap_ostream *stream, const void *buffer, uint64_t length) {
+						if (!stream || !stream->ctx || (!buffer && length != 0)) return -1;
 						auto *byteBuffer = (const unsigned char *)buffer;
-						auto &self = *(ResourceStream *)stream;
+						auto &self = *(ResourceStream *)stream->ctx;
 						self.resource.bytes.insert(self.resource.bytes.end(), byteBuffer, byteBuffer + length);
 						return int64_t(length);
 					};
@@ -139,22 +148,24 @@ struct ClapWebviewGui {
 
 		nativeWebview = std::unique_ptr<WebviewGui>{ptr};
 		nativeWebview->receive = [this](const unsigned char *bytes, size_t length){
-			if (pluginWebview) {
+			if (pluginWebview && pluginWebview->receive && plugin)
 				pluginWebview->receive(plugin, (const void *)bytes, uint32_t(length));
-			}
 		};
 		return true;
 	}
 
 	void destroy() {
-		nativeWebview = nullptr;
+		if (nativeWebview)
+			nativeWebview->receive = {};
+		nativeWebview.reset();
 	}
 	
-	bool setScale(double scale) {
+	bool setScale(double) {
 		return true;
 	}
 	
 	bool getSize(uint32_t *w, uint32_t *h) {
+		if (!w || !h) return false;
 		*w = width;
 		*h = height;
 		return true;
@@ -165,12 +176,13 @@ struct ClapWebviewGui {
 	}
 	
 	bool getResizeHints(clap_gui_resize_hints_t *hints) {
+		if (!hints) return false;
 		*hints = {true, true, false, 0, 0};
 		return true;
 	}
 	
 	bool adjustSize(uint32_t *w, uint32_t *h) {
-		return true;
+		return w != nullptr && h != nullptr;
 	}
 
 	bool setSize(uint32_t w, uint32_t h) {
@@ -181,19 +193,18 @@ struct ClapWebviewGui {
 	}
 	
 	bool setParent(const clap_window *window) {
-		if (nativeWebview) {
+		if (nativeWebview && window && window->ptr) {
 			nativeWebview->attach(window->ptr);
 			return true;
 		}
 		return false;
 	}
 	
-	bool setTransient(const clap_window *window) {
-		// TODO: this
+	bool setTransient(const clap_window *) {
 		return false;
 	}
 	
-	void suggestTitle(const char *title) {}
+	void suggestTitle(const char *) {}
 	
 	bool show() {
 		if (nativeWebview) {
@@ -211,20 +222,16 @@ struct ClapWebviewGui {
 		return false;
 	}
 
-	/* ---- Host Webview methods ----
-	
-	This is what the replacement host extension calls, but if using that weirds you out, you can call this instead.
-	*/
-
-	// This is a host method
+	// Route to the currently active native WebView for this instance, otherwise
+	// fall back to the real host webview extension.
 	bool send(const void *buffer, size_t length) {
+		if (!buffer && length != 0) return false;
 		if (nativeWebview) {
-			// If we're currently providing a native GUI, send to that (even if the host also supports the extension)
 			nativeWebview->send((const unsigned char *)buffer, length);
 			return true;
-		} else if (hostWebview) {
-			return hostWebview->send(host, buffer, length);
 		}
+		if (hostWebview && hostWebview->send && host)
+			return hostWebview->send(host, buffer, uint32_t(length));
 		return false;
 	}
 	
@@ -235,29 +242,21 @@ private:
 
 	std::unique_ptr<WebviewGui> nativeWebview;
 
-	// Map used to create proxy plugin/host extensions, even though they're called with `plugin`/`host` arguments
-	// C++17 inline variables are really useful for this
-	inline static std::unordered_map<size_t, ClapWebviewGui*> pointerMap;
-	inline static std::shared_mutex pointerMapMutex;
+	inline static detail::PointerRegistry<ClapWebviewGui> pluginRegistry;
 
-	static ClapWebviewGui & getSelf(const void *pluginOrHost) {
-		std::shared_lock guard{pointerMapMutex};
-		return *pointerMap[(size_t)pluginOrHost];
+	static ClapWebviewGui * getSelf(const void *pluginPtr) {
+		return pluginRegistry.find(pluginPtr);
 	}
-	void setSelf(const void *pluginOrHost) {
-		if (!pluginOrHost) return;
-		std::unique_lock guard{pointerMapMutex};
-		pointerMap.insert_or_assign((size_t)pluginOrHost, this);
+	void setSelf(const void *pluginPtr) {
+		pluginRegistry.set(pluginPtr, this);
 	}
-	void clearSelf(const void *pluginOrHost) {
-		if (!pluginOrHost) return;
-		std::unique_lock guard{pointerMapMutex};
-		pointerMap.erase((size_t)pluginOrHost);
+	void clearSelf(const void *pluginPtr) {
+		pluginRegistry.eraseIfMatches(pluginPtr, this);
 	}
 	
 	char startUrlBuffer[2048] = {0};
 	const char * getNativeStartUrl() {
-		if (pluginWebview) {
+		if (pluginWebview && pluginWebview->get_uri && plugin) {
 			auto uriLength = pluginWebview->get_uri(plugin, startUrlBuffer, 2047);
 			if (uriLength >= 2048) {
 				std::strcpy(startUrlBuffer, "data:text/html,URI%20too%20long");
@@ -271,34 +270,30 @@ private:
 	}
 	
 	static bool isAbsolute(const char *uri) {
-		if (*uri == ':') return false; // absolute URIs can't start with `:`
+		if (!uri || *uri == ':') return false;
 		while (*uri) {
 			auto c = *(uri++);
-			if (c == ':') return true; // a valid scheme followed by `:`
+			if (c == ':') return true;
 			if (c >= 'A' && c <= 'Z') continue;
 			if (c >= 'a' && c <= 'z') continue;
 			if (c >= '0' && c <= '9') continue;
 			if (c == '+' || c == '.' || c == '-') continue;
-			return false; // not a valid scheme
+			return false;
 		}
-		return false; // reached the end without any non-scheme characters, but no `:`
+		return false;
 	}
 	
 	static WebviewGui::Platform clapApiToPlatform(const char *api) {
-		auto platform = WebviewGui::NONE;
-		if (!std::strcmp(api, CLAP_WINDOW_API_WIN32)) platform = WebviewGui::HWND;
-		if (!std::strcmp(api, CLAP_WINDOW_API_COCOA)) platform = WebviewGui::COCOA;
-		if (!std::strcmp(api, CLAP_WINDOW_API_X11)) platform = WebviewGui::X11EMBED;
-		return platform;
+		if (!api) return WebviewGui::NONE;
+		if (!std::strcmp(api, CLAP_WINDOW_API_WIN32)) return WebviewGui::HWND;
+		if (!std::strcmp(api, CLAP_WINDOW_API_COCOA)) return WebviewGui::COCOA;
+		if (!std::strcmp(api, CLAP_WINDOW_API_X11)) return WebviewGui::X11EMBED;
+		return WebviewGui::NONE;
 	}
 
-	const clap_plugin_webview *pluginWebview;
-	const clap_host_webview *hostWebview;
+	const clap_plugin_webview *pluginWebview = nullptr;
+	const clap_host_webview *hostWebview = nullptr;
 
-	// Our proxies
-	clap_host_webview hostWebviewProxy{
-		host_webview_send
-	};
 	clap_plugin_gui pluginGuiProxy{
 		gui_is_api_supported,
 		gui_get_preferred_api,
@@ -316,55 +311,65 @@ private:
 		gui_show,
 		gui_hide
 	};
-	// Static methods for our proxies
+
 	static bool gui_is_api_supported(const clap_plugin *plugin, const char *api, bool is_floating) {
-		return getSelf(plugin).isApiSupported(api, is_floating);
+		auto *self = getSelf(plugin);
+		return self ? self->isApiSupported(api, is_floating) : false;
 	}
 	static bool gui_get_preferred_api(const clap_plugin *plugin, const char **api, bool *is_floating) {
-		return getSelf(plugin).getPreferredApi(api, is_floating);
+		auto *self = getSelf(plugin);
+		return self ? self->getPreferredApi(api, is_floating) : false;
 	}
 	static bool gui_create(const clap_plugin *plugin, const char *api, bool is_floating) {
-		return getSelf(plugin).create(api, is_floating);
+		auto *self = getSelf(plugin);
+		return self ? self->create(api, is_floating) : false;
 	}
 	static void gui_destroy(const clap_plugin *plugin) {
-		return getSelf(plugin).destroy();
+		if (auto *self = getSelf(plugin)) self->destroy();
 	}
 	static bool gui_set_scale(const clap_plugin *plugin, double scale) {
-		return getSelf(plugin).setScale(scale);
+		auto *self = getSelf(plugin);
+		return self ? self->setScale(scale) : false;
 	}
 	static bool gui_get_size(const clap_plugin *plugin, uint32_t *w, uint32_t *h) {
-		return getSelf(plugin).getSize(w, h);
+		auto *self = getSelf(plugin);
+		return self ? self->getSize(w, h) : false;
 	}
 	static bool gui_can_resize(const clap_plugin *plugin) {
-		return getSelf(plugin).canResize();
+		auto *self = getSelf(plugin);
+		return self ? self->canResize() : false;
 	}
 	static bool gui_get_resize_hints(const clap_plugin *plugin, clap_gui_resize_hints_t *hints) {
-		return getSelf(plugin).getResizeHints(hints);
+		auto *self = getSelf(plugin);
+		return self ? self->getResizeHints(hints) : false;
 	}
 	static bool gui_adjust_size(const clap_plugin *plugin, uint32_t *w, uint32_t *h) {
-		return getSelf(plugin).adjustSize(w, h);
+		auto *self = getSelf(plugin);
+		return self ? self->adjustSize(w, h) : false;
 	}
 	static bool gui_set_size(const clap_plugin *plugin, uint32_t w, uint32_t h) {
-		return getSelf(plugin).setSize(w, h);
+		auto *self = getSelf(plugin);
+		return self ? self->setSize(w, h) : false;
 	}
 	static bool gui_set_parent(const clap_plugin *plugin, const clap_window *window) {
-		return getSelf(plugin).setParent(window);
+		auto *self = getSelf(plugin);
+		return self ? self->setParent(window) : false;
 	}
 	static bool gui_set_transient(const clap_plugin *plugin, const clap_window *window) {
-		return getSelf(plugin).setTransient(window);
+		auto *self = getSelf(plugin);
+		return self ? self->setTransient(window) : false;
 	}
 	static void gui_suggest_title(const clap_plugin *plugin, const char *title) {
-		return getSelf(plugin).suggestTitle(title);
+		if (auto *self = getSelf(plugin)) self->suggestTitle(title);
 	}
 	static bool gui_show(const clap_plugin *plugin) {
-		return getSelf(plugin).show();
+		auto *self = getSelf(plugin);
+		return self ? self->show() : false;
 	}
 	static bool gui_hide(const clap_plugin *plugin) {
-		return getSelf(plugin).hide();
-	}
-	static bool host_webview_send(const clap_host_t *host, const void *buffer, uint32_t size) {
-		return getSelf(host).send(buffer, size);
+		auto *self = getSelf(plugin);
+		return self ? self->hide() : false;
 	}
 };
 
-} // namespace
+} // namespace webview_gui
