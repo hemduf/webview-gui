@@ -25,6 +25,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(clap)
 
+# Build the production library as part of the test graph so adapter tests catch
+# compile/link regressions in the actual backend rather than a mocked copy.
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-under-test EXCLUDE_FROM_ALL)
+
 add_executable(webview_gui_core_tests core_tests.cpp)
 target_include_directories(webview_gui_core_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
 target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest)
@@ -36,7 +40,7 @@ target_include_directories(webview_gui_clap_tests PRIVATE
     ${clap_SOURCE_DIR}/include
 )
 target_compile_definitions(webview_gui_clap_tests PRIVATE WEBVIEW_GUI_TESTING=1)
-target_link_libraries(webview_gui_clap_tests PRIVATE doctest::doctest)
+target_link_libraries(webview_gui_clap_tests PRIVATE doctest::doctest webview-gui)
 add_test(NAME webview_gui_clap_tests COMMAND webview_gui_clap_tests)
 
 if(APPLE)
