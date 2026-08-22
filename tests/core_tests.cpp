@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include "webview-gui/helpers.h"
+#include "webview-gui/_impl/plugin_support.h"
 
 #include <atomic>
 #include <filesystem>
@@ -27,7 +28,7 @@ TEST_CASE("Base64 helpers preserve arbitrary binary payloads")
 
 TEST_CASE("PointerRegistry lookup misses never mutate the registry")
 {
-    helpers::PointerRegistry<int> registry;
+    detail::PointerRegistry<int> registry;
     int key = 0;
 
     CHECK(registry.size() == 0);
@@ -37,7 +38,7 @@ TEST_CASE("PointerRegistry lookup misses never mutate the registry")
 
 TEST_CASE("PointerRegistry keeps instances isolated and removes only the matching owner")
 {
-    helpers::PointerRegistry<int> registry;
+    detail::PointerRegistry<int> registry;
     int keyA = 0;
     int keyB = 0;
     int valueA = 11;
@@ -59,7 +60,7 @@ TEST_CASE("PointerRegistry keeps instances isolated and removes only the matchin
 
 TEST_CASE("PointerRegistry tolerates concurrent readers while registrations change")
 {
-    helpers::PointerRegistry<int> registry;
+    detail::PointerRegistry<int> registry;
     int key = 0;
     int value = 22;
     std::atomic<bool> stop{false};
@@ -86,10 +87,10 @@ TEST_CASE("Resource paths remain inside the configured root")
     const auto root = std::filesystem::path("/tmp/webview-gui-root");
     std::filesystem::path resolved;
 
-    CHECK(helpers::resolveContainedPath(root, "/assets/ui.js", resolved));
+    CHECK(detail::resolveContainedPath(root, "/assets/ui.js", resolved));
     CHECK(resolved == (root / "assets/ui.js").lexically_normal());
 
-    CHECK(helpers::resolveContainedPath(root, "images/../images/knob.png", resolved));
+    CHECK(detail::resolveContainedPath(root, "images/../images/knob.png", resolved));
     CHECK(resolved == (root / "images/knob.png").lexically_normal());
 }
 
@@ -98,7 +99,7 @@ TEST_CASE("Resource path traversal is rejected")
     const auto root = std::filesystem::path("/tmp/webview-gui-root");
     std::filesystem::path resolved;
 
-    CHECK_FALSE(helpers::resolveContainedPath(root, "../secret.txt", resolved));
-    CHECK_FALSE(helpers::resolveContainedPath(root, "/../../secret.txt", resolved));
-    CHECK_FALSE(helpers::resolveContainedPath(root, "assets/../../../secret.txt", resolved));
+    CHECK_FALSE(detail::resolveContainedPath(root, "../secret.txt", resolved));
+    CHECK_FALSE(detail::resolveContainedPath(root, "/../../secret.txt", resolved));
+    CHECK_FALSE(detail::resolveContainedPath(root, "assets/../../../secret.txt", resolved));
 }
