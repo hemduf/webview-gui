@@ -1,30 +1,30 @@
-#include "webview-gui/webview-gui.h"
+#include "choc/gui/choc_WebView.h"
 
 #if !defined(__APPLE__)
 #error macOS-only test module
 #endif
 
-#include <cstring>
+#include <objc/runtime.h>
 #include <string>
 
-extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_runtime_class_name(const char* role)
+extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_create_webview_class_name()
 {
-    static thread_local std::string name;
-    name = webview_gui::_objc::runtimeClassName(role ? role : "Unknown");
-    return name.c_str();
-}
+    static thread_local std::string className;
+    className.clear();
 
-extern "C" __attribute__((visibility("default"))) bool webview_gui_test_register_runtime_classes()
-{
-    auto messageClass = webview_gui::WebviewGui::Impl::createMessageHandlerClass();
-    auto schemeClass = webview_gui::WebviewGui::Impl::createSchemeHandlerClass();
-    return messageClass != nullptr && schemeClass != nullptr;
-}
+    choc::ui::WebView::Options options;
+    options.acceptsFirstMouseClick = false;
+    options.enableDefaultClipboardKeyShortcutsInSafari = false;
+    options.transparentBackground = true;
 
-extern "C" __attribute__((visibility("default"))) bool webview_gui_test_runtime_classes_match_module()
-{
-    const auto messageName = webview_gui::_objc::runtimeClassName("WKScriptMessageHandler");
-    const auto schemeName = webview_gui::_objc::runtimeClassName("WKURLSchemeHandler");
-    return objc_getClass(messageName.c_str()) != nullptr
-        && objc_getClass(schemeName.c_str()) != nullptr;
+    choc::ui::WebView view{options};
+    if (!view.loadedOK() || !view.getViewHandle())
+        return "";
+
+    auto object = reinterpret_cast<id>(view.getViewHandle());
+    auto cls = object_getClass(object);
+    if (cls)
+        className = class_getName(cls);
+
+    return className.c_str();
 }
