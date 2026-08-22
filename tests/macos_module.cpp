@@ -5,12 +5,12 @@
 #endif
 
 #include <objc/runtime.h>
-#include <string>
+#include <cstring>
 
 extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_create_webview_class_name()
 {
-    static thread_local std::string className;
-    className.clear();
+    static char className[256] = {};
+    className[0] = '\0';
 
     choc::ui::WebView::Options options;
     options.acceptsFirstMouseClick = false;
@@ -19,12 +19,17 @@ extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_c
 
     choc::ui::WebView view{options};
     if (!view.loadedOK() || !view.getViewHandle())
-        return "";
+        return className;
 
     auto object = reinterpret_cast<id>(view.getViewHandle());
     auto cls = object_getClass(object);
-    if (cls)
-        className = class_getName(cls);
+    if (cls) {
+        const char* name = class_getName(cls);
+        if (name) {
+            std::strncpy(className, name, sizeof(className) - 1);
+            className[sizeof(className) - 1] = '\0';
+        }
+    }
 
-    return className.c_str();
+    return className;
 }
