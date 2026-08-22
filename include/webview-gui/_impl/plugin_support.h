@@ -59,9 +59,14 @@ inline bool resolveContainedPath(const std::filesystem::path& root,
                                  std::filesystem::path& resolved)
 {
     const auto normalRoot = root.lexically_normal();
-
     auto relativeRequest = requested;
-    if (relativeRequest.is_absolute())
+
+    // Resource paths are URI paths, so a leading '/' means "from the resource
+    // root", not an OS filesystem root. A Windows drive/UNC root, however,
+    // must never be accepted and rebased into the resource directory.
+    if (relativeRequest.has_root_name())
+        return false;
+    if (relativeRequest.has_root_directory())
         relativeRequest = relativeRequest.relative_path();
 
     const auto candidate = (normalRoot / relativeRequest).lexically_normal();
