@@ -3,6 +3,7 @@ project(webview_gui_tests LANGUAGES CXX)
 
 include(CTest)
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +32,7 @@ add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/.. ${CMAKE_CURRENT_BINARY_DIR}/webvie
 
 add_executable(webview_gui_core_tests core_tests.cpp)
 target_include_directories(webview_gui_core_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
-target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest)
+target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest Threads::Threads)
 add_test(NAME webview_gui_core_tests COMMAND webview_gui_core_tests)
 
 add_executable(webview_gui_clap_tests clap_adapter_tests.cpp)
