@@ -96,3 +96,41 @@ if(APPLE)
     )
     add_test(NAME webview_gui_macos_isolation_tests COMMAND webview_gui_macos_isolation_tests)
 endif()
+
+if(WIN32)
+    add_library(webview_gui_windows_module_a MODULE windows_module.cpp)
+    add_library(webview_gui_windows_module_b MODULE windows_module.cpp)
+
+    foreach(target webview_gui_windows_module_a webview_gui_windows_module_b)
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/../include
+            ${CMAKE_CURRENT_LIST_DIR}/../include/webview-gui/_impl/platform/choc
+        )
+        target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
+        target_link_libraries(${target} PRIVATE ole32 user32)
+        set_target_properties(${target} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN YES
+        )
+    endforeach()
+
+    add_executable(webview_gui_windows_isolation_tests windows_isolation_tests.cpp)
+    target_include_directories(webview_gui_windows_isolation_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_windows_isolation_tests PRIVATE
+        doctest::doctest
+        Threads::Threads
+        ole32
+        user32
+    )
+    target_compile_definitions(webview_gui_windows_isolation_tests PRIVATE
+        MODULE_A_PATH="$<TARGET_FILE:webview_gui_windows_module_a>"
+        MODULE_B_PATH="$<TARGET_FILE:webview_gui_windows_module_b>"
+    )
+    add_dependencies(webview_gui_windows_isolation_tests
+        webview_gui_windows_module_a
+        webview_gui_windows_module_b
+    )
+    add_test(NAME webview_gui_windows_isolation_tests COMMAND webview_gui_windows_isolation_tests)
+endif()
