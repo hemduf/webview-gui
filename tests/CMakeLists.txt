@@ -95,6 +95,18 @@ if(APPLE)
         webview_gui_test_module_b
     )
     add_test(NAME webview_gui_macos_isolation_tests COMMAND webview_gui_macos_isolation_tests)
+
+    add_executable(webview_gui_macos_bridge_roundtrip_tests macos_bridge_roundtrip_tests.cpp)
+    target_include_directories(webview_gui_macos_bridge_roundtrip_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_macos_bridge_roundtrip_tests PRIVATE
+        doctest::doctest
+        webview-gui
+        "-framework WebKit"
+        "-framework CoreFoundation"
+    )
+    add_test(NAME webview_gui_macos_bridge_roundtrip_tests COMMAND webview_gui_macos_bridge_roundtrip_tests)
 endif()
 
 if(WIN32)
