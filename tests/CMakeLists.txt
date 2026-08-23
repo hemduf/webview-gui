@@ -132,6 +132,7 @@ if(WIN32)
     )
     target_link_libraries(webview_gui_windows_isolation_tests PRIVATE
         doctest::doctest
+        webview-gui
         Threads::Threads
         ole32
         user32
@@ -159,6 +160,7 @@ if(UNIX AND NOT APPLE)
     )
     target_link_libraries(webview_gui_linux_embed_tests PRIVATE
         doctest::doctest
+        webview-gui
         Threads::Threads
         PkgConfig::test_gtk3
         PkgConfig::test_webkit2
