@@ -22,6 +22,7 @@
 namespace {
 
 using RetainWebViewsFn = bool (*)(std::size_t, std::uintptr_t*, std::uintptr_t*, wchar_t*, std::size_t, bool*, bool*);
+using StressCreateDestroyFn = bool (*)(std::size_t);
 using FirstHWNDFn = std::uintptr_t (*)();
 using ReleaseWebViewsFn = void (*)();
 
@@ -36,6 +37,7 @@ struct RetainedInfo {
 struct Module {
     HMODULE handle = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
+    StressCreateDestroyFn stressCreateDestroy = nullptr;
     FirstHWNDFn firstHWND = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
 
@@ -45,6 +47,8 @@ struct Module {
         if (handle) {
             retainWebViews = reinterpret_cast<RetainWebViewsFn>(
                 GetProcAddress(handle, "webview_gui_test_retain_windows_webviews"));
+            stressCreateDestroy = reinterpret_cast<StressCreateDestroyFn>(
+                GetProcAddress(handle, "webview_gui_test_create_destroy_windows_webviews"));
             firstHWND = reinterpret_cast<FirstHWNDFn>(
                 GetProcAddress(handle, "webview_gui_test_first_windows_hwnd"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
@@ -75,6 +79,11 @@ struct Module {
         return result;
     }
 
+    bool stress(std::size_t count) const
+    {
+        return stressCreateDestroy && stressCreateDestroy(count);
+    }
+
     HWND firstWindow() const
     {
         return firstHWND ? reinterpret_cast<HWND>(firstHWND()) : nullptr;
@@ -92,6 +101,7 @@ struct Module {
             FreeLibrary(handle);
             handle = nullptr;
             retainWebViews = nullptr;
+            stressCreateDestroy = nullptr;
             firstHWND = nullptr;
             releaseWebViews = nullptr;
         }
@@ -174,7 +184,7 @@ bool smokeFocusedWin32Input(HWND child)
     return SendMessageTimeoutW(child,
                                WM_KEYUP,
                                static_cast<WPARAM>('A'),
-                               0xC0000001,
+                               static_cast<LPARAM>(0xC0000001u),
                                SMTO_ABORTIFHUNG,
                                1000,
                                &result) != 0;
@@ -283,8 +293,56 @@ TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host ex
     moduleA.close();
 
     CHECK(windowClassIsRegistered(b.module, b.className));
+
+    // Reload A while B is still live. A must get a fully working private copy
+    // again without disturbing B's registered class or window lifetime.
+    Module reloadedA{MODULE_A_PATH};
+    REQUIRE(reloadedA.handle != nullptr);
+    const auto aReloaded = reloadedA.retain(4);
+    REQUIRE(aReloaded.module != 0);
+    CHECK(aReloaded.allOwnedByModule);
+    CHECK(aReloaded.allClassNamesUnique);
+    CHECK(windowClassIsRegistered(aReloaded.module, aReloaded.className));
+    CHECK(windowClassIsRegistered(b.module, b.className));
+    reloadedA.release();
+    CHECK_FALSE(windowClassIsRegistered(aReloaded.module, aReloaded.className));
+    reloadedA.close();
+    CHECK(windowClassIsRegistered(b.module, b.className));
+
     moduleB.release();
     CHECK_FALSE(windowClassIsRegistered(b.module, b.className));
+}
+
+TEST_CASE("independent plug-in DLLs can create and destroy CHOC WebViews concurrently")
+{
+    Module moduleA{MODULE_A_PATH};
+    Module moduleB{MODULE_B_PATH};
+    REQUIRE(moduleA.handle != nullptr);
+    REQUIRE(moduleB.handle != nullptr);
+    REQUIRE(moduleA.stressCreateDestroy != nullptr);
+    REQUIRE(moduleB.stressCreateDestroy != nullptr);
+
+    std::atomic<bool> start{false};
+    std::atomic<bool> aOK{false};
+    std::atomic<bool> bOK{false};
+
+    std::thread aThread([&] {
+        while (!start.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        aOK.store(moduleA.stress(16), std::memory_order_release);
+    });
+    std::thread bThread([&] {
+        while (!start.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        bOK.store(moduleB.stress(16), std::memory_order_release);
+    });
+
+    start.store(true, std::memory_order_release);
+    aThread.join();
+    bThread.join();
+
+    CHECK(aOK.load(std::memory_order_acquire));
+    CHECK(bOK.load(std::memory_order_acquire));
 }
 
 TEST_CASE("a real CHOC HWND embeds as a child without damaging the host window")
@@ -391,6 +449,13 @@ TEST_CASE("plug-in-owned COM initialization is balanced after CHOC WebView destr
     REQUIRE(retained.module != 0);
     module.release();
     module.close();
+
+    // The plug-in must not consume the host's pre-existing STA reference. If it
+    // did, an MTA initialization would unexpectedly succeed here.
+    const auto hostStillOwnsSTA = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    CHECK(hostStillOwnsSTA == RPC_E_CHANGED_MODE);
+    if (hostStillOwnsSTA == S_OK || hostStillOwnsSTA == S_FALSE)
+        CoUninitialize();
 
     CoUninitialize();
 
