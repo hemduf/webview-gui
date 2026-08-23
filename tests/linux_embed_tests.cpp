@@ -5,6 +5,7 @@
 #error Linux-only test
 #endif
 
+#include "webview-gui/webview-gui.h"
 #include "webview-gui/_impl/platform/choc_plugin_webview.h"
 #include "webview-gui/_impl/platform/linux_plugin_runtime.h"
 
@@ -100,6 +101,14 @@ choc::ui::WebView::Options makeWebViewOptions()
 }
 
 } // namespace
+
+TEST_CASE("public support negotiation exposes only Linux X11 embedding")
+{
+    CHECK(WebviewGui::supports(WebviewGui::X11EMBED));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::HWND));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::COCOA));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::NONE));
+}
 
 TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
 {
