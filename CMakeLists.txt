@@ -157,6 +157,21 @@ public:
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    set(WEBVIEW_GUI_UNSAFE_CORS [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");]=])
+    set(WEBVIEW_GUI_SAFE_CORS [=[                headers.emplace_back ("Access-Control-Allow-Origin: https://choc.localhost");]=])
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_UNSAFE_CORS}"
+        WEBVIEW_GUI_CHOC_CORS_OFFSET)
+    if(WEBVIEW_GUI_CHOC_CORS_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC WebView resource headers changed; refusing to build without revalidating the Windows CORS patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_UNSAFE_CORS}"
+        "${WEBVIEW_GUI_SAFE_CORS}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     # The patched WebView header keeps CHOC's relative includes (for example
     # ../platform/choc_Platform.h). Mirror the pinned CHOC include tree before
     # overwriting that one header so the generated private profile has the same
