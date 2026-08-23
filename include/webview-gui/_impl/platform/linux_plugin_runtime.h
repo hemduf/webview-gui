@@ -5,13 +5,13 @@
 #endif
 
 #include "../plugin_support.h"
+#include "../origin_policy.h"
 
 #include <gtk/gtk.h>
 #include <gtk/gtkx.h>
 #include <webkit2/webkit2.h>
 
 #include <cstdint>
-#include <string_view>
 
 namespace webview_gui::detail {
 
@@ -52,11 +52,11 @@ public:
                     auto* request = action ? webkit_navigation_action_get_request(action) : nullptr;
                     const char* uri = request ? webkit_uri_request_get_uri(request) : nullptr;
 
-                    if (uri && isTrustedPluginURL(uri)) {
+                    if (uri && isTrustedAppleLinuxPluginURL(uri))
                         webkit_policy_decision_use(decision);
-                    } else {
+                    else
                         webkit_policy_decision_ignore(decision);
-                    }
+
                     return TRUE;
                 }
 
