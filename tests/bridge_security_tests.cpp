@@ -4,6 +4,7 @@
 #include "webview-gui/_impl/plugin_support.h"
 #include "webview-gui/_impl/local_url.h"
 #include "webview-gui/_impl/origin_policy.h"
+#include "webview-gui/_impl/resource_security.h"
 #include "webview-gui/_impl/secure_random.h"
 
 #include <set>
@@ -28,14 +29,10 @@ TEST_CASE("local plugin URLs are joined with exactly one path separator")
 
 TEST_CASE("plugin-safe resource CORS never uses wildcard origin")
 {
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::COCOA) == "choc://choc.choc");
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::X11EMBED) == "choc://choc.choc");
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::HWND) == "https://choc.localhost");
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::NONE).empty());
-
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::COCOA) != "*");
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::X11EMBED) != "*");
-    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::HWND) != "*");
+    CHECK(detail::appleLinuxPluginResourceAllowOrigin == "choc://choc.choc");
+    CHECK(detail::windowsPluginResourceAllowOrigin == "https://choc.localhost");
+    CHECK(detail::appleLinuxPluginResourceAllowOrigin != "*");
+    CHECK(detail::windowsPluginResourceAllowOrigin != "*");
 }
 
 TEST_CASE("bridge capabilities use the OS CSPRNG and are 256-bit lowercase hex")
