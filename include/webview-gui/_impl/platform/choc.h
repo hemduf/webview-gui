@@ -32,15 +32,11 @@ struct WebviewGui::Impl {
 		}
 	}
 
-	[[nodiscard]] bool isOnGuiThread() const noexcept {
-		return uiThread.isCurrentThread();
-	}
-	
+	[[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
 	void init(const choc::ui::WebView::Options &options) {
 		uiThread.bindToCurrentThread();
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
-	
 	bool attach(void *nativeView) {
 		if (!isOnGuiThread() || !webview || !nativeView) return false;
 		using namespace choc::objc;
@@ -49,7 +45,6 @@ struct WebviewGui::Impl {
 		call<void>(parent, "addSubview:", subview);
 		return call<id>(subview, "superview") == parent;
 	}
-
 	void setSize(double width, double height) {
 		if (!isOnGuiThread() || !webview) return;
 		using namespace choc::objc;
@@ -57,7 +52,6 @@ struct WebviewGui::Impl {
 		id subview = (id)webview->getViewHandle();
 		call<void>(subview, "setFrame:", rect);
 	}
-
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
 		using namespace choc::objc;
@@ -66,6 +60,7 @@ struct WebviewGui::Impl {
 	}
 
 	detail::ThreadAffinity uiThread;
+	std::string bridgeToken = detail::makeBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -76,11 +71,7 @@ struct WebviewGui::Impl {
 		webview.reset();
 		comApartment.reset();
 	}
-
-	[[nodiscard]] bool isOnGuiThread() const noexcept {
-		return uiThread.isCurrentThread();
-	}
-
+	[[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
 	void init(const choc::ui::WebView::Options &options) {
 		uiThread.bindToCurrentThread();
 		comApartment = std::make_unique<detail::ScopedCOMApartment>();
@@ -88,28 +79,22 @@ struct WebviewGui::Impl {
 			comApartment.reset();
 			return;
 		}
-
 		webview = std::make_unique<choc::ui::WebView>(options);
 		if (!webview->loadedOK()) {
 			webview.reset();
 			comApartment.reset();
 		}
 	}
-
 	bool attach(void *nativeParent) {
 		if (!isOnGuiThread() || !webview || !nativeParent) return false;
-		auto child = static_cast<::HWND>(webview->getViewHandle());
-		auto parent = static_cast<::HWND>(nativeParent);
-		return detail::attachChildWindowToHost(child, parent);
+		return detail::attachChildWindowToHost(static_cast<::HWND>(webview->getViewHandle()),
+										 static_cast<::HWND>(nativeParent));
 	}
-
 	void setSize(double width, double height) {
 		if (!isOnGuiThread() || !webview) return;
 		detail::resizeChildWindow(static_cast<::HWND>(webview->getViewHandle()),
-								 static_cast<int>(width),
-								 static_cast<int>(height));
+								 static_cast<int>(width), static_cast<int>(height));
 	}
-
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
 		detail::setChildWindowVisible(static_cast<::HWND>(webview->getViewHandle()), visible);
@@ -117,29 +102,24 @@ struct WebviewGui::Impl {
 
 	detail::ThreadAffinity uiThread;
 	std::unique_ptr<detail::ScopedCOMApartment> comApartment;
+	std::string bridgeToken = detail::makeBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
 #	else
 struct WebviewGui::Impl {
-	~Impl() {
-		assert(!uiThread.isBound() || uiThread.isCurrentThread());
-	}
-
-	[[nodiscard]] bool isOnGuiThread() const noexcept {
-		return uiThread.isCurrentThread();
-	}
-
+	~Impl() { assert(!uiThread.isBound() || uiThread.isCurrentThread()); }
+	[[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
 	void init(const choc::ui::WebView::Options &options) {
 		uiThread.bindToCurrentThread();
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
-
 	bool attach(void *) { return false; }
 	void setSize(double, double) {}
 	void setVisible(bool) {}
 
 	detail::ThreadAffinity uiThread;
+	std::string bridgeToken = detail::makeBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -149,17 +129,28 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	if (!supports(p) || !detail::isSafePluginStartPath(startPath)) return nullptr;
 
 	auto *impl = new WebviewGui::Impl();
-	
+	if (!detail::isBridgeToken(impl->bridgeToken)) {
+		delete impl;
+		return nullptr;
+	}
+
 	choc::ui::WebView::Options options;
 	options.acceptsFirstMouseClick = false;
 	options.enableDefaultClipboardKeyShortcutsInSafari = false;
 	options.transparentBackground = true;
 #	if CHOC_WINDOWS
 	options.customSchemeURI = "https://choc.localhost/";
+	const std::string trustedOrigin = "https://choc.localhost";
 #	else
 	options.customSchemeURI = "choc://choc.choc/";
+	const std::string trustedOrigin = "choc://choc.choc";
 #	endif
-	auto startUri = options.customSchemeURI + startPath;
+
+	auto startUri = detail::appendBridgeTokenToURL(options.customSchemeURI + startPath, impl->bridgeToken);
+	if (startUri.empty()) {
+		delete impl;
+		return nullptr;
+	}
 
 	options.fetchResource = [getter, impl](const std::string &path) {
 		using ChocResource = choc::ui::WebView::Options::Resource;
@@ -167,17 +158,12 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		if (!impl->isOnGuiThread()) return chocResource;
 
 		Resource resource;
-		if (!getter || !getter(path.c_str(), resource))
-			return chocResource;
-
-		if (!detail::resourceSizeAllowed(resource.bytes.size()))
-			return chocResource;
-
-		if (resource.mediaType.empty())
-			resource.mediaType = helpers::guessMediaType(path.c_str());
+		if (!getter || !getter(path.c_str(), resource)) return chocResource;
+		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
+		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(path.c_str());
 
 		if (detail::startsWithASCIIInsensitive(resource.mediaType, "text/html")) {
-			if (!detail::applyPluginContentSecurityPolicy(resource.bytes))
+			if (!detail::applyPluginHTMLHardening(resource.bytes))
 				return chocResource;
 		}
 
@@ -187,53 +173,25 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		return chocResource;
 	};
 
-	options.webviewIsReady = [startUri, impl](choc::ui::WebView &wv){
+	options.webviewIsReady = [startUri, trustedOrigin, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
-		const auto initJs = std::string("const _WebviewGui_maxMessageBytes=")
-			+ std::to_string(detail::maxMessageBytes)
-			+ R"jsCode(;
-			if (!Uint8Array.prototype.toBase64) {
-				Uint8Array.prototype.toBase64 = function() {
-					let binaryString = "";
-					for (let i = 0; i < this.length; ++i)
-						binaryString += String.fromCharCode(this[i]);
-					return btoa(binaryString);
-				};
-			}
-			if (!Uint8Array.fromBase64) {
-				Uint8Array.fromBase64 = b64 => {
-					const binaryString = atob(b64);
-					const array = new Uint8Array(binaryString.length);
-					for (let i = 0; i < binaryString.length; ++i)
-						array[i] = binaryString.charCodeAt(i);
-					return array;
-				};
-			}
-			window.addEventListener('message', e => {
-				if (e.source == window) {
-					e.stopImmediatePropagation();
-					let data = e.data;
-					if (data instanceof ArrayBuffer) data = new Uint8Array(data);
-					if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
-					if (data.byteLength > _WebviewGui_maxMessageBytes) return;
-					_WebviewGui_receive64(data.toBase64());
-				}
-			}, {capture: true});
-			function _WebviewGui_send64(b64) {
-				const data = Uint8Array.fromBase64(b64);
-				if (data.byteLength > _WebviewGui_maxMessageBytes) return;
-				window.dispatchEvent(new MessageEvent('message', {data: data.buffer}));
-			}
-		)jsCode";
-
-		wv.addInitScript(initJs);
+		// Defense in depth only: bridge authorization does not rely on this script.
+		// It promptly removes accidentally navigated remote content from the view.
+		const auto guardScript = std::string("(()=>{const u=location.href;if(u==='about:blank'||u.toLowerCase().startsWith('")
+			+ trustedOrigin
+			+ "'))return;window.stop();location.replace('about:blank');})()";
+		wv.addInitScript(guardScript);
 
 		wv.bind("_WebviewGui_receive64", [impl](const choc::value::ValueView& args){
 			if (!impl->isOnGuiThread()) return choc::value::Value{false};
-			if (!args.isArray() || args.size() != 1) return choc::value::Value{false};
+			if (!args.isArray() || args.size() != 2) return choc::value::Value{false};
 
-			const auto base64 = args[0].getString();
+			const auto suppliedToken = args[0].getString();
+			if (!detail::constantTimeTokenEquals(impl->bridgeToken, suppliedToken))
+				return choc::value::Value{false};
+
+			const auto base64 = args[1].getString();
 			if (!detail::base64MessageSizeAllowed(base64.size()))
 				return choc::value::Value{false};
 
@@ -268,7 +226,6 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startPath, const std::string &baseDir) {
 	if (baseDir.empty() || !detail::isSafePluginStartPath(startPath)) return nullptr;
-
 	return create(p, startPath, [baseDir](const char *path, Resource &resource){
 		std::filesystem::path resolved;
 		if (!detail::resolveContainedExistingPath(std::filesystem::path(baseDir),
@@ -277,12 +234,10 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 
 		std::ifstream fileStream{resolved, std::ios::binary | std::ios::ate};
 		if (!fileStream) return false;
-
 		const auto end = fileStream.tellg();
 		if (end < 0) return false;
 		const auto length = static_cast<size_t>(end);
 		if (!detail::resourceSizeAllowed(length)) return false;
-
 		resource.bytes.resize(length);
 		fileStream.seekg(0);
 		fileStream.read(reinterpret_cast<char *>(resource.bytes.data()), static_cast<std::streamsize>(length));
@@ -290,9 +245,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	});
 }
 
-WebviewGui::WebviewGui(WebviewGui::Impl *impl) : impl(impl) {
-	impl->main = this;
-}
+WebviewGui::WebviewGui(WebviewGui::Impl *impl) : impl(impl) { impl->main = this; }
 
 WebviewGui::~WebviewGui() {
 	if (impl) {
@@ -319,8 +272,11 @@ void WebviewGui::send(const unsigned char *bytes, size_t length) {
 	if (!impl || !impl->isOnGuiThread() || !impl->webview
 		|| (!bytes && length != 0) || !detail::messageSizeAllowed(length)) return;
 
-	auto base64 = choc::base64::encodeToString(bytes, length);
-	impl->webview->evaluateJavascript("_WebviewGui_send64(\"" + base64 + "\");");
+	const auto functionName = detail::bridgeSendFunctionName(impl->bridgeToken);
+	if (functionName.empty()) return;
+	const auto base64 = choc::base64::encodeToString(bytes, length);
+	impl->webview->evaluateJavascript("if(typeof window['" + functionName
+		+ "']==='function')window['" + functionName + "'](\"" + base64 + "\");");
 }
 
 void WebviewGui::setSize(double width, double height) {
