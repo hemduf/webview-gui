@@ -8,8 +8,12 @@
 #else
 #	include "./choc_plugin_webview.h"
 #	include "choc/memory/choc_Base64.h"
+#	if CHOC_LINUX
+#		include "./linux_plugin_runtime.h"
+#	endif
 
 #	include <cassert>
+#	include <cstdint>
 #	include <filesystem>
 #	include <fstream>
 #	include <memory>
@@ -106,19 +110,36 @@ struct WebviewGui::Impl {
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
-#	else
+#	elif CHOC_LINUX
 struct WebviewGui::Impl {
-	~Impl() { assert(!uiThread.isBound() || uiThread.isCurrentThread()); }
+	~Impl() {
+		assert(!uiThread.isBound() || uiThread.isCurrentThread());
+		xembed.detach();
+		webview.reset();
+	}
 	[[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
 	void init(const choc::ui::WebView::Options &options) {
 		uiThread.bindToCurrentThread();
 		webview = std::make_unique<choc::ui::WebView>(options);
+		if (!webview->loadedOK())
+			webview.reset();
 	}
-	bool attach(void *) { return false; }
-	void setSize(double, double) {}
-	void setVisible(bool) {}
+	bool attach(void *nativeParent) {
+		if (!isOnGuiThread() || !webview || !nativeParent) return false;
+		const auto xid = reinterpret_cast<std::uintptr_t>(nativeParent);
+		return xembed.attach(static_cast<GtkWidget*>(webview->getViewHandle()), xid);
+	}
+	void setSize(double width, double height) {
+		if (!isOnGuiThread() || !webview) return;
+		xembed.resize(static_cast<int>(width), static_cast<int>(height));
+	}
+	void setVisible(bool visible) {
+		if (!isOnGuiThread() || !webview) return;
+		xembed.setVisible(visible);
+	}
 
 	detail::ThreadAffinity uiThread;
+	detail::GtkXEmbedHost xembed;
 	std::string bridgeToken = detail::makeBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
@@ -176,8 +197,9 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	options.webviewIsReady = [startUri, trustedOrigin, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
-		// Defense in depth only: bridge authorization does not rely on this script.
-		// It promptly removes accidentally navigated remote content from the view.
+		// Defense in depth only: the native macOS/Linux navigation policy and the
+		// capability-gated bridge are the security boundary. This guard promptly
+		// replaces accidentally navigated remote documents as an additional layer.
 		const auto guardScript = std::string("(()=>{const u=location.href;if(u==='about:blank'||u.toLowerCase().startsWith('")
 			+ trustedOrigin
 			+ "'))return;window.stop();location.replace('about:blank');})()";
