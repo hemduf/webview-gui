@@ -55,7 +55,7 @@ add_test(NAME webview_gui_core_tests COMMAND webview_gui_core_tests)
 
 add_executable(webview_gui_bridge_security_tests bridge_security_tests.cpp)
 target_include_directories(webview_gui_bridge_security_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
-target_link_libraries(webview_gui_bridge_security_tests PRIVATE doctest::doctest)
+target_link_libraries(webview_gui_bridge_security_tests PRIVATE doctest::doctest webview-gui)
 add_test(NAME webview_gui_bridge_security_tests COMMAND webview_gui_bridge_security_tests)
 
 add_executable(webview_gui_clap_tests clap_adapter_tests.cpp)
@@ -148,8 +148,6 @@ if(WIN32)
 endif()
 
 if(UNIX AND NOT APPLE)
-    # Imported PkgConfig targets created in the nested production directory are
-    # not visible in this parent test scope, so declare test-local imported targets.
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(test_gtk3 REQUIRED gtk+-3.0 IMPORTED_TARGET)
     pkg_check_modules(test_webkit2 REQUIRED webkit2gtk-4.1 IMPORTED_TARGET)
