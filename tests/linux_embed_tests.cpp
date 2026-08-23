@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 
 namespace {
@@ -131,4 +132,26 @@ TEST_CASE("XEmbed adapter rejects invalid parents and duplicate attachment")
     HostSocket host;
     REQUIRE(adapter.attach(child, host.xid()));
     CHECK_FALSE(adapter.attach(child, host.xid()));
+}
+
+TEST_CASE("native WebKitGTK policy blocks remote top-level navigation")
+{
+    REQUIRE(gtk_init_check(nullptr, nullptr));
+
+    HostSocket host;
+    choc::ui::WebView view{makeWebViewOptions()};
+    REQUIRE(view.loadedOK());
+    auto* child = static_cast<GtkWidget*>(view.getViewHandle());
+    REQUIRE(child != nullptr);
+
+    webview_gui::detail::GtkXEmbedHost adapter;
+    REQUIRE(adapter.attach(child, host.xid()));
+    pumpEvents(64);
+
+    webkit_web_view_load_uri(WEBKIT_WEB_VIEW(child), "https://example.com/should-not-load");
+    pumpEvents(96);
+
+    const char* current = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(child));
+    const std::string currentURI = current ? current : "";
+    CHECK(currentURI.find("https://example.com") != 0);
 }
