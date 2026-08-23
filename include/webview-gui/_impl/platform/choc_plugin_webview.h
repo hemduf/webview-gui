@@ -16,24 +16,19 @@
 // but CHOC disposes those during module teardown after all WebViews are destroyed.
 
 #include "choc/platform/choc_ObjectiveCHelpers.h"
+
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 
-namespace choc::objc {
-
-inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
-                                                     const char* newClassName)
-{
-    if (baseClass != nullptr && newClassName != nullptr
-        && std::strcmp(baseClass, "WKWebView") == 0
-        && std::strcmp(newClassName, "CHOCWebView_") == 0)
-        return (Class) objc_getClass("WKWebView");
-
-    return createDelegateClass(baseClass, newClassName);
-}
-
-} // namespace choc::objc
-
 namespace webview_gui::detail {
+
+// C++17 inline variable: one address per linked plug-in module, shared by the
+// translation units in that module but never by independently loaded plug-ins.
+inline char chocWebviewAssociationKeyStorage;
+inline char chocRuntimeModuleToken;
+inline std::atomic<unsigned long long> chocRuntimeClassCounter{0};
 
 inline bool isSystemWKWebViewClass(Class cls)
 {
@@ -46,7 +41,7 @@ inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
                                           const char* types)
 {
     // Do not mutate Apple's process-global WKWebView class. The corresponding
-    // options are disabled by webview-gui's CHOC adapter.
+    // CHOC options are disabled by webview-gui's adapter.
     if (isSystemWKWebViewClass(cls))
         return YES;
 
@@ -56,19 +51,73 @@ inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
 inline void registerCHOCWebViewClassForPlugin(Class cls)
 {
     // WKWebView is already registered by WebKit. Dynamic CHOC delegate classes
-    // are still registered normally and are disposed by CHOC.
+    // are registered normally and disposed by CHOC.
     if (!isSystemWKWebViewClass(cls))
         ::objc_registerClassPair(cls);
 }
 
+inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
+                                                     const void*,
+                                                     id value,
+                                                     objc_AssociationPolicy policy)
+{
+    ::objc_setAssociatedObject(object, &chocWebviewAssociationKeyStorage, value, policy);
+}
+
+inline id getCHOCWebViewAssociatedObjectForPlugin(id object, const void*)
+{
+    return ::objc_getAssociatedObject(object, &chocWebviewAssociationKeyStorage);
+}
+
 } // namespace webview_gui::detail
+
+namespace choc::objc {
+
+inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
+                                                     const char* newClassName)
+{
+    if (baseClass != nullptr && newClassName != nullptr
+        && std::strcmp(baseClass, "WKWebView") == 0
+        && std::strcmp(newClassName, "CHOCWebView_") == 0)
+        return (Class) objc_getClass("WKWebView");
+
+    if (baseClass == nullptr || newClassName == nullptr)
+        return nullptr;
+
+    // CHOC's upstream helper uses a truncated timestamp. For a plug-in process,
+    // derive the name from a module-local token plus a monotonic counter instead.
+    // If this module is unloaded and later mapped at the same address, its old
+    // delegate class has already been disposed by CHOC before the address can be
+    // reused.
+    char className[256] = {};
+    const auto moduleToken = reinterpret_cast<std::uintptr_t>(&webview_gui::detail::chocRuntimeModuleToken);
+
+    for (unsigned int attempt = 0; attempt < 64; ++attempt) {
+        const auto serial = webview_gui::detail::chocRuntimeClassCounter.fetch_add(1, std::memory_order_relaxed);
+        std::snprintf(className, sizeof(className), "%sWG_%llx_%llu",
+                      newClassName,
+                      static_cast<unsigned long long>(moduleToken),
+                      serial);
+
+        if (auto cls = objc_allocateClassPair(objc_getClass(baseClass), className, 0))
+            return cls;
+    }
+
+    return nullptr;
+}
+
+} // namespace choc::objc
 
 #define createDelegateClass createDelegateClassForWebviewGuiPlugin
 #define class_addMethod webview_gui::detail::addCHOCWebViewMethodForPlugin
 #define objc_registerClassPair webview_gui::detail::registerCHOCWebViewClassForPlugin
+#define objc_setAssociatedObject webview_gui::detail::setCHOCWebViewAssociatedObjectForPlugin
+#define objc_getAssociatedObject webview_gui::detail::getCHOCWebViewAssociatedObjectForPlugin
 
 #include "choc/gui/choc_WebView.h"
 
+#undef objc_getAssociatedObject
+#undef objc_setAssociatedObject
 #undef objc_registerClassPair
 #undef class_addMethod
 #undef createDelegateClass
