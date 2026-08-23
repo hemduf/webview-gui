@@ -96,7 +96,7 @@ struct WebviewGui::Impl {
 #	endif
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startPath, WebviewGui::ResourceGetter getter) {
-	if (!supports(p)) return nullptr;
+	if (!supports(p) || !detail::isSafePluginStartPath(startPath)) return nullptr;
 
 	auto *impl = new WebviewGui::Impl();
 	
@@ -120,20 +120,32 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		if (!impl->isOnGuiThread()) return chocResource;
 
 		Resource resource;
-		if (getter && getter(path.c_str(), resource)) {
-			chocResource.emplace();
-			chocResource->data = std::move(resource.bytes);
-			chocResource->mimeType = resource.mediaType.empty()
-				? helpers::guessMediaType(path.c_str())
-				: std::move(resource.mediaType);
+		if (!getter || !getter(path.c_str(), resource))
+			return chocResource;
+
+		if (!detail::resourceSizeAllowed(resource.bytes.size()))
+			return chocResource;
+
+		if (resource.mediaType.empty())
+			resource.mediaType = helpers::guessMediaType(path.c_str());
+
+		if (detail::startsWithASCIIInsensitive(resource.mediaType, "text/html")) {
+			if (!detail::applyPluginContentSecurityPolicy(resource.bytes))
+				return chocResource;
 		}
+
+		chocResource.emplace();
+		chocResource->data = std::move(resource.bytes);
+		chocResource->mimeType = std::move(resource.mediaType);
 		return chocResource;
 	};
 
 	options.webviewIsReady = [startUri, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
-		wv.addInitScript(R"jsCode(
+		const auto initJs = std::string("const _WebviewGui_maxMessageBytes=")
+			+ std::to_string(detail::maxMessageBytes)
+			+ R"jsCode(;
 			if (!Uint8Array.prototype.toBase64) {
 				Uint8Array.prototype.toBase64 = function() {
 					let binaryString = "";
@@ -156,25 +168,37 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 					e.stopImmediatePropagation();
 					let data = e.data;
 					if (data instanceof ArrayBuffer) data = new Uint8Array(data);
-					_WebviewGui_receive64(new Uint8Array(data).toBase64());
+					if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+					if (data.byteLength > _WebviewGui_maxMessageBytes) return;
+					_WebviewGui_receive64(data.toBase64());
 				}
 			}, {capture: true});
 			function _WebviewGui_send64(b64) {
-				window.dispatchEvent(new MessageEvent('message', {
-					data: Uint8Array.fromBase64(b64).buffer
-				}));
+				const data = Uint8Array.fromBase64(b64);
+				if (data.byteLength > _WebviewGui_maxMessageBytes) return;
+				window.dispatchEvent(new MessageEvent('message', {data: data.buffer}));
 			}
-		)jsCode");
+		)jsCode";
+
+		wv.addInitScript(initJs);
 
 		wv.bind("_WebviewGui_receive64", [impl](const choc::value::ValueView& args){
 			if (!impl->isOnGuiThread()) return choc::value::Value{false};
+			if (!args.isArray() || args.size() != 1) return choc::value::Value{false};
+
+			const auto base64 = args[0].getString();
+			if (!detail::base64MessageSizeAllowed(base64.size()))
+				return choc::value::Value{false};
+
+			std::vector<unsigned char> bytes;
+			choc::base64::decodeToContainer(bytes, base64);
+			if (!detail::messageSizeAllowed(bytes.size()))
+				return choc::value::Value{false};
+
 			auto *gui = impl->main;
-			if (gui && gui->receive && args.isArray() && args.size() == 1) {
-				auto base64 = args[0].getString();
-				std::vector<unsigned char> bytes;
-				choc::base64::decodeToContainer(bytes, base64);
+			if (gui && gui->receive)
 				gui->receive(bytes.data(), bytes.size());
-			}
+
 			return choc::value::Value{true};
 		});
 
@@ -191,16 +215,17 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 }
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startUrl) {
+	if (!detail::isSafePluginStartPath(startUrl)) return nullptr;
 	return create(p, startUrl, [](const char *, Resource &){ return false; });
 }
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startPath, const std::string &baseDir) {
-	if (baseDir.empty()) return nullptr;
+	if (baseDir.empty() || !detail::isSafePluginStartPath(startPath)) return nullptr;
 
 	return create(p, startPath, [baseDir](const char *path, Resource &resource){
 		std::filesystem::path resolved;
-		if (!detail::resolveContainedPath(std::filesystem::path(baseDir),
-										 std::filesystem::path(path ? path : ""), resolved))
+		if (!detail::resolveContainedExistingPath(std::filesystem::path(baseDir),
+											  path ? std::string_view(path) : std::string_view{}, resolved))
 			return false;
 
 		std::ifstream fileStream{resolved, std::ios::binary | std::ios::ate};
@@ -209,6 +234,8 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		const auto end = fileStream.tellg();
 		if (end < 0) return false;
 		const auto length = static_cast<size_t>(end);
+		if (!detail::resourceSizeAllowed(length)) return false;
+
 		resource.bytes.resize(length);
 		fileStream.seekg(0);
 		fileStream.read(reinterpret_cast<char *>(resource.bytes.data()), static_cast<std::streamsize>(length));
@@ -242,7 +269,9 @@ void WebviewGui::attach(void *platformNative) {
 }
 
 void WebviewGui::send(const unsigned char *bytes, size_t length) {
-	if (!impl || !impl->isOnGuiThread() || !impl->webview || (!bytes && length != 0)) return;
+	if (!impl || !impl->isOnGuiThread() || !impl->webview
+		|| (!bytes && length != 0) || !detail::messageSizeAllowed(length)) return;
+
 	auto base64 = choc::base64::encodeToString(bytes, length);
 	impl->webview->evaluateJavascript("_WebviewGui_send64(\"" + base64 + "\");");
 }
