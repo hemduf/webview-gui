@@ -152,6 +152,34 @@ HWND createHostWindow()
                            nullptr);
 }
 
+bool smokeFocusedWin32Input(HWND child)
+{
+    if (!IsWindow(child) || !IsWindowVisible(child))
+        return false;
+
+    SetFocus(child);
+    if (GetFocus() != child)
+        return false;
+
+    DWORD_PTR result = 0;
+    if (SendMessageTimeoutW(child,
+                            WM_KEYDOWN,
+                            static_cast<WPARAM>('A'),
+                            1,
+                            SMTO_ABORTIFHUNG,
+                            1000,
+                            &result) == 0)
+        return false;
+
+    return SendMessageTimeoutW(child,
+                               WM_KEYUP,
+                               static_cast<WPARAM>('A'),
+                               0xC0000001,
+                               SMTO_ABORTIFHUNG,
+                               1000,
+                               &result) != 0;
+}
+
 } // namespace
 
 TEST_CASE("public support negotiation exposes only Win32 embedding")
@@ -276,6 +304,9 @@ TEST_CASE("a real CHOC HWND embeds as a child without damaging the host window")
     REQUIRE(host != nullptr);
     REQUIRE(IsWindow(host));
 
+    CHECK_FALSE(webview_gui::detail::attachChildWindowToHost(child, nullptr));
+    CHECK_FALSE(webview_gui::detail::attachChildWindowToHost(child,
+                                                              reinterpret_cast<HWND>(std::uintptr_t{1})));
     CHECK(webview_gui::detail::attachChildWindowToHost(child, host));
     CHECK(GetParent(child) == host);
 
@@ -293,9 +324,57 @@ TEST_CASE("a real CHOC HWND embeds as a child without damaging the host window")
     CHECK_FALSE(IsWindowVisible(child));
     CHECK(webview_gui::detail::setChildWindowVisible(child, true));
     CHECK(IsWindowVisible(child));
+    CHECK(smokeFocusedWin32Input(child));
+
+    // An invalid reparenting request must fail without disturbing the valid
+    // host relationship established above.
+    CHECK_FALSE(webview_gui::detail::attachChildWindowToHost(
+        child, reinterpret_cast<HWND>(std::uintptr_t{1})));
+    CHECK(GetParent(child) == host);
 
     module.release();
+    CHECK_FALSE(IsWindow(child));
     CHECK(IsWindow(host));
+    CHECK(DestroyWindow(host));
+}
+
+TEST_CASE("Win32 host survives repeated CHOC attach resize focus and destroy cycles")
+{
+    Module module{MODULE_A_PATH};
+    REQUIRE(module.handle != nullptr);
+
+    const auto host = createHostWindow();
+    REQUIRE(host != nullptr);
+
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        const auto retained = module.retain(1);
+        REQUIRE(retained.module != 0);
+
+        const auto child = module.firstWindow();
+        REQUIRE(child != nullptr);
+        REQUIRE(IsWindow(child));
+        REQUIRE(webview_gui::detail::attachChildWindowToHost(child, host));
+
+        const int width = 480 + iteration * 16;
+        const int height = 280 + iteration * 12;
+        REQUIRE(webview_gui::detail::resizeChildWindow(child, width, height));
+
+        RECT rect{};
+        REQUIRE(GetClientRect(child, &rect));
+        CHECK(rect.right - rect.left == width);
+        CHECK(rect.bottom - rect.top == height);
+
+        REQUIRE(webview_gui::detail::setChildWindowVisible(child, false));
+        CHECK_FALSE(IsWindowVisible(child));
+        REQUIRE(webview_gui::detail::setChildWindowVisible(child, true));
+        CHECK(IsWindowVisible(child));
+        CHECK(smokeFocusedWin32Input(child));
+
+        module.release();
+        CHECK_FALSE(IsWindow(child));
+        CHECK(IsWindow(host));
+    }
+
     CHECK(DestroyWindow(host));
 }
 
