@@ -26,8 +26,8 @@ The goals are:
 ## Platform status
 
 - **macOS / Cocoa:** CHOC-backed embedding is implemented and tested. The plug-in-safe adapter uses the system `WKWebView` class instead of CHOC's persistent dynamic `WKWebView` subclass, so an unloadable plug-in does not leave Objective-C methods pointing into its Mach-O image.
-- **Windows / HWND:** CHOC/WebView2 compiles in CI, but host-native parent embedding is not advertised until #11 is complete.
-- **Linux / X11:** CHOC/WebKitGTK compiles in CI, but host-native X11 embedding is not advertised until #11 is complete.
+- **Windows / HWND:** CHOC/WebView2 child-window embedding is implemented. The plug-in-safe profile isolates CHOC window classes per plug-in DLL, balances COM ownership, and guards navigation/native messages by origin.
+- **Linux / X11:** CHOC/WebKitGTK embedding into a host-owned XEmbed `GtkSocket` is implemented, including resize, visibility and keyboard-focus qualification.
 - **Wayland:** not advertised as embedded CLAP GUI support.
 
 The CHOC revision used for qualification is pinned in the submodule and documented in `CHOC_PIN.md`.
@@ -69,6 +69,21 @@ struct MyPlugin {
 
 When included via CMake, the project builds the implementation source. For header-only integration, define `WEBVIEW_GUI_HEADER_ONLY` before including `webview-gui.h`.
 
+## Plug-in-safe build profile
+
+The CMake target is deliberately declared `STATIC`: a parent project setting `BUILD_SHARED_LIBS=ON` cannot turn it into a process-shared runtime. The target is PIC and uses hidden C++/inline visibility so CHOC and webview-gui implementation symbols stay private to the plug-in image.
+
+Recommended CMake integration:
+
+```cmake
+add_subdirectory(external/webview-gui EXCLUDE_FROM_ALL)
+target_link_libraries(MyPlugin PRIVATE webview-gui)
+```
+
+Do not install or link a shared `webview-gui`/CHOC runtime between unrelated audio plug-ins. Keep the pinned CHOC headers and all translation units which instantiate the header-only implementation inside the same plug-in target. If using `WEBVIEW_GUI_HEADER_ONLY`, define it consistently for the implementation-owning target and keep default symbol visibility hidden (`CXX_VISIBILITY_PRESET hidden`, `VISIBILITY_INLINES_HIDDEN YES`).
+
+For production builds, LTO/IPO and platform dead stripping are compatible with this private integration and are encouraged after the qualified Debug/sanitizer suite is green. Export only the ABI entry points required by the surrounding CLAP/VST3/AU wrapper; CHOC/webview-gui helpers are implementation details. WebKit, WebView2 and WebKitGTK remain OS/runtime dependencies rather than repository ABI exports.
+
 ## Why wrap CHOC?
 
 CHOC owns the actual browser integration and lifecycle. `webview-gui` adds the pieces that are specific to audio plug-ins:
@@ -84,19 +99,44 @@ The project intentionally does **not** use CHOC `DesktopWindow` or application l
 
 ## Threading contract
 
-`choc::ui::WebView` construction/destruction and plug-in GUI operations are message/main-thread operations. Treat these as main-thread-only:
+The thread that creates a `WebviewGui`/initialises a `ClapWebviewGui` is its UI/message thread. CHOC construction/destruction and all plug-in GUI operations stay on that thread.
 
-- create/destroy;
-- attach;
-- resize;
-- show/hide;
-- native/JS message delivery.
+| Operation | Thread | Wrong-thread behaviour |
+| --- | --- | --- |
+| `WebviewGui::supports()` | any | pure capability query |
+| `WebviewGui::create*()` | UI/message | binds instance ownership |
+| destruction | same UI/message thread | debug assertion; unsupported otherwise |
+| `attach()` | UI/message | returns `false` |
+| `setSize()` / `setVisible()` | UI/message | ignored |
+| `send()` | UI/message | ignored |
+| `ResourceGetter` | UI/message | never invoked off-thread |
+| `receive` native/JS callback | UI/message | never forwarded off-thread |
+| `ClapWebviewGui::init/create/destroy/setParent/show/hide/size/send` and `clap.gui` proxies | CLAP main/UI thread | return `false`/no-op off-thread |
 
-Never call WebView, file/resource loading, or CLAP GUI APIs directly from the real-time audio callback. Transfer DSP state to the GUI through an appropriate non-blocking handoff.
+Never call WebView, CHOC, file/resource loading, bridge encoding, or CLAP host GUI APIs from `process()` or another real-time audio callback. `ClapWebviewGui` is a GUI-only adapter and deliberately has no `process()` entry point.
+
+For small trivially-copyable state snapshots, `realtime-handoff.h` provides a fixed-capacity SPSC queue. Each `tryPush()`/`tryPop()` is bounded O(1), lock-free on supported targets, performs no allocation or syscall, and returns immediately if full/empty. An audio callback should drop or coalesce an update rather than retrying until space appears:
+
+```cpp
+#include "webview-gui/realtime-handoff.h"
+
+webview_gui::RealtimeToUiQueue<float, 64> meterUpdates;
+
+void processAudio(float meterValue) noexcept {
+    (void) meterUpdates.tryPush(meterValue); // never wait in the RT callback
+}
+
+void onMainThreadTimer() {
+    float value = 0.0f;
+    while (meterUpdates.tryPop(value)) {
+        // Coalesce/drain first, then update/send from the UI thread only.
+    }
+}
+```
 
 ## CLAP helper
 
-`ClapWebviewGui` adapts a plug-in's webview extension to standard `clap.gui` hosts.
+`ClapWebviewGui` adapts a plug-in's webview extension to standard `clap.gui` hosts. Construct, initialise, use and destroy it on the CLAP main/UI thread.
 
 For native WebViews, use the **instance-local** helper to send data:
 
@@ -107,7 +147,7 @@ void someMainThreadMethod() {
 }
 ```
 
-`extHostWebview` now refers only to the real host-provided webview extension, if one exists. The library deliberately does not manufacture a synthetic host extension keyed by `clap_host_t*`, because a host pointer is not guaranteed to uniquely identify a plug-in instance.
+`extHostWebview` refers only to the real host-provided webview extension, if one exists. The library deliberately does not manufacture a synthetic host extension keyed by `clap_host_t*`, because a host pointer is not guaranteed to uniquely identify a plug-in instance.
 
 Typical setup:
 
@@ -150,6 +190,6 @@ Every push/PR runs a Debug build and test suite on:
 - Windows;
 - Linux.
 
-ASan + UBSan jobs also run on macOS and Linux. The macOS suite contains a multi-module `dlopen`/`dlclose` test which checks Objective-C runtime isolation across independently linked CHOC copies.
+ASan + UBSan jobs also run on macOS and Linux. The qualification suite exercises independent plug-in modules, unload/reload and native host embedding; the macOS tests additionally validate Objective-C runtime isolation.
 
 A CHOC revision bump is not considered qualified until this suite passes.
