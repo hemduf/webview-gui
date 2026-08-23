@@ -5,6 +5,7 @@
 #error Windows-only test
 #endif
 
+#include "webview-gui/webview-gui.h"
 #include "webview-gui/_impl/platform/windows_plugin_runtime.h"
 
 #include <windows.h>
@@ -121,6 +122,14 @@ HWND createHostWindow()
 }
 
 } // namespace
+
+TEST_CASE("public support negotiation exposes only Win32 embedding")
+{
+    CHECK(WebviewGui::supports(WebviewGui::HWND));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::COCOA));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::X11EMBED));
+    CHECK_FALSE(WebviewGui::supports(WebviewGui::NONE));
+}
 
 TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host executable")
 {
