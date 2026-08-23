@@ -1,141 +1,155 @@
 # Webview GUI
 
-Webview GUIs in C++ with simple message-passing, intended for (audio) plugins.  The goals are:
+Webview GUIs in C++ with simple message passing, intended for audio plug-ins.
 
-* This library handles all the platform-specific stuff
-	* many plugin formats give you a `void *` (actually a platform-native view), so this is what you pass on
-	* provide fixes for common issues (e.g. keypress events)
-* You pass opaque bytes back and forth
-	* the C++ side sends/receives `const unsigned char *`s
-	* the webpage sens/receives `ArrayBuffer`s (using `parent.postMessage()` and `addEventListener('message', ...)`)
-* Serve files from a directory, or a custom callback
-* CMake support, _or_ header-only C++ for simplicity
+The library is deliberately a thin plug-in adapter around [CHOC](https://github.com/Tracktion/choc)'s `choc::ui::WebView` rather than a second WebKit/WebView2 implementation.
 
-Currently, MacOS (Cocoa) is supported directly.  If CHOC is available in the include path (tested using `__has_include()`) then it's used for other platforms.
+```text
+CLAP / VST3 / AU host
+        ↓
+webview-gui host adapter
+        ↓
+CHOC WebView (pinned revision)
+        ↓
+WKWebView / WebView2 / WebKitGTK
+```
+
+The goals are:
+
+- attach a WebView to host-owned native plug-in views;
+- exchange opaque bytes between C++ and JavaScript;
+- serve bundled resources or resources supplied by a callback;
+- remain safe when many unrelated plug-ins and versions coexist in one DAW process;
+- keep all GUI/WebView work away from the real-time audio thread;
+- support both CMake and header-only integration.
+
+## Platform status
+
+- **macOS / Cocoa:** CHOC-backed embedding is implemented and tested. The plug-in-safe adapter uses the system `WKWebView` class instead of CHOC's persistent dynamic `WKWebView` subclass, so an unloadable plug-in does not leave Objective-C methods pointing into its Mach-O image.
+- **Windows / HWND:** CHOC/WebView2 compiles in CI, but host-native parent embedding is not advertised until #11 is complete.
+- **Linux / X11:** CHOC/WebKitGTK compiles in CI, but host-native X11 embedding is not advertised until #11 is complete.
+- **Wayland:** not advertised as embedded CLAP GUI support.
+
+The CHOC revision used for qualification is pinned in the submodule and documented in `CHOC_PIN.md`.
 
 ## How to use
 
-See [`webview-gui.h`](include/webview-gui/webview-gui.h) for the API.  Here's an example using the VST3 platform identifiers:
+See [`webview-gui.h`](include/webview-gui/webview-gui.h) for the core API.
 
 ```cpp
 #include "webview-gui/webview-gui.h"
 
 struct MyPlugin {
-	using WebviewGui = webview_gui::WebviewGui; 
-	std::shared_ptr<WebviewGui> webview;
-	
-	void createAndAttachView(const char *platformType, void *nativeParent) {
-		auto platform = WebviewGui::NONE;
-		// check VST3 platform identifiers
-		if (!std::strcmp(platformType, "NSView")) {
-			platform = WebviewGui::COCOA;
-		} else if (!std::strcmp(platformType, "HWND")) {
-			platform = WebviewGui::HWND;
-		} else if (!std::strcmp(platformType, "X11EmbedWindowID")) {
-			platform = WebviewGui::X11EMBED;
-		}
-		
-		// There are also `::create()` and `::createUnique()` functions
-		webview = WebviewGui::createShared(
-			platform,
-			"relative/path.html",
-			"/absolute/path/including/all/resources/"
-		);
-		if (webview) {
-			// The type is known from the `platform` argument
-			webview->attach(nativeParent);
-		} 
-	}
+    std::shared_ptr<webview_gui::WebviewGui> webview;
+
+    void createAndAttachView(const char* platformType, void* nativeParent) {
+        auto platform = webview_gui::WebviewGui::NONE;
+
+        if (!std::strcmp(platformType, "NSView"))
+            platform = webview_gui::WebviewGui::COCOA;
+        else if (!std::strcmp(platformType, "HWND"))
+            platform = webview_gui::WebviewGui::HWND;
+        else if (!std::strcmp(platformType, "X11EmbedWindowID"))
+            platform = webview_gui::WebviewGui::X11EMBED;
+
+        if (!webview_gui::WebviewGui::supports(platform))
+            return;
+
+        webview = webview_gui::WebviewGui::createShared(
+            platform,
+            "relative/path.html",
+            "/absolute/resource/root/"
+        );
+
+        if (webview)
+            webview->attach(nativeParent);
+    }
 };
 ```
 
-When included via CMake, it adds a source file for the actual implementation.
+When included via CMake, the project builds the implementation source. For header-only integration, define `WEBVIEW_GUI_HEADER_ONLY` before including `webview-gui.h`.
 
-To use in a header-only way (without this source file), use `#define WEBVIEW_GUI_HEADER_ONLY` before including the above header.
+## Why wrap CHOC?
 
-### Why not just use CHOC?
+CHOC owns the actual browser integration and lifecycle. `webview-gui` adds the pieces that are specific to audio plug-ins:
 
-[CHOC's WebView class](https://github.com/Tracktion/choc/blob/main/choc/gui/choc_WebView.h) is great, but it still requires platform-specific code to attach to the native views.
+- host-native view attachment;
+- CLAP `clap.gui` adaptation;
+- multi-instance routing;
+- resource containment/security policy;
+- macOS Objective-C runtime isolation for unloadable plug-in modules;
+- cross-platform plug-in qualification tests.
 
-It also doesn't handle the gnarly event-view stuff, is slightly more opinionated about how values are passed between C++/JS, and fails to compile on non-supported platforms (instead of falling back to a placeholder implementation like this library does).
+The project intentionally does **not** use CHOC `DesktopWindow` or application lifecycle helpers inside a plug-in.
 
-## TODOs
+## Threading contract
 
-Thanks to August / Imagiro for sharing their [implementation](https://github.com/augustpemberton/imagiro_webview/tree/main), and giving me permission to raid it.  These are the things they said they'd done:
+`choc::ui::WebView` construction/destruction and plug-in GUI operations are message/main-thread operations. Treat these as main-thread-only:
 
-* Key event stuff (Mac and Windows have separate problems)
-* Absolute paths for dragged-in files
-* A crash on Mac if you press Esc(?)
-* CHOC-free implementations for MacOS
+- create/destroy;
+- attach;
+- resize;
+- show/hide;
+- native/JS message delivery.
 
-Additionally, I would like to make some existing JS APIs usable in webviews: 
-
-* [`Element.setPointerCapture()`](https://developer.mozilla.org/en-US/docs/Web/API/Element/setPointerCapture) (hiding the mouse while dragging) without the big warning banner.
-* Right-click / context-menu stuff
+Never call WebView, file/resource loading, or CLAP GUI APIs directly from the real-time audio callback. Transfer DSP state to the GUI through an appropriate non-blocking handoff.
 
 ## CLAP helper
 
-There is a [draft CLAP extension](https://github.com/free-audio/clap/blob/main/include/clap/ext/draft/webview.h) for using webview UIs.  This is the primary way that [WCLAPs](https://github.com/WebCLAP/) (CLAPs compiled to WebAssembly) can provide a GUI, but it's an increasingly common pattern for native apps/plugins in general.  The extension follows the pattern above: passing messages as opaque bytes between the (W)CLAP plugin and the webview/`<iframe>`, as well as optionally providing custom resources.
+`ClapWebviewGui` adapts a plug-in's webview extension to standard `clap.gui` hosts.
 
-Native hosts don't support this webview extension (and are unlikely to), so this repo includes a helper (in [`clap-webview-gui.h`](include/webview-gui/clap-webview-gui.h)) which implements the `clap.gui` extension, based on the plugin's webview extension.  You can replace any methods from this extension, for example to define your own (re)sizing logic (which can be used by webview-based hosts as well). 
+For native WebViews, use the **instance-local** helper to send data:
 
-The helper provides a "host webview extension", which you should use instead of checking the host's actual webview extension.  Even if a host *does* support the webview extension, this replacement will send messages to its native webview instead, if one currently exists.  This helps the plugin pretend that only webview GUIs are actually being used.
- 
-The idea is for webview-based CLAP plugins to primarily use the webview extension, and let this helper wire up the `clap.gui`, only overriding that where relevant.
+```cpp
+void someMainThreadMethod() {
+    const char* message = "message-bytes";
+    guiHelper.send(message, std::strlen(message));
+}
+```
+
+`extHostWebview` now refers only to the real host-provided webview extension, if one exists. The library deliberately does not manufacture a synthetic host extension keyed by `clap_host_t*`, because a host pointer is not guaranteed to uniquely identify a plug-in instance.
+
+Typical setup:
 
 ```cpp
 struct MyClapPlugin {
-	const clap_plugin clapPlugin{...};
-	const clap_host *host;
+    const clap_plugin clapPlugin{ /* ... */ };
+    const clap_host* host = nullptr;
+    webview_gui::ClapWebviewGui guiHelper;
 
-	webview_gui::ClapWebviewGui guiHelper;
-	const clap_host_webview *hostWebview;
+    static bool plugin_init(const clap_plugin* plugin) {
+        auto& self = getSelf(plugin);
+        self.guiHelper.init(plugin, self.host);
+        self.guiHelper.setSize(600, 300);
+        return true;
+    }
 
-	MyClapPlugin(const clap_host *host) : host(host) {
-		guiHelper.setSize(600, 300);
-	}
-	
-	void someMainThreadMethod() {
-		auto *message = "message-bytes";
-		auto *bytes = (const unsigned char *)message;
-		uint32_t length = std::strlen(message);
-
-		// You can either call the helper to send messages directly:
-		auto success = guiHelper.send(bytes, length);
-		
-		// Or use the host webview extension (actually provided by the helper)
-		hostWebview->send(host, bytes, length);
-	}
-	
-	//----- `clap_plugin` methods -----
-	static bool plugin_init(const clap_plugin *plugin) {
-		auto &self = getSelf(plugin); // somehow - in this case just casting the pointer would work
-		
-		// ... various setup bits
-
-		// This queries the plugin itself for (webview) extensions, so only call this when that's ready 
-		self.guiHelper.init(plugin, self.host);
-		self.hostWebview = self.guiHelper.extHostWebview;
-	}
-	static void * plugin_get_extension(const clap_plugin *plugin, const char *extId) {
-		auto &myClapPlugin = getSelf(plugin);
-		// ... all your existing stuff
-
-		// This provides a default implementation of the `clap.gui` extension
-		if (!std::strcmp(extId, CLAP_EXT_GUI)) {
-			// Override with a custom size function
-			guiHelper.extPluginGui->adjustSize = gui_adjust_size;
-			
-			return guiHelper.extPluginGui;
-		}
-	}
-	
-	//----- subset of `clap_gui` methods -----
-	static bool gui_adjust_size(const clap_plugin *plugin, uint32_t *w, uint32_t *h) {
-		// enforce minimum size
-		if (*w < 300) *w = 300;
-		if (*h < 200) *h = 200;
-		return true;
-	}
+    static const void* plugin_get_extension(const clap_plugin* plugin,
+                                            const char* extensionId) {
+        auto& self = getSelf(plugin);
+        if (!std::strcmp(extensionId, CLAP_EXT_GUI))
+            return self.guiHelper.extPluginGui;
+        return nullptr;
+    }
 };
 ```
+
+## TDD and CI
+
+Tests use **doctest 2.5.3** and are run through CTest.
+
+```bash
+cmake -S tests -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+Every push/PR runs a Debug build and test suite on:
+
+- macOS;
+- Windows;
+- Linux.
+
+ASan + UBSan jobs also run on macOS and Linux. The macOS suite contains a multi-module `dlopen`/`dlclose` test which checks Objective-C runtime isolation across independently linked CHOC copies.
+
+A CHOC revision bump is not considered qualified until this suite passes.
