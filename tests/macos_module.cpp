@@ -5,8 +5,10 @@
 #endif
 
 #include <objc/runtime.h>
-#include <cstring>
 #include <cstddef>
+#include <cstring>
+#include <memory>
+#include <vector>
 
 namespace {
 
@@ -24,6 +26,21 @@ void copyClassName(id object, char* output, std::size_t capacity)
     output[capacity - 1] = '\0';
 }
 
+choc::ui::WebView::Options makePluginOptions()
+{
+    choc::ui::WebView::Options options;
+    options.acceptsFirstMouseClick = false;
+    options.enableDefaultClipboardKeyShortcutsInSafari = false;
+    options.transparentBackground = true;
+    return options;
+}
+
+std::vector<std::unique_ptr<choc::ui::WebView>>& retainedViews()
+{
+    static std::vector<std::unique_ptr<choc::ui::WebView>> views;
+    return views;
+}
+
 } // namespace
 
 extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
@@ -32,12 +49,7 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_r
     char* delegateClass,
     std::size_t delegateCapacity)
 {
-    choc::ui::WebView::Options options;
-    options.acceptsFirstMouseClick = false;
-    options.enableDefaultClipboardKeyShortcutsInSafari = false;
-    options.transparentBackground = true;
-
-    choc::ui::WebView view{options};
+    choc::ui::WebView view{makePluginOptions()};
     if (!view.loadedOK() || !view.getViewHandle())
         return false;
 
@@ -48,4 +60,60 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_r
     copyClassName(delegate, delegateClass, delegateCapacity);
     return webviewClass && webviewClass[0] != '\0'
         && delegateClass && delegateClass[0] != '\0';
+}
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_retain_webviews(
+    std::size_t count,
+    char* delegateClass,
+    std::size_t delegateCapacity)
+{
+    auto& views = retainedViews();
+    views.clear();
+    views.reserve(count);
+
+    char firstDelegate[256] = {};
+
+    for (std::size_t i = 0; i < count; ++i) {
+        auto view = std::make_unique<choc::ui::WebView>(makePluginOptions());
+        if (!view->loadedOK() || !view->getViewHandle()) {
+            views.clear();
+            return false;
+        }
+
+        auto webview = reinterpret_cast<id>(view->getViewHandle());
+        auto webviewClass = object_getClass(webview);
+        if (webviewClass != objc_getClass("WKWebView")) {
+            views.clear();
+            return false;
+        }
+
+        auto delegate = choc::objc::call<id>(webview, "navigationDelegate");
+        char currentDelegate[256] = {};
+        copyClassName(delegate, currentDelegate, sizeof(currentDelegate));
+        if (currentDelegate[0] == '\0') {
+            views.clear();
+            return false;
+        }
+
+        if (i == 0) {
+            std::strncpy(firstDelegate, currentDelegate, sizeof(firstDelegate) - 1);
+        } else if (std::strcmp(firstDelegate, currentDelegate) != 0) {
+            views.clear();
+            return false;
+        }
+
+        views.push_back(std::move(view));
+    }
+
+    if (delegateClass && delegateCapacity > 0) {
+        std::strncpy(delegateClass, firstDelegate, delegateCapacity - 1);
+        delegateClass[delegateCapacity - 1] = '\0';
+    }
+
+    return count == 0 || firstDelegate[0] != '\0';
+}
+
+extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_webviews()
+{
+    retainedViews().clear();
 }
