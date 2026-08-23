@@ -195,6 +195,11 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #include "choc/gui/choc_WebView.h"
 #undef CoInitialize
 
+#ifndef WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD
+#error webview-gui requires its generated plugin-safe CHOC WebView2 bridge patch on Windows
+#endif
+#undef WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD
+
 #else
 
 #include "choc/gui/choc_WebView.h"
