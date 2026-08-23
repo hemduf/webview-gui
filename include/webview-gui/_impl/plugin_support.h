@@ -346,6 +346,7 @@ if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let 
 if(!Uint8Array.fromBase64){Uint8Array.fromBase64=b64=>{const s=atob(b64);const a=new Uint8Array(s.length);for(let i=0;i<s.length;++i)a[i]=s.charCodeAt(i);return a;};}
 window.addEventListener('message',e=>{if(e.source!==window)return;e.stopImmediatePropagation();let d=e.data;if(d instanceof ArrayBuffer)d=new Uint8Array(d);if(!(d instanceof Uint8Array))d=new Uint8Array(d);if(d.byteLength>maxBytes)return;window._WebviewGui_receive64(token,d.toBase64());},{capture:true});
 window['_WebviewGui_send_'+token]=b64=>{const d=Uint8Array.fromBase64(b64);if(d.byteLength<=maxBytes)window.dispatchEvent(new MessageEvent('message',{data:d.buffer}));};
+if(typeof window._WebviewGui_ready==='function')window._WebviewGui_ready(token);
 })();</script>)";
 }
 
