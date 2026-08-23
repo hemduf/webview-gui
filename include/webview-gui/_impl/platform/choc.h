@@ -1,18 +1,18 @@
 #include "../../helpers.h"
+#include "../plugin_support.h"
 
 #include "choc/platform/choc_Platform.h"
 
 #if !CHOC_APPLE && !CHOC_WINDOWS && !CHOC_LINUX
 #	include "./not-supported.h"
 #else
-#	include "choc/gui/choc_WebView.h"
+#	include "./choc_plugin_webview.h"
 #	include "choc/memory/choc_Base64.h"
 
-#	include <unordered_map>
+#	include <filesystem>
 #	include <fstream>
 #	include <memory>
-#	include <iostream>
-#	define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
+#	include <optional>
 
 namespace webview_gui {
 
@@ -31,24 +31,30 @@ struct WebviewGui::Impl {
 	}
 	
 	void init(const choc::ui::WebView::Options &options) {
-		webview = std::unique_ptr<choc::ui::WebView>{
-			new choc::ui::WebView(options)
-		};
+		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 	
 	void attach(void *nativeView) {
-		if (!webview) return;
+		if (!webview || !nativeView) return;
 		using namespace choc::objc;
 		id parent = (id)nativeView;
 		id subview = (id)webview->getViewHandle();
 		call<void>(parent, "addSubview:", subview);
 	}
+
 	void setSize(double width, double height) {
 		if (!webview) return;
 		using namespace choc::objc;
-		struct CGRect rect = {0, 0, CGFloat(width), CGFloat(height)};
+		CGRect rect{{0, 0}, {CGFloat(width), CGFloat(height)}};
 		id subview = (id)webview->getViewHandle();
 		call<void>(subview, "setFrame:", rect);
+	}
+
+	void setVisible(bool visible) {
+		if (!webview) return;
+		using namespace choc::objc;
+		id subview = (id)webview->getViewHandle();
+		call<void>(subview, "setHidden:", getNSNumberBool(!visible));
 	}
 
 	WebviewGui *main = nullptr;
@@ -57,18 +63,14 @@ struct WebviewGui::Impl {
 #	else
 struct WebviewGui::Impl {
 	void init(const choc::ui::WebView::Options &options) {
-		webview = std::unique_ptr<choc::ui::WebView>{
-			new choc::ui::WebView(options)
-		};
+		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 
-	void attach(void *parent) {
-		LOG_EXPR(parent);
-	}
-	void setSize(double width, double height) {
-		LOG_EXPR(width);
-		LOG_EXPR(height);
-	}
+	// Native embedding for Windows/X11 is intentionally not claimed as supported
+	// until #11 implements and qualifies the parent/resize/focus glue.
+	void attach(void *) {}
+	void setSize(double, double) {}
+	void setVisible(bool) {}
 
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
@@ -81,59 +83,64 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	auto *impl = new WebviewGui::Impl();
 	
 	choc::ui::WebView::Options options;
-	options.acceptsFirstMouseClick = true;
+	// The plugin-safe macOS CHOC adapter intentionally uses vanilla WKWebView.
+	// These two features are normally implemented by CHOC's dynamic WKWebView
+	// subclass, which cannot safely outlive an unloadable plugin image.
+	options.acceptsFirstMouseClick = false;
+	options.enableDefaultClipboardKeyShortcutsInSafari = false;
 	options.transparentBackground = true;
 #	if CHOC_WINDOWS
-	// Copied from CHOC - not sure why, maybe ensuring a secure context?
 	options.customSchemeURI = "https://choc.localhost/";
 #	else
 	options.customSchemeURI = "choc://choc.choc/";
 #	endif
 	auto startUri = options.customSchemeURI + startPath;
-   	options.fetchResource = [getter](const std::string &path) {
+
+	options.fetchResource = [getter](const std::string &path) {
 		using ChocResource = choc::ui::WebView::Options::Resource;
 		std::optional<ChocResource> chocResource;
 		Resource resource;
-		if (getter(path.c_str(), resource)) {
+		if (getter && getter(path.c_str(), resource)) {
 			chocResource.emplace();
 			chocResource->data = std::move(resource.bytes);
-			if (resource.mediaType.size()) {
-				chocResource->mimeType = std::move(resource.mediaType);
-			} else {
-				chocResource->mimeType = helpers::guessMediaType(path.c_str());
-			}
+			chocResource->mimeType = resource.mediaType.empty()
+				? helpers::guessMediaType(path.c_str())
+				: std::move(resource.mediaType);
 		}
 		return chocResource;
 	};
+
 	options.webviewIsReady = [startUri, impl](choc::ui::WebView &wv){
 		wv.addInitScript(R"jsCode(
 			if (!Uint8Array.prototype.toBase64) {
 				Uint8Array.prototype.toBase64 = function() {
 					let binaryString = "";
-					for (var i = 0; i < this.length; i++) {
+					for (let i = 0; i < this.length; ++i)
 						binaryString += String.fromCharCode(this[i]);
-					}
 					return btoa(binaryString);
 				};
 			}
 			if (!Uint8Array.fromBase64) {
 				Uint8Array.fromBase64 = b64 => {
-					let binaryString = atob(b64);
-					let array = new Uint8Array(b64.length);
-					for (let i=0; i < array.length; ++i) {
+					const binaryString = atob(b64);
+					const array = new Uint8Array(binaryString.length);
+					for (let i = 0; i < binaryString.length; ++i)
 						array[i] = binaryString.charCodeAt(i);
-					}
 					return array;
 				};
 			}
-			window.addEventListener('message', e=>{
+			window.addEventListener('message', e => {
 				if (e.source == window) {
 					e.stopImmediatePropagation();
-					_WebviewGui_receive64(new Uint8Array(e.data).toBase64());
+					let data = e.data;
+					if (data instanceof ArrayBuffer) data = new Uint8Array(data);
+					_WebviewGui_receive64(new Uint8Array(data).toBase64());
 				}
 			}, {capture: true});
-			function _WebviewGui_send64(b64){
-				window.dispatchEvent(new MessageEvent('message', {data: Uint8Array.fromBase64(b64).buffer}));
+			function _WebviewGui_send64(b64) {
+				window.dispatchEvent(new MessageEvent('message', {
+					data: Uint8Array.fromBase64(b64).buffer
+				}));
 			}
 		)jsCode");
 
@@ -152,7 +159,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	};
 
 	impl->init(options);
-	if (!impl->webview->loadedOK()) {
+	if (!impl->webview || !impl->webview->loadedOK()) {
 		delete impl;
 		return nullptr;
 	}
@@ -161,27 +168,27 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 }
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startUrl) {
-	return create(p, startUrl, [](const char *path, Resource &resource){
-		// No custom resources - the start URL needs to be absolute
-		return false;
-	});
+	return create(p, startUrl, [](const char *, Resource &){ return false; });
 }
 
 WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startPath, const std::string &baseDir) {
+	if (baseDir.empty()) return nullptr;
+
 	return create(p, startPath, [baseDir](const char *path, Resource &resource){
-		// Read resources from disk
-		auto fullPath = baseDir + path;
-#	if CHOC_WINDOWS
-		for (size_t i = baseDir.size(); i < fullPath.size(); ++i) {
-			if (fullPath[i] == '/') fullPath[i] = '\\';
-		}
-#	endif
-		std::ifstream fileStream{fullPath, std::ios::binary | std::ios::ate};
+		std::filesystem::path resolved;
+		if (!detail::resolveContainedPath(std::filesystem::path(baseDir),
+										 std::filesystem::path(path ? path : ""), resolved))
+			return false;
+
+		std::ifstream fileStream{resolved, std::ios::binary | std::ios::ate};
 		if (!fileStream) return false;
-		size_t length = fileStream.tellg();
+
+		const auto end = fileStream.tellg();
+		if (end < 0) return false;
+		const auto length = static_cast<size_t>(end);
 		resource.bytes.resize(length);
 		fileStream.seekg(0);
-		fileStream.read((char *)resource.bytes.data(), length);
+		fileStream.read(reinterpret_cast<char *>(resource.bytes.data()), static_cast<std::streamsize>(length));
 		return bool(fileStream);
 	});
 }
@@ -189,26 +196,38 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 WebviewGui::WebviewGui(WebviewGui::Impl *impl) : impl(impl) {
 	impl->main = this;
 }
+
 WebviewGui::~WebviewGui() {
+	if (impl) impl->main = nullptr;
 	delete impl;
 }
 
 bool WebviewGui::supports(WebviewGui::Platform p) {
-	return (p != NONE);
+#	if CHOC_APPLE
+	return p == COCOA;
+#	else
+	(void)p;
+	return false;
+#	endif
 }
+
 void WebviewGui::attach(void *platformNative) {
-	impl->attach(platformNative);
+	if (impl) impl->attach(platformNative);
 }
+
 void WebviewGui::send(const unsigned char *bytes, size_t length) {
+	if (!impl || !impl->webview || (!bytes && length != 0)) return;
 	auto base64 = choc::base64::encodeToString(bytes, length);
 	impl->webview->evaluateJavascript("_WebviewGui_send64(\"" + base64 + "\");");
 }
-void WebviewGui::setSize(double width, double height) {
-	impl->setSize(width, height);
-}
-void WebviewGui::setVisible(bool visible) {}
 
-//-------------
+void WebviewGui::setSize(double width, double height) {
+	if (impl) impl->setSize(width, height);
+}
+
+void WebviewGui::setVisible(bool visible) {
+	if (impl) impl->setVisible(visible);
+}
 
 } // namespace
 
