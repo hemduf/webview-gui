@@ -27,7 +27,19 @@ struct WebviewGui {
 		std::vector<unsigned char> bytes;
 	};
 	using ResourceGetter = std::function<bool(const char *path, Resource &resource)>;
-	
+
+	// Thread contract
+	// ---------------
+	// The thread that calls create()/createUnique()/createShared() becomes this
+	// instance's UI/message thread. The instance must be destroyed on that same
+	// thread. attach(), setSize(), setVisible() and send() are UI-thread-only;
+	// off-thread calls fail/no-op rather than entering CHOC or the host GUI.
+	// ResourceGetter and receive callbacks are delivered on that same UI thread.
+	//
+	// Never call these APIs from a CLAP process()/audio callback. Publish small
+	// trivially-copyable state through realtime-handoff.h (or another proven
+	// bounded non-blocking SPSC mechanism) and consume it on the UI thread.
+	// supports() is a pure platform capability query and does not touch a WebView.
 	WEBVIEW_GUI_IMPL static bool supports(Platform p);
 	WEBVIEW_GUI_IMPL static WebviewGui * create(Platform platform, const std::string &startUrl);
 	// The starting URL may be relative for these:
@@ -47,14 +59,20 @@ struct WebviewGui {
 		return SharedPtr{create(std::forward<Args>(args)...)};
 	}
 	
-	// Attach to the host-owned native parent. Returns false when the requested
-	// platform cannot actually be embedded or when the handle is invalid.
+	// UI thread only. Attach to the host-owned native parent. Returns false when
+	// called from another thread, when the backend cannot actually be embedded,
+	// or when the native handle is invalid.
 	WEBVIEW_GUI_IMPL bool attach(void *platformNative);
 
-	// Assign this to receive messages
+	// Assign and replace receive on the UI thread. CHOC/native bridge delivery
+	// invokes it synchronously on that thread; do not perform audio-thread work
+	// or unbounded blocking inside the callback.
 	std::function<void(const unsigned char *, size_t)> receive;
+
+	// UI thread only. Off-thread calls are ignored and never enter CHOC.
 	WEBVIEW_GUI_IMPL void send(const unsigned char *, size_t);
 	
+	// UI thread only. Off-thread calls are ignored and never enter the native GUI.
 	WEBVIEW_GUI_IMPL void setSize(double width, double height);
 	WEBVIEW_GUI_IMPL void setVisible(bool visible);
 private:
