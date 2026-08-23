@@ -21,14 +21,25 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 
 namespace webview_gui::detail {
 
-// C++17 inline variable: one address per linked plug-in module, shared by the
-// translation units in that module but never by independently loaded plug-ins.
-inline char chocWebviewAssociationKeyStorage;
-inline char chocRuntimeModuleToken;
-inline std::atomic<unsigned long long> chocRuntimeClassCounter{0};
+// Internal-linkage anchor. Every translation unit gets an anchor, but dladdr()
+// resolves all of them to the same Mach-O image base for a given plug-in module.
+static void chocPluginModuleAnchor() {}
+
+inline const void* chocPluginModuleIdentity()
+{
+    Dl_info info{};
+    auto anchor = reinterpret_cast<const void*>(&chocPluginModuleAnchor);
+    if (dladdr(anchor, &info) != 0 && info.dli_fbase != nullptr)
+        return info.dli_fbase;
+
+    // Fallback still gives this translation unit a unique address. The normal
+    // macOS plug-in path should always resolve dli_fbase.
+    return anchor;
+}
 
 inline bool isSystemWKWebViewClass(Class cls)
 {
@@ -61,12 +72,12 @@ inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
                                                      id value,
                                                      objc_AssociationPolicy policy)
 {
-    ::objc_setAssociatedObject(object, &chocWebviewAssociationKeyStorage, value, policy);
+    ::objc_setAssociatedObject(object, chocPluginModuleIdentity(), value, policy);
 }
 
 inline id getCHOCWebViewAssociatedObjectForPlugin(id object, const void*)
 {
-    return ::objc_getAssociatedObject(object, &chocWebviewAssociationKeyStorage);
+    return ::objc_getAssociatedObject(object, chocPluginModuleIdentity());
 }
 
 } // namespace webview_gui::detail
@@ -85,15 +96,16 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
         return nullptr;
 
     // CHOC's upstream helper uses a truncated timestamp. For a plug-in process,
-    // derive the name from a module-local token plus a monotonic counter instead.
-    // If this module is unloaded and later mapped at the same address, its old
-    // delegate class has already been disposed by CHOC before the address can be
-    // reused.
+    // derive the name from the Mach-O image base plus a local monotonic counter.
+    // Even if this header is instantiated in multiple translation units, a name
+    // collision simply causes objc_allocateClassPair() to fail and the loop tries
+    // the next serial.
+    static std::atomic<unsigned long long> counter{0};
     char className[256] = {};
-    const auto moduleToken = reinterpret_cast<std::uintptr_t>(&webview_gui::detail::chocRuntimeModuleToken);
+    const auto moduleToken = reinterpret_cast<std::uintptr_t>(webview_gui::detail::chocPluginModuleIdentity());
 
     for (unsigned int attempt = 0; attempt < 64; ++attempt) {
-        const auto serial = webview_gui::detail::chocRuntimeClassCounter.fetch_add(1, std::memory_order_relaxed);
+        const auto serial = counter.fetch_add(1, std::memory_order_relaxed);
         std::snprintf(className, sizeof(className), "%sWG_%llx_%llu",
                       newClassName,
                       static_cast<unsigned long long>(moduleToken),
