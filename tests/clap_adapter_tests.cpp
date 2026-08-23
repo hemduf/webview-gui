@@ -3,7 +3,9 @@
 
 #include "webview-gui/clap-webview-gui.h"
 
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 namespace {
 
@@ -81,9 +83,6 @@ TEST_CASE("CLAP callback lookup fails safely after an instance is unregistered")
     uint32_t width = 0;
     uint32_t height = 0;
 
-    // Use a still-live function table to exercise the static callback with the
-    // now-unregistered plugin key. It must return false instead of inserting a
-    // null registry entry or dereferencing stale memory.
     CHECK_FALSE(guiB.extPluginGui->get_size(&pluginA, &width, &height));
 }
 
@@ -119,7 +118,39 @@ TEST_CASE("Synthetic host webview proxy is not exposed")
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
 
-    // No host extension exists, so this must remain null. In particular it must
-    // not point at a process/module-global proxy keyed only by clap_host_t*.
     CHECK(gui.extHostWebview == nullptr);
+}
+
+TEST_CASE("CLAP GUI callbacks reject a worker or audio thread")
+{
+    auto host = makeHost();
+    auto plugin = makePlugin();
+
+    webview_gui::ClapWebviewGui gui{&plugin, &host};
+    gui.init();
+    REQUIRE(gui.setSize(640, 480));
+
+    std::atomic<bool> wrongThreadGetSize{true};
+    std::atomic<bool> wrongThreadSetSize{true};
+
+    std::thread worker([&] {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        wrongThreadGetSize.store(
+            gui.extPluginGui->get_size(&plugin, &width, &height),
+            std::memory_order_relaxed);
+        wrongThreadSetSize.store(
+            gui.extPluginGui->set_size(&plugin, 1, 1),
+            std::memory_order_relaxed);
+    });
+    worker.join();
+
+    CHECK_FALSE(wrongThreadGetSize.load(std::memory_order_relaxed));
+    CHECK_FALSE(wrongThreadSetSize.load(std::memory_order_relaxed));
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    CHECK(gui.extPluginGui->get_size(&plugin, &width, &height));
+    CHECK(width == 640);
+    CHECK(height == 480);
 }
