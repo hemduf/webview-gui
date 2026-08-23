@@ -119,7 +119,7 @@ if(WIN32)
             ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
         )
         target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
-        target_link_libraries(${target} PRIVATE ole32 user32)
+        target_link_libraries(${target} PRIVATE ole32 user32 shell32)
         set_target_properties(${target} PROPERTIES
             CXX_VISIBILITY_PRESET hidden
             VISIBILITY_INLINES_HIDDEN YES
@@ -155,6 +155,7 @@ if(WIN32)
         doctest::doctest
         ole32
         user32
+        shell32
     )
     add_test(NAME webview_gui_windows_navigation_tests COMMAND webview_gui_windows_navigation_tests)
 endif()
