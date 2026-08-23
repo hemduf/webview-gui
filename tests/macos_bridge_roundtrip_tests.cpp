@@ -22,7 +22,7 @@ void pumpMainRunLoop(double seconds = 0.01)
 
 } // namespace
 
-TEST_CASE("public WebviewGui bridge round-trips opaque bytes through WKWebView")
+TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque bytes through WKWebView")
 {
     auto gui = WebviewGui::createUnique(
         WebviewGui::COCOA,
@@ -51,12 +51,12 @@ TEST_CASE("public WebviewGui bridge round-trips opaque bytes through WKWebView")
         done.store(true, std::memory_order_release);
     };
 
-    // The page load is asynchronous. send() is intentionally safe before the
-    // capability-scoped JS function exists, so retry until the local UI is ready.
-    for (int attempt = 0; attempt < 150 && !done.load(std::memory_order_acquire); ++attempt) {
-        gui->send(expected.data(), expected.size());
+    // Deliberately send exactly once before the asynchronous document load has
+    // completed. The native bridge must retain this message until the hardened
+    // page signals readiness; callers must not need polling/retry semantics.
+    gui->send(expected.data(), expected.size());
+    for (int attempt = 0; attempt < 300 && !done.load(std::memory_order_acquire); ++attempt)
         pumpMainRunLoop(0.01);
-    }
 
     REQUIRE(done.load(std::memory_order_acquire));
     CHECK(received == expected);
