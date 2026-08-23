@@ -102,6 +102,12 @@ public:
             }),
             nullptr);
 
+        // Native plug-in hosts expect keyboard focus to remain inside the
+        // embedded editor after XEmbed reparenting. Make the CHOC WebKit child
+        // explicitly focusable before adding it to the GtkPlug; this is harmless
+        // when WebKitGTK already sets CAN_FOCUS and protects against toolkit
+        // defaults changing underneath the pinned CHOC wrapper.
+        gtk_widget_set_can_focus(webview, TRUE);
         gtk_container_add(GTK_CONTAINER(plug), webview);
         gtk_widget_show_all(plug);
 
