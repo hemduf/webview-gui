@@ -16,9 +16,6 @@
 // CHOC to use the system WKWebView class instead. Delegate classes remain dynamic,
 // but CHOC disposes those during module teardown after all WebViews are destroyed.
 
-// choc_ObjectiveCHelpers.h is normally included from choc_WebView.h after its
-// standard-library prerequisites. We intentionally include it early so we can
-// wrap a few runtime calls, therefore provide those prerequisites here.
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -61,8 +58,6 @@ inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
                                           IMP implementation,
                                           const char* types)
 {
-    // Do not mutate Apple's process-global WKWebView class. The corresponding
-    // CHOC options are disabled by webview-gui's adapter.
     if (isSystemWKWebViewClass(cls))
         return YES;
 
@@ -91,20 +86,14 @@ inline void installPluginNavigationPolicy(Class cls)
             const id absoluteString = url ? call<id>(url, "absoluteString") : nil;
             const auto absolute = absoluteString ? getString(absoluteString) : std::string{};
 
-            // WKNavigationActionPolicyCancel = 0, WKNavigationActionPolicyAllow = 1.
             decisionHandler(isTrustedPluginURL(absolute) ? 1L : 0L);
         }),
-        // Match CHOC's own encoding convention for Objective-C methods whose
-        // final argument is a completion block. The block is object ABI here.
         "v@:@@@@"
     );
 }
 
 inline void registerCHOCWebViewClassForPlugin(Class cls)
 {
-    // WKWebView is already registered by WebKit. Dynamic CHOC delegate classes
-    // are registered normally, gain the strict local-navigation policy, and are
-    // disposed by CHOC when the module shuts down.
     if (!isSystemWKWebViewClass(cls)) {
         installPluginNavigationPolicy(cls);
         ::objc_registerClassPair(cls);
@@ -159,8 +148,6 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
 
 inline id getPluginSafeNSStringForWebviewGui(const char* value)
 {
-    // CHOC's general-purpose WebView sends Access-Control-Allow-Origin: *.
-    // In the plug-in profile, narrow that wildcard to the one trusted origin.
     if (value != nullptr && std::strcmp(value, "*") == 0)
         return getNSString("choc://choc.choc");
 
@@ -189,6 +176,29 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #undef objc_registerClassPair
 #undef class_addMethod
 #undef createDelegateClass
+
+#elif CHOC_WINDOWS
+
+#include "./windows_plugin_runtime.h"
+
+// Patch CHOC's Win32 WindowClass definition before WebView includes it. The
+// upstream helper registers classes against GetModuleHandle(nullptr), which is
+// the DAW executable inside a plug-in. Use the DLL containing this code instead,
+// and replace the millisecond timestamp with a collision-free local sequence.
+#ifdef GetModuleHandle
+#undef GetModuleHandle
+#endif
+#define GetModuleHandle(...) webview_gui::detail::windowsPluginModuleHandle()
+#define GetTickCount() webview_gui::detail::nextWindowsClassToken()
+#include "choc/gui/choc_DesktopWindow.h"
+#undef GetTickCount
+#undef GetModuleHandle
+
+// webview-gui owns a balanced STA COM apartment around the CHOC WebView. Suppress
+// CHOC's additional unbalanced CoInitialize(nullptr) call inside Pimpl::initialise().
+#define CoInitialize(...) webview_gui::detail::suppressedCHOCWebViewCoInitialize(nullptr)
+#include "choc/gui/choc_WebView.h"
+#undef CoInitialize
 
 #else
 
