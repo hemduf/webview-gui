@@ -1,5 +1,6 @@
 #include "../../helpers.h"
 #include "../plugin_support.h"
+#include "../local_url.h"
 
 #include "choc/platform/choc_Platform.h"
 
@@ -167,7 +168,8 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	const std::string trustedOrigin = "choc://choc.choc";
 #	endif
 
-	auto startUri = detail::appendBridgeTokenToURL(options.customSchemeURI + startPath, impl->bridgeToken);
+	const auto localStartURL = detail::joinLocalPluginURL(options.customSchemeURI, startPath);
+	auto startUri = detail::appendBridgeTokenToURL(localStartURL, impl->bridgeToken);
 	if (startUri.empty()) {
 		delete impl;
 		return nullptr;
@@ -197,9 +199,6 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	options.webviewIsReady = [startUri, trustedOrigin, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
-		// Defense in depth only: the native macOS/Linux navigation policy and the
-		// capability-gated bridge are the security boundary. This guard promptly
-		// replaces accidentally navigated remote documents as an additional layer.
 		const auto guardScript = std::string("(()=>{const u=location.href;if(u==='about:blank'||u.toLowerCase().startsWith('")
 			+ trustedOrigin
 			+ "'))return;window.stop();location.replace('about:blank');})()";
