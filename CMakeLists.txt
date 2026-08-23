@@ -12,10 +12,9 @@ set(WEBVIEW_GUI_CHOC_SOURCE_DIR
 set(WEBVIEW_GUI_CHOC_INCLUDE_DIRS ${WEBVIEW_GUI_CHOC_SOURCE_DIR})
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-    # The pinned CHOC WebView2 backend dispatches WebMessageReceived payloads
-    # without checking ICoreWebView2WebMessageReceivedEventArgs::Source first.
-    # Keep the upstream submodule immutable and generate a tiny, drift-checked
-    # private patch that routes the handler through our source-origin guard.
+    # The pinned CHOC WebView2 backend does not validate native bridge message
+    # sources or top-level navigation. Keep the upstream submodule immutable and
+    # generate a tiny, drift-checked private patch for the plugin-safe profile.
     set(WEBVIEW_GUI_PATCHED_CHOC_DIR
         ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-patched-choc)
     set(WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE
@@ -47,10 +46,114 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         message(FATAL_ERROR
             "Pinned CHOC WebView message handler changed; refusing to build without revalidating the Windows bridge-origin patch")
     endif()
-
     string(REPLACE
         "${WEBVIEW_GUI_UNSAFE_WEBMESSAGE_HANDLER}"
         "${WEBVIEW_GUI_SAFE_WEBMESSAGE_HANDLER}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    set(WEBVIEW_GUI_WEBMESSAGE_INTERFACE [=[MIDL_INTERFACE("57213f19-00e6-49fa-8e07-898ea01ecbd2")
+ICoreWebView2WebMessageReceivedEventHandler : public IUnknown
+{
+public:
+     virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventArgs *) = 0;
+};]=])
+
+    set(WEBVIEW_GUI_NAVIGATION_INTERFACES [=[
+
+// Minimal ABI-compatible subset needed by the plugin-safe navigation policy.
+// These methods are the stable leading ICoreWebView2NavigationStartingEventArgs
+// vtable entries present since the initial WebView2 API.
+struct ICoreWebView2NavigationStartingEventArgs : public IUnknown
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_IsUserInitiated(BOOL*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_IsRedirected(BOOL*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_RequestHeaders(void**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Cancel(BOOL*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_Cancel(BOOL) = 0;
+};
+
+struct ICoreWebView2NavigationStartingEventHandler : public IUnknown
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs*) = 0;
+};]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_WEBMESSAGE_INTERFACE}"
+        WEBVIEW_GUI_CHOC_INTERFACE_OFFSET)
+    if(WEBVIEW_GUI_CHOC_INTERFACE_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC WebView interfaces changed; refusing to build without revalidating the Windows navigation patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_WEBMESSAGE_INTERFACE}"
+        "${WEBVIEW_GUI_WEBMESSAGE_INTERFACE}${WEBVIEW_GUI_NAVIGATION_INTERFACES}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    set(WEBVIEW_GUI_EVENT_BASES_OLD [=[                           public ICoreWebView2WebMessageReceivedEventHandler,
+                           public ICoreWebView2PermissionRequestedEventHandler,]=])
+    set(WEBVIEW_GUI_EVENT_BASES_NEW [=[                           public ICoreWebView2WebMessageReceivedEventHandler,
+                           public ICoreWebView2NavigationStartingEventHandler,
+                           public ICoreWebView2PermissionRequestedEventHandler,]=])
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_EVENT_BASES_OLD}"
+        WEBVIEW_GUI_CHOC_BASES_OFFSET)
+    if(WEBVIEW_GUI_CHOC_BASES_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC EventHandler bases changed; refusing to build without revalidating the Windows navigation patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_EVENT_BASES_OLD}"
+        "${WEBVIEW_GUI_EVENT_BASES_NEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    set(WEBVIEW_GUI_EVENT_REGISTRATION_OLD [=[            view->add_WebMessageReceived (this, std::addressof (token));
+            view->add_PermissionRequested (this, std::addressof (token));]=])
+    set(WEBVIEW_GUI_EVENT_REGISTRATION_NEW [=[            view->add_WebMessageReceived (this, std::addressof (token));
+            view->add_NavigationStarting (
+                static_cast<ICoreWebView2NavigationStartingEventHandler*> (this),
+                std::addressof (token));
+            view->add_PermissionRequested (this, std::addressof (token));]=])
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_EVENT_REGISTRATION_OLD}"
+        WEBVIEW_GUI_CHOC_REGISTRATION_OFFSET)
+    if(WEBVIEW_GUI_CHOC_REGISTRATION_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC WebView event registration changed; refusing to build without revalidating the Windows navigation patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_EVENT_REGISTRATION_OLD}"
+        "${WEBVIEW_GUI_EVENT_REGISTRATION_NEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    set(WEBVIEW_GUI_PERMISSION_INVOKE [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) override]=])
+    set(WEBVIEW_GUI_NAVIGATION_INVOKE [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) override
+        {
+            if (deletionCheckerRef->deleted)
+                return E_FAIL;
+
+            return webview_gui::detail::handleWindowsPluginNavigation (
+                args,
+                [] (LPCWSTR uri) { webview_gui::detail::openWindowsExternalURL (uri); });
+        }
+
+        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) override]=])
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_PERMISSION_INVOKE}"
+        WEBVIEW_GUI_CHOC_PERMISSION_OFFSET)
+    if(WEBVIEW_GUI_CHOC_PERMISSION_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC permission handler changed; refusing to build without revalidating the Windows navigation patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_PERMISSION_INVOKE}"
+        "${WEBVIEW_GUI_NAVIGATION_INVOKE}"
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
