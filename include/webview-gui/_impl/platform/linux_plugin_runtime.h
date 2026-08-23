@@ -24,18 +24,19 @@ inline bool isValidX11Parent(std::uintptr_t parentXid)
     if (!display || !GDK_IS_X11_DISPLAY(display))
         return false;
 
-    auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
-    XWindowAttributes attributes{};
+    // Ask GDK/X11 to wrap the foreign handle instead of calling Xlib directly.
+    // This performs the native existence/error check inside GDK and keeps the
+    // adapter link requirements limited to the GTK/GDK libraries we already
+    // depend on. The returned wrapper owns a reference even when GDK already
+    // knows the window.
+    auto* parent = gdk_x11_window_foreign_new_for_display(
+        display,
+        static_cast<Window>(parentXid));
+    if (!parent)
+        return false;
 
-    gdk_x11_display_error_trap_push(display);
-    const bool exists = XGetWindowAttributes(
-        xdisplay,
-        static_cast<Window>(parentXid),
-        &attributes) != 0;
-    XSync(xdisplay, False);
-    const auto xError = gdk_x11_display_error_trap_pop(display);
-
-    return exists && xError == 0;
+    g_object_unref(parent);
+    return true;
 }
 
 class GtkXEmbedHost {
