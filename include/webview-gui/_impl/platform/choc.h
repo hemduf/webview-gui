@@ -41,12 +41,13 @@ struct WebviewGui::Impl {
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 	
-	void attach(void *nativeView) {
-		if (!isOnGuiThread() || !webview || !nativeView) return;
+	bool attach(void *nativeView) {
+		if (!isOnGuiThread() || !webview || !nativeView) return false;
 		using namespace choc::objc;
 		id parent = (id)nativeView;
 		id subview = (id)webview->getViewHandle();
 		call<void>(parent, "addSubview:", subview);
+		return call<id>(subview, "superview") == parent;
 	}
 
 	void setSize(double width, double height) {
@@ -72,8 +73,6 @@ struct WebviewGui::Impl {
 struct WebviewGui::Impl {
 	~Impl() {
 		assert(!uiThread.isBound() || uiThread.isCurrentThread());
-		// WebView2/CHOC objects must be released while the STA apartment is still
-		// owned by this wrapper. Member order and these explicit resets enforce it.
 		webview.reset();
 		comApartment.reset();
 	}
@@ -97,11 +96,24 @@ struct WebviewGui::Impl {
 		}
 	}
 
-	// Native HWND embedding remains disabled until #11's SetParent/resize/focus
-	// harness is green. The COM and window-class safety fixes are active already.
-	void attach(void *) {}
-	void setSize(double, double) {}
-	void setVisible(bool) {}
+	bool attach(void *nativeParent) {
+		if (!isOnGuiThread() || !webview || !nativeParent) return false;
+		auto child = static_cast<::HWND>(webview->getViewHandle());
+		auto parent = static_cast<::HWND>(nativeParent);
+		return detail::attachChildWindowToHost(child, parent);
+	}
+
+	void setSize(double width, double height) {
+		if (!isOnGuiThread() || !webview) return;
+		detail::resizeChildWindow(static_cast<::HWND>(webview->getViewHandle()),
+								 static_cast<int>(width),
+								 static_cast<int>(height));
+	}
+
+	void setVisible(bool visible) {
+		if (!isOnGuiThread() || !webview) return;
+		detail::setChildWindowVisible(static_cast<::HWND>(webview->getViewHandle()), visible);
+	}
 
 	detail::ThreadAffinity uiThread;
 	std::unique_ptr<detail::ScopedCOMApartment> comApartment;
@@ -123,9 +135,7 @@ struct WebviewGui::Impl {
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 
-	// Native X11 embedding is intentionally not claimed as supported until #11
-	// implements and qualifies the XEmbed parent/resize/focus glue.
-	void attach(void *) {}
+	bool attach(void *) { return false; }
 	void setSize(double, double) {}
 	void setVisible(bool) {}
 
@@ -141,9 +151,6 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	auto *impl = new WebviewGui::Impl();
 	
 	choc::ui::WebView::Options options;
-	// The plugin-safe macOS CHOC adapter intentionally uses vanilla WKWebView.
-	// These two features are normally implemented by CHOC's dynamic WKWebView
-	// subclass, which cannot safely outlive an unloadable plugin image.
 	options.acceptsFirstMouseClick = false;
 	options.enableDefaultClipboardKeyShortcutsInSafari = false;
 	options.transparentBackground = true;
@@ -304,8 +311,8 @@ bool WebviewGui::supports(WebviewGui::Platform p) {
 #	endif
 }
 
-void WebviewGui::attach(void *platformNative) {
-	if (impl && impl->isOnGuiThread()) impl->attach(platformNative);
+bool WebviewGui::attach(void *platformNative) {
+	return impl && impl->isOnGuiThread() && impl->attach(platformNative);
 }
 
 void WebviewGui::send(const unsigned char *bytes, size_t length) {
