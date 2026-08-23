@@ -1,6 +1,7 @@
 #include "../../helpers.h"
 #include "../plugin_support.h"
 #include "../local_url.h"
+#include "../secure_random.h"
 
 #include "choc/platform/choc_Platform.h"
 
@@ -65,7 +66,7 @@ struct WebviewGui::Impl {
 	}
 
 	detail::ThreadAffinity uiThread;
-	std::string bridgeToken = detail::makeBridgeToken();
+	std::string bridgeToken = detail::makeSecureBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -107,7 +108,7 @@ struct WebviewGui::Impl {
 
 	detail::ThreadAffinity uiThread;
 	std::unique_ptr<detail::ScopedCOMApartment> comApartment;
-	std::string bridgeToken = detail::makeBridgeToken();
+	std::string bridgeToken = detail::makeSecureBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -141,7 +142,7 @@ struct WebviewGui::Impl {
 
 	detail::ThreadAffinity uiThread;
 	detail::GtkXEmbedHost xembed;
-	std::string bridgeToken = detail::makeBridgeToken();
+	std::string bridgeToken = detail::makeSecureBridgeToken();
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
