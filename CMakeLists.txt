@@ -1,10 +1,22 @@
 cmake_minimum_required(VERSION 3.24)
 
-add_library(webview-gui
-	${CMAKE_CURRENT_SOURCE_DIR}/source/webview-gui.cpp
+# Audio plug-ins are loaded alongside unrelated third-party modules in one host
+# process. Keep this implementation private to each plug-in and never let a
+# parent BUILD_SHARED_LIBS setting turn it into a process-shared runtime.
+add_library(webview-gui STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/webview-gui.cpp
 )
+
 target_include_directories(webview-gui PUBLIC
-	${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(webview-gui PUBLIC cxx_std_17)
+
+set_target_properties(webview-gui PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
 )
 
 # ---
