@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -128,4 +130,92 @@ TEST_CASE("Resource path traversal is rejected")
     CHECK_FALSE(detail::resolveContainedPath(root, "../secret.txt", resolved));
     CHECK_FALSE(detail::resolveContainedPath(root, "/../../secret.txt", resolved));
     CHECK_FALSE(detail::resolveContainedPath(root, "assets/../../../secret.txt", resolved));
+}
+
+TEST_CASE("Percent-encoded traversal is decoded before containment checks")
+{
+    std::string decoded;
+    CHECK(detail::decodeURLPath("/assets%2Fknob.png", decoded));
+    CHECK(decoded == "/assets/knob.png");
+
+    CHECK(detail::decodeURLPath("/%2e%2e/%2e%2e/secret.txt", decoded));
+    CHECK(decoded == "/../../secret.txt");
+
+    CHECK_FALSE(detail::decodeURLPath("/%00secret", decoded));
+    CHECK_FALSE(detail::decodeURLPath("/%GGsecret", decoded));
+}
+
+TEST_CASE("Canonical resource containment rejects symlink escapes")
+{
+    const auto base = std::filesystem::temp_directory_path() / "webview-gui-security-test";
+    const auto root = base / "root";
+    const auto outside = base / "outside";
+
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::filesystem::create_directories(root / "assets");
+    std::filesystem::create_directories(outside);
+
+    {
+        std::ofstream(root / "assets" / "ui.js") << "ok";
+        std::ofstream(outside / "secret.txt") << "secret";
+    }
+
+    std::filesystem::path resolved;
+    CHECK(detail::resolveContainedExistingPath(root, "/assets/ui.js", resolved));
+    CHECK(std::filesystem::equivalent(resolved, root / "assets" / "ui.js"));
+    CHECK_FALSE(detail::resolveContainedExistingPath(root, "/%2e%2e/outside/secret.txt", resolved));
+
+#if !defined(_WIN32)
+    std::filesystem::create_directory_symlink(outside, root / "escape", ec);
+    REQUIRE_FALSE(ec);
+    CHECK_FALSE(detail::resolveContainedExistingPath(root, "/escape/secret.txt", resolved));
+#endif
+
+    std::filesystem::remove_all(base, ec);
+}
+
+TEST_CASE("Plugin-safe URLs reject remote and privileged schemes")
+{
+    CHECK(detail::isTrustedPluginURL("choc://choc.choc/index.html"));
+    CHECK(detail::isTrustedPluginURL("about:blank"));
+
+    CHECK_FALSE(detail::isTrustedPluginURL("https://example.com/plugin-ui"));
+    CHECK_FALSE(detail::isTrustedPluginURL("http://127.0.0.1:1234/"));
+    CHECK_FALSE(detail::isTrustedPluginURL("file:///tmp/ui.html"));
+    CHECK_FALSE(detail::isTrustedPluginURL("javascript:alert(1)"));
+    CHECK_FALSE(detail::isTrustedPluginURL("data:text/html,<script>alert(1)</script>"));
+}
+
+TEST_CASE("Plugin payload limits reject unbounded messages and resources")
+{
+    CHECK(detail::messageSizeAllowed(detail::maxMessageBytes));
+    CHECK_FALSE(detail::messageSizeAllowed(detail::maxMessageBytes + 1));
+
+    CHECK(detail::resourceSizeAllowed(detail::maxResourceBytes));
+    CHECK_FALSE(detail::resourceSizeAllowed(detail::maxResourceBytes + 1));
+
+    const auto maxEncodedMessage = ((detail::maxMessageBytes + 2) / 3) * 4;
+    CHECK(detail::base64MessageSizeAllowed(maxEncodedMessage));
+    CHECK_FALSE(detail::base64MessageSizeAllowed(maxEncodedMessage + 4));
+}
+
+TEST_CASE("HTML resources receive a restrictive plugin CSP before page scripts")
+{
+    const std::string source = "<!doctype html><html><head><script src=\"https://evil.example/x.js\"></script></head><body></body></html>";
+    std::vector<unsigned char> html(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginContentSecurityPolicy(html));
+
+    const std::string hardened(html.begin(), html.end());
+    const auto policy = hardened.find("Content-Security-Policy");
+    const auto externalScript = hardened.find("https://evil.example/x.js");
+
+    REQUIRE(policy != std::string::npos);
+    REQUIRE(externalScript != std::string::npos);
+    CHECK(policy < externalScript);
+    CHECK(hardened.find("default-src 'self'") != std::string::npos);
+    CHECK(hardened.find("connect-src 'self'") != std::string::npos);
+    CHECK(hardened.find("frame-src 'none'") != std::string::npos);
+    CHECK(hardened.find("object-src 'none'") != std::string::npos);
 }
