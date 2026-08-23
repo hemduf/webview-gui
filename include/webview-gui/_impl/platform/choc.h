@@ -68,6 +68,46 @@ struct WebviewGui::Impl {
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
+#	elif CHOC_WINDOWS
+struct WebviewGui::Impl {
+	~Impl() {
+		assert(!uiThread.isBound() || uiThread.isCurrentThread());
+		// WebView2/CHOC objects must be released while the STA apartment is still
+		// owned by this wrapper. Member order and these explicit resets enforce it.
+		webview.reset();
+		comApartment.reset();
+	}
+
+	[[nodiscard]] bool isOnGuiThread() const noexcept {
+		return uiThread.isCurrentThread();
+	}
+
+	void init(const choc::ui::WebView::Options &options) {
+		uiThread.bindToCurrentThread();
+		comApartment = std::make_unique<detail::ScopedCOMApartment>();
+		if (!comApartment->ok()) {
+			comApartment.reset();
+			return;
+		}
+
+		webview = std::make_unique<choc::ui::WebView>(options);
+		if (!webview->loadedOK()) {
+			webview.reset();
+			comApartment.reset();
+		}
+	}
+
+	// Native HWND embedding remains disabled until #11's SetParent/resize/focus
+	// harness is green. The COM and window-class safety fixes are active already.
+	void attach(void *) {}
+	void setSize(double, double) {}
+	void setVisible(bool) {}
+
+	detail::ThreadAffinity uiThread;
+	std::unique_ptr<detail::ScopedCOMApartment> comApartment;
+	WebviewGui *main = nullptr;
+	std::unique_ptr<choc::ui::WebView> webview;
+};
 #	else
 struct WebviewGui::Impl {
 	~Impl() {
@@ -83,8 +123,8 @@ struct WebviewGui::Impl {
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 
-	// Native embedding for Windows/X11 is intentionally not claimed as supported
-	// until #11 implements and qualifies the parent/resize/focus glue.
+	// Native X11 embedding is intentionally not claimed as supported until #11
+	// implements and qualifies the XEmbed parent/resize/focus glue.
 	void attach(void *) {}
 	void setSize(double, double) {}
 	void setVisible(bool) {}
