@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <mutex>
+#include <random>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -24,6 +25,8 @@ namespace webview_gui::detail {
 inline constexpr std::size_t maxMessageBytes = WEBVIEW_GUI_MAX_MESSAGE_BYTES;
 inline constexpr std::size_t maxResourceBytes = WEBVIEW_GUI_MAX_RESOURCE_BYTES;
 inline constexpr std::string_view pluginLocalOrigin = "choc://choc.choc";
+inline constexpr std::string_view windowsPluginLocalOrigin = "https://choc.localhost";
+inline constexpr std::string_view bridgeFragmentKey = "__wg";
 
 class ThreadAffinity {
 public:
@@ -114,6 +117,57 @@ inline int hexDigit(char c) noexcept
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
+}
+
+inline bool isBridgeToken(std::string_view token) noexcept
+{
+    if (token.size() != 64) return false;
+    for (const char c : token)
+        if (hexDigit(c) < 0) return false;
+    return true;
+}
+
+inline std::string makeBridgeToken()
+{
+    // Mainstream libc++/libstdc++/MSVC implementations back random_device with
+    // an OS CSPRNG. Draw a full byte independently for a 256-bit capability.
+    static constexpr char hex[] = "0123456789abcdef";
+    std::random_device random;
+    std::string token;
+    token.resize(64);
+
+    for (std::size_t i = 0; i < 32; ++i) {
+        const auto byte = static_cast<unsigned char>(random() & 0xffu);
+        token[i * 2] = hex[byte >> 4];
+        token[i * 2 + 1] = hex[byte & 0x0f];
+    }
+
+    return token;
+}
+
+inline bool constantTimeTokenEquals(std::string_view expected, std::string_view actual) noexcept
+{
+    if (expected.size() != actual.size()) return false;
+    unsigned char difference = 0;
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        difference |= static_cast<unsigned char>(expected[i] ^ actual[i]);
+    return difference == 0;
+}
+
+inline std::string appendBridgeTokenToURL(std::string url, std::string_view token)
+{
+    if (!isBridgeToken(token)) return {};
+    url += url.find('#') == std::string::npos ? "#" : "&";
+    url += bridgeFragmentKey;
+    url += "=";
+    url += token;
+    return url;
+}
+
+inline std::string bridgeSendFunctionName(std::string_view token)
+{
+    if (!isBridgeToken(token)) return {};
+    return "_WebviewGui_send_" + std::string(token);
 }
 
 inline bool decodeURLPath(std::string_view encoded, std::string& decoded)
@@ -229,13 +283,14 @@ inline bool isTrustedPluginURL(std::string_view url) noexcept
     if (equalsASCIIInsensitive(url, "about:blank"))
         return true;
 
-    constexpr std::string_view origin = "choc://choc.choc";
-    if (!startsWithASCIIInsensitive(url, origin))
-        return false;
+    const auto trustedOrigin = [&](std::string_view origin) {
+        if (!startsWithASCIIInsensitive(url, origin)) return false;
+        if (url.size() == origin.size()) return true;
+        const char next = url[origin.size()];
+        return next == '/' || next == '?' || next == '#';
+    };
 
-    if (url.size() == origin.size()) return true;
-    const char next = url[origin.size()];
-    return next == '/' || next == '?' || next == '#';
+    return trustedOrigin(pluginLocalOrigin) || trustedOrigin(windowsPluginLocalOrigin);
 }
 
 inline bool isSafePluginStartPath(std::string_view path) noexcept
@@ -275,39 +330,82 @@ inline constexpr std::string_view pluginContentSecurityPolicy =
     "base-uri 'none'; "
     "form-action 'none'";
 
+inline std::string bridgeBootstrapScript()
+{
+    return std::string(R"(<script>(()=>{
+const storageKey='__webview_gui_capability';
+let token='';
+const match=location.hash.match(/(?:^#|&)__wg=([0-9a-f]{64})(?:&|$)/);
+try {
+  if(match){token=match[1];sessionStorage.setItem(storageKey,token);}
+  else token=sessionStorage.getItem(storageKey)||'';
+} catch(_) {}
+if(!/^[0-9a-f]{64}$/.test(token)) return;
+const maxBytes=)") + std::to_string(maxMessageBytes) + R"(;
+if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let s='';for(let i=0;i<this.length;++i)s+=String.fromCharCode(this[i]);return btoa(s);};}
+if(!Uint8Array.fromBase64){Uint8Array.fromBase64=b64=>{const s=atob(b64);const a=new Uint8Array(s.length);for(let i=0;i<s.length;++i)a[i]=s.charCodeAt(i);return a;};}
+window.addEventListener('message',e=>{if(e.source!==window)return;e.stopImmediatePropagation();let d=e.data;if(d instanceof ArrayBuffer)d=new Uint8Array(d);if(!(d instanceof Uint8Array))d=new Uint8Array(d);if(d.byteLength>maxBytes)return;window._WebviewGui_receive64(token,d.toBase64());},{capture:true});
+window['_WebviewGui_send_'+token]=b64=>{const d=Uint8Array.fromBase64(b64);if(d.byteLength<=maxBytes)window.dispatchEvent(new MessageEvent('message',{data:d.buffer}));};
+})();</script>)";
+}
+
+inline bool injectIntoHTMLHead(std::string& html, std::string_view content)
+{
+    const auto head = findASCIIInsensitive(html, "<head");
+    if (head != std::string::npos) {
+        const auto end = html.find('>', head);
+        if (end == std::string::npos) return false;
+        html.insert(end + 1, content);
+        return true;
+    }
+
+    const auto htmlTag = findASCIIInsensitive(html, "<html");
+    if (htmlTag != std::string::npos) {
+        const auto end = html.find('>', htmlTag);
+        if (end == std::string::npos) return false;
+        html.insert(end + 1, "<head>" + std::string(content) + "</head>");
+        return true;
+    }
+
+    html.insert(0, "<head>" + std::string(content) + "</head>");
+    return true;
+}
+
 inline bool applyPluginContentSecurityPolicy(std::vector<unsigned char>& bytes)
 {
     if (!resourceSizeAllowed(bytes.size()))
         return false;
 
-    const std::string html(bytes.begin(), bytes.end());
+    std::string html(bytes.begin(), bytes.end());
     const std::string meta =
         "<meta http-equiv=\"Content-Security-Policy\" content=\""
         + std::string(pluginContentSecurityPolicy)
         + "\">";
 
-    if (!resourceSizeAllowed(html.size() + meta.size() + 13u))
+    if (!resourceSizeAllowed(html.size() + meta.size() + 13u)
+        || !injectIntoHTMLHead(html, meta))
         return false;
 
-    std::string hardened = html;
-    const auto head = findASCIIInsensitive(hardened, "<head");
+    bytes.assign(html.begin(), html.end());
+    return resourceSizeAllowed(bytes.size());
+}
 
-    if (head != std::string::npos) {
-        const auto end = hardened.find('>', head);
-        if (end == std::string::npos) return false;
-        hardened.insert(end + 1, meta);
-    } else {
-        const auto htmlTag = findASCIIInsensitive(hardened, "<html");
-        if (htmlTag != std::string::npos) {
-            const auto end = hardened.find('>', htmlTag);
-            if (end == std::string::npos) return false;
-            hardened.insert(end + 1, "<head>" + meta + "</head>");
-        } else {
-            hardened.insert(0, "<head>" + meta + "</head>");
-        }
-    }
+inline bool applyPluginHTMLHardening(std::vector<unsigned char>& bytes)
+{
+    if (!resourceSizeAllowed(bytes.size())) return false;
 
-    bytes.assign(hardened.begin(), hardened.end());
+    std::string html(bytes.begin(), bytes.end());
+    const std::string headContent =
+        "<meta http-equiv=\"Content-Security-Policy\" content=\""
+        + std::string(pluginContentSecurityPolicy)
+        + "\">"
+        + bridgeBootstrapScript();
+
+    if (!resourceSizeAllowed(html.size() + headContent.size() + 13u)
+        || !injectIntoHTMLHead(html, headContent))
+        return false;
+
+    bytes.assign(html.begin(), html.end());
     return resourceSizeAllowed(bytes.size());
 }
 
