@@ -3,6 +3,7 @@
 
 #include "webview-gui/helpers.h"
 #include "webview-gui/_impl/plugin_support.h"
+#include "webview-gui/_impl/bounded_buffer.h"
 
 #include <atomic>
 #include <filesystem>
@@ -198,6 +199,21 @@ TEST_CASE("Plugin payload limits reject unbounded messages and resources")
     const auto maxEncodedMessage = ((detail::maxMessageBytes + 2) / 3) * 4;
     CHECK(detail::base64MessageSizeAllowed(maxEncodedMessage));
     CHECK_FALSE(detail::base64MessageSizeAllowed(maxEncodedMessage + 4));
+}
+
+TEST_CASE("Bounded resource appends never grow beyond the configured limit")
+{
+    std::vector<unsigned char> bytes{1, 2, 3};
+    const unsigned char tail[] = {4, 5};
+
+    CHECK(detail::appendBoundedBytes(bytes, tail, sizeof(tail), 5));
+    CHECK(bytes == std::vector<unsigned char>({1, 2, 3, 4, 5}));
+
+    const unsigned char overflow[] = {6};
+    CHECK_FALSE(detail::appendBoundedBytes(bytes, overflow, sizeof(overflow), 5));
+    CHECK(bytes == std::vector<unsigned char>({1, 2, 3, 4, 5}));
+
+    CHECK_FALSE(detail::appendBoundedBytes(bytes, nullptr, 1, 5));
 }
 
 TEST_CASE("HTML resources receive a restrictive plugin CSP before page scripts")
