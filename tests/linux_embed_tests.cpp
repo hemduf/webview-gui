@@ -143,7 +143,11 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
         CHECK(gtk_widget_get_parent(adapter.plugWidget()) == host.socket);
 
         REQUIRE(adapter.resize(640, 360));
-        pumpEvents(4);
+        REQUIRE(pumpUntil([&] {
+            GtkAllocation allocation{};
+            gtk_widget_get_allocation(child, &allocation);
+            return allocation.width == 640 && allocation.height == 360;
+        }, std::chrono::seconds(2)));
 
         GtkAllocation allocation{};
         gtk_widget_get_allocation(child, &allocation);
