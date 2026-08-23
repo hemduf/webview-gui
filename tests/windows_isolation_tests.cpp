@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -97,6 +98,36 @@ struct Module {
     }
 };
 
+struct FakeWebMessageArgs {
+    std::wstring source;
+    std::wstring message = L"[\"setParameter\",42]";
+    int sourceReads = 0;
+    int messageReads = 0;
+
+    static HRESULT copyCOMString(const std::wstring& value, LPWSTR* output)
+    {
+        if (!output) return E_POINTER;
+        const auto bytes = (value.size() + 1) * sizeof(wchar_t);
+        auto* copy = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
+        if (!copy) return E_OUTOFMEMORY;
+        std::memcpy(copy, value.c_str(), bytes);
+        *output = copy;
+        return S_OK;
+    }
+
+    HRESULT get_Source(LPWSTR* output)
+    {
+        ++sourceReads;
+        return copyCOMString(source, output);
+    }
+
+    HRESULT TryGetWebMessageAsString(LPWSTR* output)
+    {
+        ++messageReads;
+        return copyCOMString(message, output);
+    }
+};
+
 bool windowClassIsRegistered(std::uintptr_t module, const std::wstring& className)
 {
     if (module == 0 || className.empty()) return false;
@@ -129,6 +160,58 @@ TEST_CASE("public support negotiation exposes only Win32 embedding")
     CHECK_FALSE(WebviewGui::supports(WebviewGui::COCOA));
     CHECK_FALSE(WebviewGui::supports(WebviewGui::X11EMBED));
     CHECK_FALSE(WebviewGui::supports(WebviewGui::NONE));
+}
+
+TEST_CASE("WebView2 bridge reads and dispatches only the exact privileged origin")
+{
+    const std::array<const wchar_t*, 3> trusted = {
+        L"https://choc.localhost",
+        L"https://choc.localhost/",
+        L"https://choc.localhost/index.html?x=1#fragment",
+    };
+
+    for (const auto* source : trusted) {
+        FakeWebMessageArgs args{source};
+        int dispatches = 0;
+        std::wstring received;
+        const auto hr = webview_gui::detail::dispatchTrustedWindowsWebMessage(
+            &args,
+            [&](LPCWSTR message) {
+                ++dispatches;
+                received = message ? message : L"";
+            });
+
+        CHECK(hr == S_OK);
+        CHECK(args.sourceReads == 1);
+        CHECK(args.messageReads == 1);
+        CHECK(dispatches == 1);
+        CHECK(received == args.message);
+    }
+
+    const std::array<const wchar_t*, 9> untrusted = {
+        L"https://example.com/",
+        L"http://choc.localhost/",
+        L"https://choc.localhost.evil/",
+        L"https://choc.localhost:443/",
+        L"file:///C:/plugin/index.html",
+        L"data:text/html,evil",
+        L"javascript:alert(1)",
+        L"about:blank",
+        L"https://example.com/redirected-from-local",
+    };
+
+    for (const auto* source : untrusted) {
+        FakeWebMessageArgs args{source};
+        int dispatches = 0;
+        const auto hr = webview_gui::detail::dispatchTrustedWindowsWebMessage(
+            &args,
+            [&](LPCWSTR) { ++dispatches; });
+
+        CHECK(hr == S_OK);
+        CHECK(args.sourceReads == 1);
+        CHECK(args.messageReads == 0);
+        CHECK(dispatches == 0);
+    }
 }
 
 TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host executable")
