@@ -82,7 +82,7 @@ TEST_CASE("HTML hardening injects a generic capability bootstrap without embeddi
     CHECK(hardened.find("sessionStorage") != std::string::npos);
     CHECK(hardened.find("__wg=") != std::string::npos);
     CHECK(hardened.find("_WebviewGui_receive64(token") != std::string::npos);
-    CHECK(hardened.find("_WebviewGui_send_')") != std::string::npos);
+    CHECK(hardened.find("window['_WebviewGui_send_'+token]") != std::string::npos);
 
     // The served resource is readable data. The per-instance capability must
     // never be serialized into it; it lives in the URL fragment/sessionStorage.
