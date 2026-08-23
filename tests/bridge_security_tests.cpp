@@ -4,6 +4,7 @@
 #include "webview-gui/_impl/plugin_support.h"
 #include "webview-gui/_impl/local_url.h"
 #include "webview-gui/_impl/origin_policy.h"
+#include "webview-gui/_impl/secure_random.h"
 
 #include <set>
 #include <string>
@@ -25,11 +26,11 @@ TEST_CASE("local plugin URLs are joined with exactly one path separator")
           == "choc://choc.choc/");
 }
 
-TEST_CASE("bridge capabilities are 256-bit lowercase hex and unique")
+TEST_CASE("bridge capabilities use the OS CSPRNG and are 256-bit lowercase hex")
 {
     std::set<std::string> tokens;
     for (int i = 0; i < 16; ++i) {
-        const auto token = detail::makeBridgeToken();
+        const auto token = detail::makeSecureBridgeToken();
         REQUIRE(detail::isBridgeToken(token));
         CHECK(token.size() == 64);
         tokens.insert(token);
