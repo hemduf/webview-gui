@@ -1,6 +1,7 @@
 #pragma once
 
 #include "choc/platform/choc_Platform.h"
+#include "../plugin_support.h"
 
 #if CHOC_APPLE
 
@@ -30,8 +31,6 @@
 
 namespace webview_gui::detail {
 
-// Internal-linkage anchor. Every translation unit gets an anchor, but dladdr()
-// resolves all of them to the same Mach-O image base for a given plug-in module.
 static void chocPluginModuleAnchor() {}
 
 inline const void* chocPluginModuleIdentity()
@@ -41,14 +40,20 @@ inline const void* chocPluginModuleIdentity()
     if (dladdr(anchor, &info) != 0 && info.dli_fbase != nullptr)
         return info.dli_fbase;
 
-    // Fallback still gives this translation unit a unique address. The normal
-    // macOS plug-in path should always resolve dli_fbase.
     return anchor;
 }
 
 inline bool isSystemWKWebViewClass(Class cls)
 {
     return cls != nullptr && cls == (Class) objc_getClass("WKWebView");
+}
+
+inline bool isCHOCWebViewDelegateClass(Class cls)
+{
+    if (!cls) return false;
+    const char* name = class_getName(cls);
+    return name != nullptr
+        && std::strncmp(name, "CHOCWebViewDelegate_", std::strlen("CHOCWebViewDelegate_")) == 0;
 }
 
 inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
@@ -64,12 +69,44 @@ inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
     return ::class_addMethod(cls, selector, implementation, types);
 }
 
+using NavigationDecisionHandler = void (^)(long);
+
+inline void installPluginNavigationPolicy(Class cls)
+{
+    if (!isCHOCWebViewDelegateClass(cls)) return;
+
+    const auto selector = sel_registerName("webView:decidePolicyForNavigationAction:decisionHandler:");
+    if (class_getInstanceMethod(cls, selector) != nullptr) return;
+
+    ::class_addMethod(
+        cls,
+        selector,
+        (IMP) (+[](id, SEL, id, id navigationAction, NavigationDecisionHandler decisionHandler)
+        {
+            if (!decisionHandler) return;
+
+            using namespace choc::objc;
+            const id request = navigationAction ? call<id>(navigationAction, "request") : nil;
+            const id url = request ? call<id>(request, "URL") : nil;
+            const id absoluteString = url ? call<id>(url, "absoluteString") : nil;
+            const auto absolute = absoluteString ? getString(absoluteString) : std::string{};
+
+            // WKNavigationActionPolicyCancel = 0, WKNavigationActionPolicyAllow = 1.
+            decisionHandler(isTrustedPluginURL(absolute) ? 1L : 0L);
+        }),
+        "v@:@@@?"
+    );
+}
+
 inline void registerCHOCWebViewClassForPlugin(Class cls)
 {
     // WKWebView is already registered by WebKit. Dynamic CHOC delegate classes
-    // are registered normally and disposed by CHOC.
-    if (!isSystemWKWebViewClass(cls))
+    // are registered normally, gain the strict local-navigation policy, and are
+    // disposed by CHOC when the module shuts down.
+    if (!isSystemWKWebViewClass(cls)) {
+        installPluginNavigationPolicy(cls);
         ::objc_registerClassPair(cls);
+    }
 }
 
 inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
@@ -100,11 +137,6 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
     if (baseClass == nullptr || newClassName == nullptr)
         return nullptr;
 
-    // CHOC's upstream helper uses a truncated timestamp. For a plug-in process,
-    // derive the name from the Mach-O image base plus a local monotonic counter.
-    // Even if this header is instantiated in multiple translation units, a name
-    // collision simply causes objc_allocateClassPair() to fail and the loop tries
-    // the next serial.
     static std::atomic<unsigned long long> counter{0};
     char className[256] = {};
     const auto moduleToken = reinterpret_cast<std::uintptr_t>(webview_gui::detail::chocPluginModuleIdentity());
@@ -123,6 +155,21 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
     return nullptr;
 }
 
+inline id getPluginSafeNSStringForWebviewGui(const char* value)
+{
+    // CHOC's general-purpose WebView sends Access-Control-Allow-Origin: *.
+    // In the plug-in profile, narrow that wildcard to the one trusted origin.
+    if (value != nullptr && std::strcmp(value, "*") == 0)
+        return getNSString("choc://choc.choc");
+
+    return getNSString(value);
+}
+
+inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
+{
+    return getPluginSafeNSStringForWebviewGui(value.c_str());
+}
+
 } // namespace choc::objc
 
 #define createDelegateClass createDelegateClassForWebviewGuiPlugin
@@ -130,9 +177,11 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
 #define objc_registerClassPair webview_gui::detail::registerCHOCWebViewClassForPlugin
 #define objc_setAssociatedObject webview_gui::detail::setCHOCWebViewAssociatedObjectForPlugin
 #define objc_getAssociatedObject webview_gui::detail::getCHOCWebViewAssociatedObjectForPlugin
+#define getNSString getPluginSafeNSStringForWebviewGui
 
 #include "choc/gui/choc_WebView.h"
 
+#undef getNSString
 #undef objc_getAssociatedObject
 #undef objc_setAssociatedObject
 #undef objc_registerClassPair
