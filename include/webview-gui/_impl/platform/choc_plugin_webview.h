@@ -94,7 +94,9 @@ inline void installPluginNavigationPolicy(Class cls)
             // WKNavigationActionPolicyCancel = 0, WKNavigationActionPolicyAllow = 1.
             decisionHandler(isTrustedPluginURL(absolute) ? 1L : 0L);
         }),
-        "v@:@@@?"
+        // Match CHOC's own encoding convention for Objective-C methods whose
+        // final argument is a completion block. The block is object ABI here.
+        "v@:@@@@"
     );
 }
 
