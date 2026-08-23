@@ -7,9 +7,11 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <cwchar>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <string>
@@ -110,6 +112,15 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
         *allClassNamesUnique = classNames.size() == count;
 
     return count == 0 || (!firstClass.empty() && owned && classNames.size() == count);
+}
+
+extern "C" __declspec(dllexport) std::uintptr_t webview_gui_test_first_windows_hwnd()
+{
+    const auto& views = retainedViews();
+    if (views.empty() || !views.front() || !views.front()->getViewHandle())
+        return 0;
+
+    return reinterpret_cast<std::uintptr_t>(views.front()->getViewHandle());
 }
 
 extern "C" __declspec(dllexport) void webview_gui_test_release_windows_webviews()
