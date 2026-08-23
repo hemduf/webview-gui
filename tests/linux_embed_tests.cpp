@@ -102,7 +102,7 @@ choc::ui::WebView::Options makeWebViewOptions()
 
 bool smokeFocusedKeyInput(GtkWidget* child)
 {
-    if (!child || !gtk_widget_get_realized(child))
+    if (!child || !gtk_widget_get_realized(child) || !gtk_widget_get_can_focus(child))
         return false;
 
     // A visibility change only schedules mapping. GTK explicitly requires a
@@ -131,15 +131,33 @@ bool smokeFocusedKeyInput(GtkWidget* child)
         return false;
     }
 
-    // Let GTK construct a complete native key event instead of hand-building a
-    // partial GdkEventKey. The latter leaves private/ABI fields poisoned under
-    // ASan and can trigger unrelated GLib/GStreamer teardown UB after WebKit has
-    // processed the malformed event.
-    const bool sent = gtk_test_widget_send_key(child, GDK_KEY_a, GdkModifierType(0));
+    auto* window = gtk_widget_get_window(child);
+    if (!window) {
+        g_signal_handler_disconnect(child, handler);
+        return false;
+    }
+
+    // gtk_test_widget_send_key() routes through the XTest/display focus path,
+    // which is intentionally absent when CI runs under a bare Xvfb without a
+    // window manager. Dispatch a complete GTK key event to the focused native
+    // WebKit widget instead. The separate is_focus check above still verifies
+    // the XEmbed editor can actually acquire keyboard focus.
+    auto* event = gdk_event_new(GDK_KEY_PRESS);
+    auto* key = reinterpret_cast<GdkEventKey*>(event);
+    key->window = GDK_WINDOW(g_object_ref(window));
+    key->send_event = TRUE;
+    key->time = GDK_CURRENT_TIME;
+    key->state = GdkModifierType(0);
+    key->keyval = GDK_KEY_a;
+    key->hardware_keycode = 0;
+    key->group = 0;
+    key->is_modifier = 0;
+    gtk_widget_event(child, event);
+    gdk_event_free(event);
     pumpEvents(2);
 
     g_signal_handler_disconnect(child, handler);
-    return sent && observed;
+    return observed;
 }
 
 } // namespace
