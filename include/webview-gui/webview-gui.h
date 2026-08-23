@@ -47,7 +47,9 @@ struct WebviewGui {
 		return SharedPtr{create(std::forward<Args>(args)...)};
 	}
 	
-	WEBVIEW_GUI_IMPL void attach(void *platformNative);
+	// Attach to the host-owned native parent. Returns false when the requested
+	// platform cannot actually be embedded or when the handle is invalid.
+	WEBVIEW_GUI_IMPL bool attach(void *platformNative);
 
 	// Assign this to receive messages
 	std::function<void(const unsigned char *, size_t)> receive;
