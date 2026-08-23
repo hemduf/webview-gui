@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth
 
       - name: Install Ninja on macOS
         if: runner.os == 'macOS'
@@ -52,7 +52,12 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Test
+      - name: Test on Linux under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 60
+
+      - name: Test on macOS/Windows
+        if: runner.os != 'Linux'
         run: ctest --test-dir build --output-on-failure --timeout 60
 
       - name: Verify parent BUILD_SHARED_LIBS cannot change plug-in-safe linkage
@@ -78,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth
 
       - name: Install Ninja on macOS
         if: runner.os == 'macOS'
@@ -93,12 +98,12 @@ jobs:
       - name: Build sanitizers
         run: cmake --build build-sanitize --parallel
 
-      - name: Test sanitizers on Linux
+      - name: Test sanitizers on Linux under Xvfb
         if: runner.os == 'Linux'
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build-sanitize --output-on-failure --timeout 60
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60
 
       - name: Test sanitizers on macOS
         if: runner.os == 'macOS'
