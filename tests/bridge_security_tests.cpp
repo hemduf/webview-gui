@@ -3,6 +3,7 @@
 
 #include "webview-gui/_impl/plugin_support.h"
 #include "webview-gui/_impl/local_url.h"
+#include "webview-gui/_impl/origin_policy.h"
 
 #include <set>
 #include <string>
@@ -73,7 +74,7 @@ TEST_CASE("bridge capability comparison rejects every mismatched token")
     CHECK_FALSE(detail::constantTimeTokenEquals(token, token.substr(1)));
 }
 
-TEST_CASE("trusted URL policy includes both native local origins")
+TEST_CASE("generic trusted URL policy recognizes all supported local origins")
 {
     CHECK(detail::isTrustedPluginURL("choc://choc.choc/index.html"));
     CHECK(detail::isTrustedPluginURL("https://choc.localhost/index.html"));
@@ -82,6 +83,19 @@ TEST_CASE("trusted URL policy includes both native local origins")
     CHECK_FALSE(detail::isTrustedPluginURL("https://choc.localhost.evil.example/"));
     CHECK_FALSE(detail::isTrustedPluginURL("https://example.com/"));
     CHECK_FALSE(detail::isTrustedPluginURL("file:///tmp/ui.html"));
+}
+
+TEST_CASE("native backend origin policies never accept another backend's local origin")
+{
+    CHECK(detail::isTrustedAppleLinuxPluginURL("choc://choc.choc/index.html"));
+    CHECK(detail::isTrustedAppleLinuxPluginURL("about:blank"));
+    CHECK_FALSE(detail::isTrustedAppleLinuxPluginURL("https://choc.localhost/index.html"));
+    CHECK_FALSE(detail::isTrustedAppleLinuxPluginURL("https://example.com/"));
+
+    CHECK(detail::isTrustedWindowsPluginURL("https://choc.localhost/index.html"));
+    CHECK(detail::isTrustedWindowsPluginURL("about:blank"));
+    CHECK_FALSE(detail::isTrustedWindowsPluginURL("choc://choc.choc/index.html"));
+    CHECK_FALSE(detail::isTrustedWindowsPluginURL("https://example.com/"));
 }
 
 TEST_CASE("HTML hardening injects a generic capability bootstrap without embedding the secret")
