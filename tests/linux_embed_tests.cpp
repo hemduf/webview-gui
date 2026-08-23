@@ -122,20 +122,15 @@ bool smokeFocusedKeyInput(GtkWidget* child)
         return false;
     }
 
-    auto* event = gdk_event_new(GDK_KEY_PRESS);
-    event->key.window = static_cast<GdkWindow*>(g_object_ref(gtk_widget_get_window(child)));
-    event->key.send_event = TRUE;
-    event->key.time = GDK_CURRENT_TIME;
-    event->key.state = 0;
-    event->key.keyval = GDK_KEY_a;
-    event->key.hardware_keycode = 38;
-    event->key.group = 0;
-    gtk_widget_event(child, event);
-    gdk_event_free(event);
+    // Let GTK construct a complete native key event instead of hand-building a
+    // partial GdkEventKey. The latter leaves private/ABI fields poisoned under
+    // ASan and can trigger unrelated GLib/GStreamer teardown UB after WebKit has
+    // processed the malformed event.
+    const bool sent = gtk_test_widget_send_key(child, GDK_KEY_a, GdkModifierType(0));
     pumpEvents(2);
 
     g_signal_handler_disconnect(child, handler);
-    return observed;
+    return sent && observed;
 }
 
 } // namespace
