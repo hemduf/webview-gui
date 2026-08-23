@@ -9,6 +9,7 @@
 #	include "./choc_plugin_webview.h"
 #	include "choc/memory/choc_Base64.h"
 
+#	include <cassert>
 #	include <filesystem>
 #	include <fstream>
 #	include <memory>
@@ -23,19 +24,25 @@ namespace webview_gui {
 
 struct WebviewGui::Impl {
 	~Impl() {
+		assert(!uiThread.isBound() || uiThread.isCurrentThread());
 		using namespace choc::objc;
 		if (webview) {
 			id subview = (id)webview->getViewHandle();
 			call<void>(subview, "removeFromSuperview");
 		}
 	}
+
+	[[nodiscard]] bool isOnGuiThread() const noexcept {
+		return uiThread.isCurrentThread();
+	}
 	
 	void init(const choc::ui::WebView::Options &options) {
+		uiThread.bindToCurrentThread();
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 	
 	void attach(void *nativeView) {
-		if (!webview || !nativeView) return;
+		if (!isOnGuiThread() || !webview || !nativeView) return;
 		using namespace choc::objc;
 		id parent = (id)nativeView;
 		id subview = (id)webview->getViewHandle();
@@ -43,7 +50,7 @@ struct WebviewGui::Impl {
 	}
 
 	void setSize(double width, double height) {
-		if (!webview) return;
+		if (!isOnGuiThread() || !webview) return;
 		using namespace choc::objc;
 		CGRect rect{{0, 0}, {CGFloat(width), CGFloat(height)}};
 		id subview = (id)webview->getViewHandle();
@@ -51,18 +58,28 @@ struct WebviewGui::Impl {
 	}
 
 	void setVisible(bool visible) {
-		if (!webview) return;
+		if (!isOnGuiThread() || !webview) return;
 		using namespace choc::objc;
 		id subview = (id)webview->getViewHandle();
 		call<void>(subview, "setHidden:", (BOOL) (!visible));
 	}
 
+	detail::ThreadAffinity uiThread;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
 #	else
 struct WebviewGui::Impl {
+	~Impl() {
+		assert(!uiThread.isBound() || uiThread.isCurrentThread());
+	}
+
+	[[nodiscard]] bool isOnGuiThread() const noexcept {
+		return uiThread.isCurrentThread();
+	}
+
 	void init(const choc::ui::WebView::Options &options) {
+		uiThread.bindToCurrentThread();
 		webview = std::make_unique<choc::ui::WebView>(options);
 	}
 
@@ -72,6 +89,7 @@ struct WebviewGui::Impl {
 	void setSize(double, double) {}
 	void setVisible(bool) {}
 
+	detail::ThreadAffinity uiThread;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -96,9 +114,11 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 #	endif
 	auto startUri = options.customSchemeURI + startPath;
 
-	options.fetchResource = [getter](const std::string &path) {
+	options.fetchResource = [getter, impl](const std::string &path) {
 		using ChocResource = choc::ui::WebView::Options::Resource;
 		std::optional<ChocResource> chocResource;
+		if (!impl->isOnGuiThread()) return chocResource;
+
 		Resource resource;
 		if (getter && getter(path.c_str(), resource)) {
 			chocResource.emplace();
@@ -111,6 +131,8 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	};
 
 	options.webviewIsReady = [startUri, impl](choc::ui::WebView &wv){
+		if (!impl->isOnGuiThread()) return;
+
 		wv.addInitScript(R"jsCode(
 			if (!Uint8Array.prototype.toBase64) {
 				Uint8Array.prototype.toBase64 = function() {
@@ -145,6 +167,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		)jsCode");
 
 		wv.bind("_WebviewGui_receive64", [impl](const choc::value::ValueView& args){
+			if (!impl->isOnGuiThread()) return choc::value::Value{false};
 			auto *gui = impl->main;
 			if (gui && gui->receive && args.isArray() && args.size() == 1) {
 				auto base64 = args[0].getString();
@@ -198,7 +221,10 @@ WebviewGui::WebviewGui(WebviewGui::Impl *impl) : impl(impl) {
 }
 
 WebviewGui::~WebviewGui() {
-	if (impl) impl->main = nullptr;
+	if (impl) {
+		assert(impl->isOnGuiThread());
+		impl->main = nullptr;
+	}
 	delete impl;
 }
 
@@ -212,21 +238,21 @@ bool WebviewGui::supports(WebviewGui::Platform p) {
 }
 
 void WebviewGui::attach(void *platformNative) {
-	if (impl) impl->attach(platformNative);
+	if (impl && impl->isOnGuiThread()) impl->attach(platformNative);
 }
 
 void WebviewGui::send(const unsigned char *bytes, size_t length) {
-	if (!impl || !impl->webview || (!bytes && length != 0)) return;
+	if (!impl || !impl->isOnGuiThread() || !impl->webview || (!bytes && length != 0)) return;
 	auto base64 = choc::base64::encodeToString(bytes, length);
 	impl->webview->evaluateJavascript("_WebviewGui_send64(\"" + base64 + "\");");
 }
 
 void WebviewGui::setSize(double width, double height) {
-	if (impl) impl->setSize(width, height);
+	if (impl && impl->isOnGuiThread()) impl->setSize(width, height);
 }
 
 void WebviewGui::setVisible(bool visible) {
-	if (impl) impl->setVisible(visible);
+	if (impl && impl->isOnGuiThread()) impl->setVisible(visible);
 }
 
 } // namespace
