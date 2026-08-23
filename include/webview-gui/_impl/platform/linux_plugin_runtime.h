@@ -15,6 +15,29 @@
 
 namespace webview_gui::detail {
 
+inline bool isValidX11Parent(std::uintptr_t parentXid)
+{
+    if (parentXid == 0)
+        return false;
+
+    auto* display = gdk_display_get_default();
+    if (!display || !GDK_IS_X11_DISPLAY(display))
+        return false;
+
+    auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
+    XWindowAttributes attributes{};
+
+    gdk_x11_display_error_trap_push(display);
+    const bool exists = XGetWindowAttributes(
+        xdisplay,
+        static_cast<Window>(parentXid),
+        &attributes) != 0;
+    XSync(xdisplay, False);
+    const auto xError = gdk_x11_display_error_trap_pop(display);
+
+    return exists && xError == 0;
+}
+
 class GtkXEmbedHost {
 public:
     GtkXEmbedHost() = default;
@@ -28,7 +51,7 @@ public:
 
     bool attach(GtkWidget* webview, std::uintptr_t parentXid)
     {
-        if (!webview || parentXid == 0 || plug != nullptr)
+        if (!webview || plug != nullptr || !isValidX11Parent(parentXid))
             return false;
 
         plug = gtk_plug_new(static_cast<Window>(parentXid));
@@ -84,7 +107,7 @@ public:
         // XEmbed negotiation starts when the GtkPlug owns a native GdkWindow.
         // Explicit realisation is needed in headless/hosted environments where
         // merely setting the widget visible does not synchronously realise the
-        // toplevel before the host checks gtk_socket_get_plug_window().
+        // toplevel before the host checks the native relationship.
         gtk_widget_realize(plug);
         if (!gtk_widget_get_realized(plug)) {
             detach();
@@ -127,7 +150,18 @@ public:
             return false;
 
         gtk_widget_set_size_request(child, width, height);
-        gtk_window_resize(GTK_WINDOW(plug), width, height);
+        gtk_widget_set_size_request(plug, width, height);
+
+        // A same-process GtkSocket turns GtkPlug into a normal child widget,
+        // so gtk_window_resize() is no longer meaningful. Let GTK propagate the
+        // requested size through the socket. Foreign XEmbed parents keep the
+        // plug as a toplevel backed by a child X window and can be resized
+        // directly.
+        if (gtk_widget_is_toplevel(plug))
+            gtk_window_resize(GTK_WINDOW(plug), width, height);
+        else
+            gtk_widget_queue_resize(plug);
+
         return true;
     }
 
