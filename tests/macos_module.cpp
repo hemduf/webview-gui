@@ -1,4 +1,4 @@
-#include "choc/gui/choc_WebView.h"
+#include "webview-gui/_impl/platform/choc_plugin_webview.h"
 
 #if !defined(__APPLE__)
 #error macOS-only test module
@@ -6,12 +6,32 @@
 
 #include <objc/runtime.h>
 #include <cstring>
+#include <cstddef>
 
-extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_create_webview_class_name()
+namespace {
+
+void copyClassName(id object, char* output, std::size_t capacity)
 {
-    static char className[256] = {};
-    className[0] = '\0';
+    if (!output || capacity == 0) return;
+    output[0] = '\0';
+    if (!object) return;
 
+    auto cls = object_getClass(object);
+    const char* name = cls ? class_getName(cls) : nullptr;
+    if (!name) return;
+
+    std::strncpy(output, name, capacity - 1);
+    output[capacity - 1] = '\0';
+}
+
+} // namespace
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
+    char* webviewClass,
+    std::size_t webviewCapacity,
+    char* delegateClass,
+    std::size_t delegateCapacity)
+{
     choc::ui::WebView::Options options;
     options.acceptsFirstMouseClick = false;
     options.enableDefaultClipboardKeyShortcutsInSafari = false;
@@ -19,17 +39,13 @@ extern "C" __attribute__((visibility("default"))) const char* webview_gui_test_c
 
     choc::ui::WebView view{options};
     if (!view.loadedOK() || !view.getViewHandle())
-        return className;
+        return false;
 
-    auto object = reinterpret_cast<id>(view.getViewHandle());
-    auto cls = object_getClass(object);
-    if (cls) {
-        const char* name = class_getName(cls);
-        if (name) {
-            std::strncpy(className, name, sizeof(className) - 1);
-            className[sizeof(className) - 1] = '\0';
-        }
-    }
+    auto webview = reinterpret_cast<id>(view.getViewHandle());
+    auto delegate = choc::objc::call<id>(webview, "navigationDelegate");
 
-    return className;
+    copyClassName(webview, webviewClass, webviewCapacity);
+    copyClassName(delegate, delegateClass, delegateCapacity);
+    return webviewClass && webviewClass[0] != '\0'
+        && delegateClass && delegateClass[0] != '\0';
 }
