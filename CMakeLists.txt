@@ -23,11 +23,14 @@ set_target_properties(webview-gui PROPERTIES
 )
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    target_link_libraries(webview-gui PRIVATE "-framework WebKit")
+    target_link_libraries(webview-gui PRIVATE
+        "-framework WebKit"
+        "-framework Security"
+    )
 endif()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-    target_link_libraries(webview-gui PRIVATE ole32 user32 shell32)
+    target_link_libraries(webview-gui PRIVATE ole32 user32 shell32 bcrypt)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
