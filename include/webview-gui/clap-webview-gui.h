@@ -3,6 +3,7 @@
 #include "clap/clap.h"
 #include "webview-gui.h"
 #include "_impl/plugin_support.h"
+#include "_impl/bounded_buffer.h"
 
 #include <algorithm>
 #include <cassert>
@@ -129,28 +130,40 @@ struct ClapWebviewGui {
 				char mediaType[256] = {0};
 				struct ResourceStream : public clap_ostream {
 					WebviewGui::Resource &resource;
+					bool overflowed = false;
 					
 					ResourceStream(WebviewGui::Resource &resource) : resource(resource) {
 						*(clap_ostream *)this = {/*ctx*/this, write};
 					}
 					static int64_t write(const clap_ostream *stream, const void *buffer, uint64_t length) {
 						if (!stream || !stream->ctx || (!buffer && length != 0)) return -1;
-						auto *byteBuffer = (const unsigned char *)buffer;
 						auto &self = *(ResourceStream *)stream->ctx;
-						self.resource.bytes.insert(self.resource.bytes.end(), byteBuffer, byteBuffer + length);
-						return int64_t(length);
+						if (length > detail::maxResourceBytes
+							|| !detail::appendBoundedBytes(self.resource.bytes,
+													 buffer,
+													 static_cast<size_t>(length),
+													 detail::maxResourceBytes)) {
+							self.overflowed = true;
+							return -1;
+						}
+						return static_cast<int64_t>(length);
 					};
 				} resourceStream{resource};
-				bool success = pluginWebview->get_resource(plugin, path, mediaType, 255, &resourceStream);
-				if (success) resource.mediaType = mediaType;
-				return success;
+				const bool success = pluginWebview->get_resource(plugin, path, mediaType, 255, &resourceStream);
+				if (!success || resourceStream.overflowed || !detail::resourceSizeAllowed(resource.bytes.size())) {
+					resource.bytes.clear();
+					return false;
+				}
+				resource.mediaType = mediaType;
+				return true;
 			});
 		}
 		if (!ptr) return false;
 
 		nativeWebview = std::unique_ptr<WebviewGui>{ptr};
 		nativeWebview->receive = [this](const unsigned char *bytes, size_t length){
-			if (isOnGuiThread() && pluginWebview && pluginWebview->receive && plugin)
+			if (isOnGuiThread() && detail::messageSizeAllowed(length)
+				&& pluginWebview && pluginWebview->receive && plugin)
 				pluginWebview->receive(plugin, (const void *)bytes, uint32_t(length));
 		};
 		return true;
@@ -230,7 +243,7 @@ struct ClapWebviewGui {
 	}
 
 	bool send(const void *buffer, size_t length) {
-		if (!isOnGuiThread() || (!buffer && length != 0)) return false;
+		if (!isOnGuiThread() || (!buffer && length != 0) || !detail::messageSizeAllowed(length)) return false;
 		if (nativeWebview) {
 			nativeWebview->send((const unsigned char *)buffer, length);
 			return true;
