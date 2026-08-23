@@ -148,6 +148,12 @@ if(WIN32)
 endif()
 
 if(UNIX AND NOT APPLE)
+    # Imported PkgConfig targets created in the nested production directory are
+    # not visible in this parent test scope, so declare test-local imported targets.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(test_gtk3 REQUIRED gtk+-3.0 IMPORTED_TARGET)
+    pkg_check_modules(test_webkit2 REQUIRED webkit2gtk-4.1 IMPORTED_TARGET)
+
     add_executable(webview_gui_linux_embed_tests linux_embed_tests.cpp)
     target_include_directories(webview_gui_linux_embed_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../include
@@ -156,8 +162,8 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(webview_gui_linux_embed_tests PRIVATE
         doctest::doctest
         Threads::Threads
-        PkgConfig::gtk3
-        PkgConfig::webkit2
+        PkgConfig::test_gtk3
+        PkgConfig::test_webkit2
     )
     add_test(NAME webview_gui_linux_embed_tests COMMAND webview_gui_linux_embed_tests)
 endif()
