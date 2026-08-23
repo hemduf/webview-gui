@@ -12,6 +12,7 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 
 #include <atomic>
 #include <cstdint>
@@ -60,6 +61,23 @@ inline bool isTrustedWindowsBridgeSource(LPCWSTR source) noexcept
     return next == L'\0' || next == L'/' || next == L'?' || next == L'#';
 }
 
+inline bool hasWindowsWebScheme(LPCWSTR uri) noexcept
+{
+    if (!uri)
+        return false;
+
+    constexpr wchar_t http[] = L"http://";
+    constexpr wchar_t https[] = L"https://";
+    return CompareStringOrdinal(uri, 7, http, 7, TRUE) == CSTR_EQUAL
+        || CompareStringOrdinal(uri, 8, https, 8, TRUE) == CSTR_EQUAL;
+}
+
+inline void openWindowsExternalURL(LPCWSTR uri) noexcept
+{
+    if (hasWindowsWebScheme(uri))
+        ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 // WebView2 reports the source document separately from the web message. Read
 // and validate that source before touching the message payload so a remote,
 // redirected, file:, data:, javascript:, or about:blank document cannot reach
@@ -94,6 +112,47 @@ HRESULT dispatchTrustedWindowsWebMessage(EventArgs* args, Dispatch&& dispatch)
     std::forward<Dispatch>(dispatch)(message);
     CoTaskMemFree(message);
     return S_OK;
+}
+
+// Keep the privileged WebView on its exact local origin. Every other top-level
+// navigation is cancelled before commit. A direct user navigation to http(s)
+// may be routed to the system browser, but redirects, script-driven navigation,
+// and non-web schemes are only cancelled.
+template <typename EventArgs, typename OpenExternal>
+HRESULT handleWindowsPluginNavigation(EventArgs* args, OpenExternal&& openExternal)
+{
+    if (!args)
+        return E_POINTER;
+
+    LPWSTR uri = nullptr;
+    const auto uriResult = args->get_Uri(&uri);
+    if (FAILED(uriResult) || !uri) {
+        if (uri)
+            CoTaskMemFree(uri);
+        args->put_Cancel(TRUE);
+        return S_OK;
+    }
+
+    if (isTrustedWindowsBridgeSource(uri)) {
+        CoTaskMemFree(uri);
+        return S_OK;
+    }
+
+    BOOL userInitiated = FALSE;
+    BOOL redirected = TRUE;
+    const bool mayOpenExternally =
+        SUCCEEDED(args->get_IsUserInitiated(&userInitiated))
+        && SUCCEEDED(args->get_IsRedirected(&redirected))
+        && userInitiated != FALSE
+        && redirected == FALSE
+        && hasWindowsWebScheme(uri);
+
+    const auto cancelResult = args->put_Cancel(TRUE);
+    if (SUCCEEDED(cancelResult) && mayOpenExternally)
+        std::forward<OpenExternal>(openExternal)(uri);
+
+    CoTaskMemFree(uri);
+    return SUCCEEDED(cancelResult) ? S_OK : cancelResult;
 }
 
 // CHOC's WebView currently calls CoInitialize(nullptr) internally without a
