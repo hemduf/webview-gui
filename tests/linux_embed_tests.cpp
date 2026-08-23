@@ -105,6 +105,15 @@ bool smokeFocusedKeyInput(GtkWidget* child)
     if (!child || !gtk_widget_get_realized(child))
         return false;
 
+    // A visibility change only schedules mapping. GTK explicitly requires a
+    // widget to be both realised and mapped before grab_focus() can succeed.
+    // Wait for the host/XEmbed round-trip instead of racing it on bare Xvfb.
+    if (!pumpUntil([&] { return gtk_widget_get_mapped(child); },
+                   std::chrono::seconds(2)))
+        return false;
+
+    gtk_test_widget_wait_for_draw(child);
+
     bool observed = false;
     const auto handler = g_signal_connect(
         child,
