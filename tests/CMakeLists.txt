@@ -30,6 +30,29 @@ FetchContent_MakeAvailable(clap)
 # compile/link regressions in the actual backend rather than a mocked copy.
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-under-test EXCLUDE_FROM_ALL)
 
+# Plug-in-safe integration contract: the parent project's BUILD_SHARED_LIBS must
+# never turn this helper into a shared runtime, and the static archive must be
+# suitable for linking into a hidden-symbol plug-in module.
+get_target_property(WEBVIEW_GUI_LIBRARY_TYPE webview-gui TYPE)
+if(NOT WEBVIEW_GUI_LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
+    message(FATAL_ERROR "webview-gui must remain STATIC, got ${WEBVIEW_GUI_LIBRARY_TYPE}")
+endif()
+
+get_target_property(WEBVIEW_GUI_PIC webview-gui POSITION_INDEPENDENT_CODE)
+if(NOT WEBVIEW_GUI_PIC)
+    message(FATAL_ERROR "webview-gui must be built with POSITION_INDEPENDENT_CODE")
+endif()
+
+get_target_property(WEBVIEW_GUI_VISIBILITY webview-gui CXX_VISIBILITY_PRESET)
+if(NOT WEBVIEW_GUI_VISIBILITY STREQUAL "hidden")
+    message(FATAL_ERROR "webview-gui must use hidden C++ symbol visibility")
+endif()
+
+get_target_property(WEBVIEW_GUI_INLINE_VISIBILITY webview-gui VISIBILITY_INLINES_HIDDEN)
+if(NOT WEBVIEW_GUI_INLINE_VISIBILITY)
+    message(FATAL_ERROR "webview-gui must hide inline symbols")
+endif()
+
 add_executable(webview_gui_core_tests core_tests.cpp)
 target_include_directories(webview_gui_core_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
 target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest Threads::Threads)
