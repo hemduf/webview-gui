@@ -15,13 +15,18 @@
 // CHOC to use the system WKWebView class instead. Delegate classes remain dynamic,
 // but CHOC disposes those during module teardown after all WebViews are destroyed.
 
-#include "choc/platform/choc_ObjectiveCHelpers.h"
-
+// choc_ObjectiveCHelpers.h is normally included from choc_WebView.h after its
+// standard-library prerequisites. We intentionally include it early so we can
+// wrap a few runtime calls, therefore provide those prerequisites here.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <dlfcn.h>
+
+#include "choc/platform/choc_ObjectiveCHelpers.h"
 
 namespace webview_gui::detail {
 
