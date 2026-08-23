@@ -54,7 +54,7 @@ struct WebviewGui::Impl {
 		if (!webview) return;
 		using namespace choc::objc;
 		id subview = (id)webview->getViewHandle();
-		call<void>(subview, "setHidden:", getNSNumberBool(!visible));
+		call<void>(subview, "setHidden:", (BOOL) (!visible));
 	}
 
 	WebviewGui *main = nullptr;
