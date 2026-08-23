@@ -14,6 +14,8 @@
 namespace {
 
 using CreateRuntimeClassNamesFn = bool (*)(char*, std::size_t, char*, std::size_t);
+using RetainWebViewsFn = bool (*)(std::size_t, char*, std::size_t);
+using ReleaseWebViewsFn = void (*)();
 
 struct RuntimeNames {
     std::string webview;
@@ -23,13 +25,20 @@ struct RuntimeNames {
 struct Module {
     void* handle = nullptr;
     CreateRuntimeClassNamesFn createRuntimeClassNames = nullptr;
+    RetainWebViewsFn retainWebViews = nullptr;
+    ReleaseWebViewsFn releaseWebViews = nullptr;
 
     explicit Module(const char* path)
     {
         handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-        if (handle)
+        if (handle) {
             createRuntimeClassNames = reinterpret_cast<CreateRuntimeClassNamesFn>(
                 dlsym(handle, "webview_gui_test_create_runtime_class_names"));
+            retainWebViews = reinterpret_cast<RetainWebViewsFn>(
+                dlsym(handle, "webview_gui_test_retain_webviews"));
+            releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
+                dlsym(handle, "webview_gui_test_release_webviews"));
+        }
     }
 
     Module(const Module&) = delete;
@@ -48,12 +57,28 @@ struct Module {
         return {webview.data(), delegate.data()};
     }
 
+    std::string retain(std::size_t count) const
+    {
+        std::array<char, 256> delegate{};
+        if (!retainWebViews || !retainWebViews(count, delegate.data(), delegate.size()))
+            return {};
+        return delegate.data();
+    }
+
+    void release() const
+    {
+        if (releaseWebViews)
+            releaseWebViews();
+    }
+
     void close()
     {
         if (handle) {
             dlclose(handle);
             handle = nullptr;
             createRuntimeClassNames = nullptr;
+            retainWebViews = nullptr;
+            releaseWebViews = nullptr;
         }
     }
 };
@@ -107,9 +132,6 @@ TEST_CASE("unloading one CHOC module disposes its generated delegate class")
     REQUIRE(isCHOCDelegateClass(a.delegate));
     REQUIRE(isCHOCDelegateClass(b.delegate));
 
-    // Apple's WKWebView is process-owned and remains valid. The CHOC delegate
-    // class contains IMPs emitted into module A, so it must be removed before
-    // that module can be considered unload-safe.
     CHECK(objc_getClass("WKWebView") != nullptr);
     CHECK(objc_getClass(a.delegate.c_str()) != nullptr);
 
@@ -118,10 +140,58 @@ TEST_CASE("unloading one CHOC module disposes its generated delegate class")
     CHECK(objc_getClass("WKWebView") != nullptr);
     CHECK(objc_getClass(a.delegate.c_str()) == nullptr);
 
-    // Module B remains loaded and must still create a WebView using its own
-    // delegate class after A has been unloaded.
     const auto bAfter = moduleB.createNames();
     CHECK(bAfter.webview == b.webview);
     CHECK(bAfter.delegate == b.delegate);
     CHECK(objc_getClass(b.delegate.c_str()) != nullptr);
+}
+
+TEST_CASE("32 live WebViews remain isolated while one module unloads and reloads")
+{
+    constexpr std::size_t viewsPerModule = 16;
+    constexpr int cycles = 5;
+
+    for (int cycle = 0; cycle < cycles; ++cycle) {
+        CAPTURE(cycle);
+
+        std::string delegateA;
+        std::string delegateB;
+
+        {
+            Module moduleA{MODULE_A_PATH};
+            Module moduleB{MODULE_B_PATH};
+
+            REQUIRE(moduleA.handle != nullptr);
+            REQUIRE(moduleB.handle != nullptr);
+            REQUIRE(moduleA.retainWebViews != nullptr);
+            REQUIRE(moduleA.releaseWebViews != nullptr);
+            REQUIRE(moduleB.retainWebViews != nullptr);
+            REQUIRE(moduleB.releaseWebViews != nullptr);
+
+            delegateA = moduleA.retain(viewsPerModule);
+            delegateB = moduleB.retain(viewsPerModule);
+
+            REQUIRE(isCHOCDelegateClass(delegateA));
+            REQUIRE(isCHOCDelegateClass(delegateB));
+            CHECK(delegateA != delegateB);
+            CHECK(objc_getClass(delegateA.c_str()) != nullptr);
+            CHECK(objc_getClass(delegateB.c_str()) != nullptr);
+
+            moduleA.release();
+            moduleA.close();
+            CHECK(objc_getClass(delegateA.c_str()) == nullptr);
+
+            // B remains alive with 16 retained WKWebViews and must still be usable.
+            const auto bAfter = moduleB.createNames();
+            CHECK(bAfter.webview == "WKWebView");
+            CHECK(bAfter.delegate == delegateB);
+            CHECK(objc_getClass(delegateB.c_str()) != nullptr);
+
+            moduleB.release();
+            moduleB.close();
+        }
+
+        CHECK(objc_getClass(delegateA.c_str()) == nullptr);
+        CHECK(objc_getClass(delegateB.c_str()) == nullptr);
+    }
 }
