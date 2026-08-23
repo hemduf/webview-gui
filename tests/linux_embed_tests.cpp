@@ -27,14 +27,40 @@ void pumpEvents(int iterations = 32)
     }
 }
 
+template <typename Predicate>
+bool pumpUntil(Predicate&& predicate, std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+        while (g_main_context_pending(nullptr))
+            g_main_context_iteration(nullptr, FALSE);
+        if (predicate())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    return predicate();
+}
+
 struct HostSocket {
     GtkWidget* window = nullptr;
     GtkWidget* socket = nullptr;
+    gulong plugRemovedHandler = 0;
 
     HostSocket()
     {
         window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
         socket = gtk_socket_new();
+        plugRemovedHandler = g_signal_connect(
+            socket,
+            "plug-removed",
+            G_CALLBACK(+[](GtkSocket*, gpointer) -> gboolean {
+                // GtkSocket's default handler destroys the socket when its plug
+                // disappears. A plugin host keeps its native parent alive so a
+                // plugin editor may be destroyed/recreated independently.
+                return TRUE;
+            }),
+            nullptr);
         gtk_container_add(GTK_CONTAINER(window), socket);
         gtk_widget_show_all(window);
         gtk_widget_realize(socket);
@@ -43,6 +69,9 @@ struct HostSocket {
 
     ~HostSocket()
     {
+        if (socket && plugRemovedHandler != 0
+            && g_signal_handler_is_connected(socket, plugRemovedHandler))
+            g_signal_handler_disconnect(socket, plugRemovedHandler);
         if (window)
             gtk_widget_destroy(window);
         pumpEvents(4);
@@ -89,9 +118,13 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
     {
         webview_gui::detail::GtkXEmbedHost adapter;
         REQUIRE(adapter.attach(child, host.xid()));
-        pumpEvents();
 
         REQUIRE(adapter.plugWidget() != nullptr);
+        REQUIRE(pumpUntil([&] {
+            return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()))
+                && gtk_socket_get_plug_window(GTK_SOCKET(host.socket)) != nullptr;
+        }, std::chrono::seconds(2)));
+
         CHECK(gtk_widget_get_parent(child) == adapter.plugWidget());
         CHECK(gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget())));
         CHECK(gtk_socket_get_plug_window(GTK_SOCKET(host.socket)) != nullptr);
@@ -115,6 +148,7 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
     // Destroying the plug-in-side GtkPlug must not destroy the host parent.
     CHECK(gtk_widget_get_window(host.window) != nullptr);
     CHECK(gtk_widget_get_realized(host.window));
+    CHECK(GTK_IS_SOCKET(host.socket));
 }
 
 TEST_CASE("XEmbed adapter rejects invalid parents and duplicate attachment")
@@ -146,7 +180,9 @@ TEST_CASE("native WebKitGTK policy blocks remote top-level navigation")
 
     webview_gui::detail::GtkXEmbedHost adapter;
     REQUIRE(adapter.attach(child, host.xid()));
-    pumpEvents(64);
+    REQUIRE(pumpUntil([&] {
+        return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()));
+    }, std::chrono::seconds(2)));
 
     webkit_web_view_load_uri(WEBKIT_WEB_VIEW(child), "https://example.com/should-not-load");
     pumpEvents(96);
