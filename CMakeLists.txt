@@ -157,7 +157,13 @@ public:
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
-    file(MAKE_DIRECTORY ${WEBVIEW_GUI_PATCHED_CHOC_DIR}/choc/gui)
+    # The patched WebView header keeps CHOC's relative includes (for example
+    # ../platform/choc_Platform.h). Mirror the pinned CHOC include tree before
+    # overwriting that one header so the generated private profile has the same
+    # layout on every compiler, including MinGW.
+    file(REMOVE_RECURSE ${WEBVIEW_GUI_PATCHED_CHOC_DIR}/choc)
+    file(COPY ${WEBVIEW_GUI_CHOC_SOURCE_DIR}/choc
+        DESTINATION ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
     file(WRITE ${WEBVIEW_GUI_CHOC_WEBVIEW_PATCHED}
         "#define WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD 1\n${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
