@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <utility>
 
 namespace webview_gui::detail {
 
@@ -38,6 +39,61 @@ inline DWORD nextWindowsClassToken() noexcept
 {
     static std::atomic<DWORD> counter{1};
     return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline bool isTrustedWindowsBridgeSource(LPCWSTR source) noexcept
+{
+    if (!source)
+        return false;
+
+    constexpr wchar_t trustedOrigin[] = L"https://choc.localhost";
+    constexpr int trustedLength = static_cast<int>((sizeof(trustedOrigin) / sizeof(wchar_t)) - 1);
+
+    if (CompareStringOrdinal(source,
+                             trustedLength,
+                             trustedOrigin,
+                             trustedLength,
+                             TRUE) != CSTR_EQUAL)
+        return false;
+
+    const wchar_t next = source[trustedLength];
+    return next == L'\0' || next == L'/' || next == L'?' || next == L'#';
+}
+
+// WebView2 reports the source document separately from the web message. Read
+// and validate that source before touching the message payload so a remote,
+// redirected, file:, data:, javascript:, or about:blank document cannot reach
+// CHOC's native invokeBinding path. EventArgs is templated to keep this small
+// policy independently testable with a fake COM-style object.
+template <typename EventArgs, typename Dispatch>
+HRESULT dispatchTrustedWindowsWebMessage(EventArgs* args, Dispatch&& dispatch)
+{
+    if (!args)
+        return E_POINTER;
+
+    LPWSTR source = nullptr;
+    const auto sourceResult = args->get_Source(&source);
+    const bool trusted = SUCCEEDED(sourceResult) && isTrustedWindowsBridgeSource(source);
+    if (source)
+        CoTaskMemFree(source);
+
+    // Fail closed but report the event as handled. Returning a COM failure from
+    // an untrusted page can trigger WebView2 host error paths even though the
+    // correct security action is simply to drop the bridge message.
+    if (!trusted)
+        return S_OK;
+
+    LPWSTR message = nullptr;
+    const auto messageResult = args->TryGetWebMessageAsString(&message);
+    if (FAILED(messageResult) || !message) {
+        if (message)
+            CoTaskMemFree(message);
+        return S_OK;
+    }
+
+    std::forward<Dispatch>(dispatch)(message);
+    CoTaskMemFree(message);
+    return S_OK;
 }
 
 // CHOC's WebView currently calls CoInitialize(nullptr) internally without a
