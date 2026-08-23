@@ -167,9 +167,6 @@ inline bool resolveContainedPath(const std::filesystem::path& root,
     const auto normalRoot = root.lexically_normal();
     auto relativeRequest = requested;
 
-    // Resource paths are URI paths, so a leading '/' means "from the resource
-    // root", not an OS filesystem root. A Windows drive/UNC root, however,
-    // must never be accepted and rebased into the resource directory.
     if (relativeRequest.has_root_name())
         return false;
     if (relativeRequest.has_root_directory())
@@ -239,6 +236,17 @@ inline bool isTrustedPluginURL(std::string_view url) noexcept
     if (url.size() == origin.size()) return true;
     const char next = url[origin.size()];
     return next == '/' || next == '?' || next == '#';
+}
+
+inline bool isSafePluginStartPath(std::string_view path) noexcept
+{
+    if (path.size() >= 2 && path[0] == '/' && path[1] == '/')
+        return false;
+
+    const auto colon = path.find(':');
+    const auto delimiter = path.find_first_of("/?#");
+    return colon == std::string_view::npos
+        || (delimiter != std::string_view::npos && colon > delimiter);
 }
 
 inline std::size_t findASCIIInsensitive(std::string_view haystack, std::string_view needle)
