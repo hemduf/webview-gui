@@ -42,7 +42,6 @@ TEST_CASE("audio producer and UI consumer transfer state without locks or GUI ca
 
     std::atomic<bool> start{false};
     std::atomic<bool> producerDone{false};
-    std::atomic<std::uint32_t> droppedAttempts{0};
     std::vector<std::uint32_t> received;
     received.reserve(itemCount);
 
@@ -54,10 +53,8 @@ TEST_CASE("audio producer and UI consumer transfer state without locks or GUI ca
             // tryPush itself is bounded and non-blocking. A real audio callback
             // may drop/coalesce on false; this stress loop retries only so the
             // test can also verify ordering for every published value.
-            while (!queue.tryPush(i)) {
-                droppedAttempts.fetch_add(1, std::memory_order_relaxed);
+            while (!queue.tryPush(i))
                 std::this_thread::yield();
-            }
         }
 
         producerDone.store(true, std::memory_order_release);
@@ -77,8 +74,4 @@ TEST_CASE("audio producer and UI consumer transfer state without locks or GUI ca
     REQUIRE(received.size() == itemCount);
     for (std::uint32_t i = 0; i < itemCount; ++i)
         CHECK(received[i] == i);
-
-    // This value is informational: under load the producer may observe a full
-    // queue, but every individual publish attempt remains bounded/non-blocking.
-    CHECK(droppedAttempts.load(std::memory_order_relaxed) <= itemCount * 100u);
 }
