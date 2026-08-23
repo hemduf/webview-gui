@@ -19,6 +19,23 @@ const void* CLAP_ABI noHostExtension(const clap_host_t*, const char*)
     return nullptr;
 }
 
+std::atomic<int> hostSendCalls{0};
+
+bool CLAP_ABI hostWebviewSend(const clap_host_t*, const void*, uint32_t)
+{
+    hostSendCalls.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+webview_gui::clap_host_webview hostWebviewExtension{hostWebviewSend};
+
+const void* CLAP_ABI hostExtensionWithWebview(const clap_host_t*, const char* id)
+{
+    if (id && std::strcmp(id, webview_gui::CLAP_EXT_WEBVIEW) == 0)
+        return &hostWebviewExtension;
+    return nullptr;
+}
+
 clap_plugin_t makePlugin()
 {
     clap_plugin_t plugin{};
@@ -30,6 +47,13 @@ clap_host_t makeHost()
 {
     clap_host_t host{};
     host.get_extension = noHostExtension;
+    return host;
+}
+
+clap_host_t makeHostWithWebview()
+{
+    clap_host_t host{};
+    host.get_extension = hostExtensionWithWebview;
     return host;
 }
 
@@ -153,4 +177,22 @@ TEST_CASE("CLAP GUI callbacks reject a worker or audio thread")
     CHECK(gui.extPluginGui->get_size(&plugin, &width, &height));
     CHECK(width == 640);
     CHECK(height == 480);
+}
+
+TEST_CASE("CLAP send rejects oversized payloads before calling the host extension")
+{
+    auto host = makeHostWithWebview();
+    auto plugin = makePlugin();
+
+    hostSendCalls.store(0, std::memory_order_relaxed);
+
+    webview_gui::ClapWebviewGui gui{&plugin, &host};
+    gui.init();
+
+    const unsigned char byte = 0x7f;
+    CHECK(gui.send(&byte, 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
+
+    CHECK_FALSE(gui.send(&byte, webview_gui::detail::maxMessageBytes + 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
 }
