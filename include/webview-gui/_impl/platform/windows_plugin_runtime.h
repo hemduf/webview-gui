@@ -82,4 +82,54 @@ private:
     bool ownsReference = false;
 };
 
+inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
+{
+    if (!IsWindow(child) || !IsWindow(parent) || child == parent)
+        return false;
+
+    SetLastError(ERROR_SUCCESS);
+    const auto oldStyle = GetWindowLongPtrW(child, GWL_STYLE);
+    if (oldStyle == 0 && GetLastError() != ERROR_SUCCESS)
+        return false;
+
+    const auto childStyle = (oldStyle & ~static_cast<LONG_PTR>(WS_POPUP))
+                          | static_cast<LONG_PTR>(WS_CHILD)
+                          | static_cast<LONG_PTR>(WS_CLIPCHILDREN)
+                          | static_cast<LONG_PTR>(WS_CLIPSIBLINGS);
+
+    SetLastError(ERROR_SUCCESS);
+    const auto previousStyle = SetWindowLongPtrW(child, GWL_STYLE, childStyle);
+    if (previousStyle == 0 && GetLastError() != ERROR_SUCCESS)
+        return false;
+
+    SetLastError(ERROR_SUCCESS);
+    const auto previousParent = SetParent(child, parent);
+    if (previousParent == nullptr && GetLastError() != ERROR_SUCCESS)
+        return false;
+
+    return SetWindowPos(child, nullptr, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                            | SWP_NOACTIVATE | SWP_FRAMECHANGED) != 0;
+}
+
+inline bool resizeChildWindow(HWND child, int width, int height) noexcept
+{
+    if (!IsWindow(child) || width < 0 || height < 0)
+        return false;
+
+    return SetWindowPos(child, nullptr, 0, 0, width, height,
+                        SWP_NOZORDER | SWP_NOACTIVATE) != 0;
+}
+
+inline bool setChildWindowVisible(HWND child, bool visible) noexcept
+{
+    if (!IsWindow(child))
+        return false;
+
+    ShowWindow(child, visible ? SW_SHOW : SW_HIDE);
+    if (visible)
+        InvalidateRect(child, nullptr, FALSE);
+    return true;
+}
+
 } // namespace webview_gui::detail
