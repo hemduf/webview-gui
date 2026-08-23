@@ -34,11 +34,17 @@ public:
         plug = gtk_plug_new(static_cast<Window>(parentXid));
         if (!plug) return false;
 
+        // GtkPlug is a GInitiallyUnowned toplevel. Keep a strong reference for
+        // the entire plug-in editor lifetime: the host may tear down the XEmbed
+        // relationship asynchronously, but our adapter must never retain a
+        // dangling GtkWidget* while CHOC is still alive.
+        g_object_ref_sink(G_OBJECT(plug));
+
         child = webview;
         policyHandler = g_signal_connect(
             webview,
             "decide-policy",
-            G_CALLBACK(+[](WebKitWebView*, WebKitPolicyDecision* decision,
+            G_CALLBACK(+[](WebKitWebView* webView, WebKitPolicyDecision* decision,
                            WebKitPolicyDecisionType type, gpointer) -> gboolean
             {
                 if (!decision)
@@ -52,10 +58,18 @@ public:
                     auto* request = action ? webkit_navigation_action_get_request(action) : nullptr;
                     const char* uri = request ? webkit_uri_request_get_uri(request) : nullptr;
 
-                    if (uri && isTrustedAppleLinuxPluginURL(uri))
+                    if (uri && isTrustedAppleLinuxPluginURL(uri)) {
                         webkit_policy_decision_use(decision);
-                    else
+                    } else {
+                        // Ignoring the policy decision prevents the remote
+                        // document from committing. Move the visible/current
+                        // URI back to an unprivileged trusted page as well so
+                        // callers never observe an untrusted top-level URL while
+                        // the native bridge remains installed.
                         webkit_policy_decision_ignore(decision);
+                        webkit_web_view_stop_loading(webView);
+                        webkit_web_view_load_uri(webView, "about:blank");
+                    }
 
                     return TRUE;
                 }
@@ -66,20 +80,41 @@ public:
 
         gtk_container_add(GTK_CONTAINER(plug), webview);
         gtk_widget_show_all(plug);
+
+        // XEmbed negotiation starts when the GtkPlug owns a native GdkWindow.
+        // Explicit realisation is needed in headless/hosted environments where
+        // merely setting the widget visible does not synchronously realise the
+        // toplevel before the host checks gtk_socket_get_plug_window().
+        gtk_widget_realize(plug);
+        if (!gtk_widget_get_realized(plug)) {
+            detach();
+            return false;
+        }
+
+        if (auto* display = gtk_widget_get_display(plug))
+            gdk_display_flush(display);
+
         return true;
     }
 
     void detach()
     {
         if (child && policyHandler != 0) {
-            g_signal_handler_disconnect(child, policyHandler);
+            if (G_IS_OBJECT(child)
+                && g_signal_handler_is_connected(child, policyHandler))
+                g_signal_handler_disconnect(child, policyHandler);
             policyHandler = 0;
         }
 
         if (plug) {
-            if (child && gtk_widget_get_parent(child) == plug)
-                gtk_container_remove(GTK_CONTAINER(plug), child);
-            gtk_widget_destroy(plug);
+            if (GTK_IS_WIDGET(plug)) {
+                if (child && GTK_IS_WIDGET(child)
+                    && gtk_widget_get_parent(child) == plug)
+                    gtk_container_remove(GTK_CONTAINER(plug), child);
+                gtk_widget_destroy(plug);
+            }
+
+            g_object_unref(G_OBJECT(plug));
         }
 
         child = nullptr;
