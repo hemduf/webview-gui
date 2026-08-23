@@ -26,6 +26,32 @@ TEST_CASE("Base64 helpers preserve arbitrary binary payloads")
     }
 }
 
+TEST_CASE("ThreadAffinity is unbound until explicitly attached to the GUI thread")
+{
+    detail::ThreadAffinity affinity;
+    CHECK_FALSE(affinity.isBound());
+    CHECK(affinity.isCurrentThread());
+
+    affinity.bindToCurrentThread();
+    CHECK(affinity.isBound());
+    CHECK(affinity.isCurrentThread());
+}
+
+TEST_CASE("ThreadAffinity rejects a different worker/audio thread")
+{
+    detail::ThreadAffinity affinity;
+    affinity.bindToCurrentThread();
+
+    std::atomic<bool> workerAccepted{true};
+    std::thread worker([&] {
+        workerAccepted.store(affinity.isCurrentThread(), std::memory_order_relaxed);
+    });
+    worker.join();
+
+    CHECK_FALSE(workerAccepted.load(std::memory_order_relaxed));
+    CHECK(affinity.isCurrentThread());
+}
+
 TEST_CASE("PointerRegistry lookup misses never mutate the registry")
 {
     detail::PointerRegistry<int> registry;
