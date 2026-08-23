@@ -114,6 +114,29 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
     return count == 0 || (!firstClass.empty() && owned && classNames.size() == count);
 }
 
+extern "C" __declspec(dllexport) bool webview_gui_test_create_destroy_windows_webviews(
+    std::size_t count)
+{
+    webview_gui::detail::ScopedCOMApartment localApartment;
+    if (!localApartment.ok())
+        return false;
+
+    std::vector<std::unique_ptr<choc::ui::WebView>> views;
+    views.reserve(count);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        auto view = std::make_unique<choc::ui::WebView>();
+        if (!view->loadedOK() || !view->getViewHandle())
+            return false;
+        views.push_back(std::move(view));
+    }
+
+    // `views` is destroyed before localApartment because locals are unwound in
+    // reverse declaration order, keeping every CHOC destruction on the same STA
+    // that constructed it.
+    return true;
+}
+
 extern "C" __declspec(dllexport) std::uintptr_t webview_gui_test_first_windows_hwnd()
 {
     const auto& views = retainedViews();
