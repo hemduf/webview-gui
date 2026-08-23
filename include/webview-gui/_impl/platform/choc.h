@@ -310,6 +310,10 @@ WebviewGui::~WebviewGui() {
 bool WebviewGui::supports(WebviewGui::Platform p) {
 #	if CHOC_APPLE
 	return p == COCOA;
+#	elif CHOC_WINDOWS
+	return p == HWND;
+#	elif CHOC_LINUX
+	return p == X11EMBED;
 #	else
 	(void)p;
 	return false;
