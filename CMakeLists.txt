@@ -7,8 +7,11 @@ add_library(webview-gui STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/source/webview-gui.cpp
 )
 
-target_include_directories(webview-gui PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_include_directories(webview-gui
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/webview-gui/_impl/platform/choc
 )
 
 target_compile_features(webview-gui PUBLIC cxx_std_17)
@@ -19,11 +22,12 @@ set_target_properties(webview-gui PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
 )
 
-# ---
-# Linking instructions as per CHOC (tests/CMakeLists.txt)
-
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_link_libraries(webview-gui PRIVATE "-framework WebKit")
+endif()
+
+if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+    target_link_libraries(webview-gui PRIVATE ole32 user32 shell32)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
