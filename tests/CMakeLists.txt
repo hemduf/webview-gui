@@ -53,6 +53,11 @@ target_include_directories(webview_gui_core_tests PRIVATE ${CMAKE_CURRENT_LIST_D
 target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest Threads::Threads)
 add_test(NAME webview_gui_core_tests COMMAND webview_gui_core_tests)
 
+add_executable(webview_gui_realtime_handoff_tests realtime_handoff_tests.cpp)
+target_include_directories(webview_gui_realtime_handoff_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
+target_link_libraries(webview_gui_realtime_handoff_tests PRIVATE doctest::doctest Threads::Threads)
+add_test(NAME webview_gui_realtime_handoff_tests COMMAND webview_gui_realtime_handoff_tests)
+
 add_executable(webview_gui_bridge_security_tests bridge_security_tests.cpp)
 target_include_directories(webview_gui_bridge_security_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
 target_link_libraries(webview_gui_bridge_security_tests PRIVATE doctest::doctest webview-gui)
