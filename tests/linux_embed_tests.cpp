@@ -100,6 +100,44 @@ choc::ui::WebView::Options makeWebViewOptions()
     return options;
 }
 
+bool smokeFocusedKeyInput(GtkWidget* child)
+{
+    if (!child || !gtk_widget_get_realized(child))
+        return false;
+
+    bool observed = false;
+    const auto handler = g_signal_connect(
+        child,
+        "key-press-event",
+        G_CALLBACK(+[](GtkWidget*, GdkEventKey*, gpointer data) -> gboolean {
+            *static_cast<bool*>(data) = true;
+            return FALSE;
+        }),
+        &observed);
+
+    gtk_widget_grab_focus(child);
+    pumpEvents(4);
+    if (!gtk_widget_is_focus(child)) {
+        g_signal_handler_disconnect(child, handler);
+        return false;
+    }
+
+    auto* event = gdk_event_new(GDK_KEY_PRESS);
+    event->key.window = static_cast<GdkWindow*>(g_object_ref(gtk_widget_get_window(child)));
+    event->key.send_event = TRUE;
+    event->key.time = GDK_CURRENT_TIME;
+    event->key.state = 0;
+    event->key.keyval = GDK_KEY_a;
+    event->key.hardware_keycode = 38;
+    event->key.group = 0;
+    gtk_widget_event(child, event);
+    gdk_event_free(event);
+    pumpEvents(2);
+
+    g_signal_handler_disconnect(child, handler);
+    return observed;
+}
+
 } // namespace
 
 TEST_CASE("public support negotiation exposes only Linux X11 embedding")
@@ -158,6 +196,7 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
         CHECK_FALSE(gtk_widget_get_visible(adapter.plugWidget()));
         REQUIRE(adapter.setVisible(true));
         CHECK(gtk_widget_get_visible(adapter.plugWidget()));
+        CHECK(smokeFocusedKeyInput(child));
     }
 
     pumpEvents();
@@ -166,6 +205,46 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
     CHECK(gtk_widget_get_window(host.window) != nullptr);
     CHECK(gtk_widget_get_realized(host.window));
     CHECK(GTK_IS_SOCKET(host.socket));
+}
+
+TEST_CASE("XEmbed host survives repeated WebView attach and destroy cycles")
+{
+    REQUIRE(gtk_init_check(nullptr, nullptr));
+
+    HostSocket host;
+    REQUIRE(host.xid() != 0);
+
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        choc::ui::WebView view{makeWebViewOptions()};
+        REQUIRE(view.loadedOK());
+        auto* child = static_cast<GtkWidget*>(view.getViewHandle());
+        REQUIRE(child != nullptr);
+
+        {
+            webview_gui::detail::GtkXEmbedHost adapter;
+            REQUIRE(adapter.attach(child, host.xid()));
+            REQUIRE(pumpUntil([&] {
+                return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()))
+                    && gtk_widget_get_parent(adapter.plugWidget()) == host.socket;
+            }, std::chrono::seconds(2)));
+
+            const int width = 480 + iteration * 16;
+            const int height = 280 + iteration * 12;
+            REQUIRE(adapter.resize(width, height));
+            REQUIRE(pumpUntil([&] {
+                GtkAllocation allocation{};
+                gtk_widget_get_allocation(child, &allocation);
+                return allocation.width == width && allocation.height == height;
+            }, std::chrono::seconds(2)));
+            REQUIRE(adapter.setVisible(false));
+            REQUIRE(adapter.setVisible(true));
+            CHECK(smokeFocusedKeyInput(child));
+        }
+
+        pumpEvents();
+        CHECK(GTK_IS_SOCKET(host.socket));
+        CHECK(gtk_widget_get_realized(host.window));
+    }
 }
 
 TEST_CASE("XEmbed adapter rejects invalid parents and duplicate attachment")
