@@ -176,6 +176,15 @@ TEST_CASE("XEmbed adapter rejects invalid parents and duplicate attachment")
     webview_gui::detail::GtkXEmbedHost adapter;
     CHECK_FALSE(adapter.attach(child, 0));
 
+    std::uintptr_t staleParent = 0;
+    {
+        HostSocket staleHost;
+        staleParent = staleHost.xid();
+        REQUIRE(staleParent != 0);
+    }
+    pumpEvents();
+    CHECK_FALSE(adapter.attach(child, staleParent));
+
     HostSocket host;
     REQUIRE(adapter.attach(child, host.xid()));
     CHECK_FALSE(adapter.attach(child, host.xid()));
