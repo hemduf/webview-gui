@@ -26,6 +26,18 @@ TEST_CASE("local plugin URLs are joined with exactly one path separator")
           == "choc://choc.choc/");
 }
 
+TEST_CASE("plugin-safe resource CORS never uses wildcard origin")
+{
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::COCOA) == "choc://choc.choc");
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::X11EMBED) == "choc://choc.choc");
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::HWND) == "https://choc.localhost");
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::NONE).empty());
+
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::COCOA) != "*");
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::X11EMBED) != "*");
+    CHECK(detail::pluginResourceAllowOrigin(WebviewGui::HWND) != "*");
+}
+
 TEST_CASE("bridge capabilities use the OS CSPRNG and are 256-bit lowercase hex")
 {
     std::set<std::string> tokens;
