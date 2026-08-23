@@ -67,6 +67,8 @@ struct WebviewGui::Impl {
 
 	detail::ThreadAffinity uiThread;
 	std::string bridgeToken = detail::makeSecureBridgeToken();
+	bool bridgeReady = false;
+	std::vector<std::string> pendingBridgeMessages;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -109,6 +111,8 @@ struct WebviewGui::Impl {
 	detail::ThreadAffinity uiThread;
 	std::unique_ptr<detail::ScopedCOMApartment> comApartment;
 	std::string bridgeToken = detail::makeSecureBridgeToken();
+	bool bridgeReady = false;
+	std::vector<std::string> pendingBridgeMessages;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -143,6 +147,8 @@ struct WebviewGui::Impl {
 	detail::ThreadAffinity uiThread;
 	detail::GtkXEmbedHost xembed;
 	std::string bridgeToken = detail::makeSecureBridgeToken();
+	bool bridgeReady = false;
+	std::vector<std::string> pendingBridgeMessages;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -229,6 +235,30 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 			return choc::value::Value{true};
 		});
 
+		wv.bind("_WebviewGui_ready", [impl](const choc::value::ValueView& args){
+			if (!impl->isOnGuiThread() || !impl->webview)
+				return choc::value::Value{false};
+			if (!args.isArray() || args.size() != 1)
+				return choc::value::Value{false};
+
+			const auto suppliedToken = args[0].getString();
+			if (!detail::constantTimeTokenEquals(impl->bridgeToken, suppliedToken))
+				return choc::value::Value{false};
+
+			impl->bridgeReady = true;
+			const auto functionName = detail::bridgeSendFunctionName(impl->bridgeToken);
+			if (functionName.empty())
+				return choc::value::Value{false};
+
+			auto pending = std::move(impl->pendingBridgeMessages);
+			impl->pendingBridgeMessages.clear();
+			for (const auto& base64 : pending) {
+				impl->webview->evaluateJavascript("if(typeof window['" + functionName
+					+ "']==='function')window['" + functionName + "'](\"" + base64 + "\");");
+			}
+			return choc::value::Value{true};
+		});
+
 		wv.navigate(startUri);
 	};
 
@@ -296,7 +326,12 @@ void WebviewGui::send(const unsigned char *bytes, size_t length) {
 
 	const auto functionName = detail::bridgeSendFunctionName(impl->bridgeToken);
 	if (functionName.empty()) return;
-	const auto base64 = choc::base64::encodeToString(bytes, length);
+	auto base64 = choc::base64::encodeToString(bytes, length);
+	if (!impl->bridgeReady) {
+		impl->pendingBridgeMessages.push_back(std::move(base64));
+		return;
+	}
+
 	impl->webview->evaluateJavascript("if(typeof window['" + functionName
 		+ "']==='function')window['" + functionName + "'](\"" + base64 + "\");");
 }
