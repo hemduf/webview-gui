@@ -74,7 +74,7 @@ if(APPLE)
     foreach(target webview_gui_test_module_a webview_gui_test_module_b)
         target_include_directories(${target} PRIVATE
             ${CMAKE_CURRENT_LIST_DIR}/../include
-            ${CMAKE_CURRENT_LIST_DIR}/../include/webview-gui/_impl/platform/choc
+            ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
         )
         target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
         target_link_libraries(${target} PRIVATE "-framework WebKit")
@@ -116,7 +116,7 @@ if(WIN32)
     foreach(target webview_gui_windows_module_a webview_gui_windows_module_b)
         target_include_directories(${target} PRIVATE
             ${CMAKE_CURRENT_LIST_DIR}/../include
-            ${CMAKE_CURRENT_LIST_DIR}/../include/webview-gui/_impl/platform/choc
+            ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
         )
         target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
         target_link_libraries(${target} PRIVATE ole32 user32)
@@ -156,7 +156,7 @@ if(UNIX AND NOT APPLE)
     add_executable(webview_gui_linux_embed_tests linux_embed_tests.cpp)
     target_include_directories(webview_gui_linux_embed_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../include
-        ${CMAKE_CURRENT_LIST_DIR}/../include/webview-gui/_impl/platform/choc
+        ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
     )
     target_link_libraries(webview_gui_linux_embed_tests PRIVATE
         doctest::doctest
