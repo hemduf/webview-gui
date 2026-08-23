@@ -3,8 +3,15 @@ if(NOT DEFINED MODULE OR NOT EXISTS "${MODULE}")
 endif()
 
 if(PLATFORM STREQUAL "Windows")
+    # The Windows CI profile currently uses MinGW/Ninja, where dumpbin is not
+    # on PATH. CMake's configured GNU objdump can read the PE export directory
+    # directly and, unlike a full symbol-table scan, reports the ABI boundary
+    # that a DAW/other DLL can actually resolve.
+    if(NOT DEFINED OBJDUMP OR OBJDUMP STREQUAL "")
+        message(FATAL_ERROR "CMAKE_OBJDUMP is required for the Windows export scan")
+    endif()
     execute_process(
-        COMMAND dumpbin /NOLOGO /EXPORTS "${MODULE}"
+        COMMAND "${OBJDUMP}" -p "${MODULE}"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE exports
         ERROR_VARIABLE errors

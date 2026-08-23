@@ -31,6 +31,7 @@ foreach(target plugin_safe_module_a plugin_safe_module_b)
         COMMAND ${CMAKE_COMMAND}
             -DMODULE=$<TARGET_FILE:${target}>
             -DNM=${CMAKE_NM}
+            -DOBJDUMP=${CMAKE_OBJDUMP}
             -DPLATFORM=${CMAKE_SYSTEM_NAME}
             -P ${CMAKE_CURRENT_LIST_DIR}/verify_exports.cmake
     )
