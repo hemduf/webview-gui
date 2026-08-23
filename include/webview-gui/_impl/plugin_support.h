@@ -2,10 +2,31 @@
 
 #include <filesystem>
 #include <shared_mutex>
+#include <thread>
 #include <unordered_map>
 #include <mutex>
 
 namespace webview_gui::detail {
+
+class ThreadAffinity {
+public:
+    void bindToCurrentThread()
+    {
+        owner = std::this_thread::get_id();
+        bound = true;
+    }
+
+    [[nodiscard]] bool isBound() const noexcept { return bound; }
+
+    [[nodiscard]] bool isCurrentThread() const noexcept
+    {
+        return !bound || owner == std::this_thread::get_id();
+    }
+
+private:
+    std::thread::id owner{};
+    bool bound = false;
+};
 
 template <typename T>
 class PointerRegistry {
