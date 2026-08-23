@@ -20,6 +20,7 @@
 namespace {
 
 using RetainWebViewsFn = bool (*)(std::size_t, std::uintptr_t*, std::uintptr_t*, wchar_t*, std::size_t, bool*, bool*);
+using FirstHWNDFn = std::uintptr_t (*)();
 using ReleaseWebViewsFn = void (*)();
 
 struct RetainedInfo {
@@ -33,6 +34,7 @@ struct RetainedInfo {
 struct Module {
     HMODULE handle = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
+    FirstHWNDFn firstHWND = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
 
     explicit Module(const char* path)
@@ -41,6 +43,8 @@ struct Module {
         if (handle) {
             retainWebViews = reinterpret_cast<RetainWebViewsFn>(
                 GetProcAddress(handle, "webview_gui_test_retain_windows_webviews"));
+            firstHWND = reinterpret_cast<FirstHWNDFn>(
+                GetProcAddress(handle, "webview_gui_test_first_windows_hwnd"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
                 GetProcAddress(handle, "webview_gui_test_release_windows_webviews"));
         }
@@ -69,6 +73,11 @@ struct Module {
         return result;
     }
 
+    HWND firstWindow() const
+    {
+        return firstHWND ? reinterpret_cast<HWND>(firstHWND()) : nullptr;
+    }
+
     void release() const
     {
         if (releaseWebViews)
@@ -81,6 +90,7 @@ struct Module {
             FreeLibrary(handle);
             handle = nullptr;
             retainWebViews = nullptr;
+            firstHWND = nullptr;
             releaseWebViews = nullptr;
         }
     }
@@ -92,6 +102,22 @@ bool windowClassIsRegistered(std::uintptr_t module, const std::wstring& classNam
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     return GetClassInfoExW(reinterpret_cast<HINSTANCE>(module), className.c_str(), &wc) != 0;
+}
+
+HWND createHostWindow()
+{
+    return CreateWindowExW(0,
+                           L"STATIC",
+                           L"webview-gui host harness",
+                           WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                           CW_USEDEFAULT,
+                           CW_USEDEFAULT,
+                           700,
+                           500,
+                           nullptr,
+                           nullptr,
+                           GetModuleHandleW(nullptr),
+                           nullptr);
 }
 
 } // namespace
@@ -136,10 +162,49 @@ TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host ex
 
     moduleA.close();
 
-    // B remains alive and its window class remains valid after A unloads.
     CHECK(windowClassIsRegistered(b.module, b.className));
     moduleB.release();
     CHECK_FALSE(windowClassIsRegistered(b.module, b.className));
+}
+
+TEST_CASE("a real CHOC HWND embeds as a child without damaging the host window")
+{
+    Module module{MODULE_A_PATH};
+    REQUIRE(module.handle != nullptr);
+    REQUIRE(module.firstHWND != nullptr);
+
+    const auto retained = module.retain(1);
+    REQUIRE(retained.module != 0);
+
+    const auto child = module.firstWindow();
+    REQUIRE(child != nullptr);
+    REQUIRE(IsWindow(child));
+
+    const auto host = createHostWindow();
+    REQUIRE(host != nullptr);
+    REQUIRE(IsWindow(host));
+
+    CHECK(webview_gui::detail::attachChildWindowToHost(child, host));
+    CHECK(GetParent(child) == host);
+
+    const auto style = GetWindowLongPtrW(child, GWL_STYLE);
+    CHECK((style & WS_CHILD) != 0);
+    CHECK((style & WS_POPUP) == 0);
+
+    CHECK(webview_gui::detail::resizeChildWindow(child, 640, 360));
+    RECT childRect{};
+    REQUIRE(GetClientRect(child, &childRect));
+    CHECK(childRect.right - childRect.left == 640);
+    CHECK(childRect.bottom - childRect.top == 360);
+
+    CHECK(webview_gui::detail::setChildWindowVisible(child, false));
+    CHECK_FALSE(IsWindowVisible(child));
+    CHECK(webview_gui::detail::setChildWindowVisible(child, true));
+    CHECK(IsWindowVisible(child));
+
+    module.release();
+    CHECK(IsWindow(host));
+    CHECK(DestroyWindow(host));
 }
 
 TEST_CASE("plug-in-owned COM initialization is balanced after CHOC WebView destruction")
@@ -156,9 +221,6 @@ TEST_CASE("plug-in-owned COM initialization is balanced after CHOC WebView destr
     module.release();
     module.close();
 
-    // Release the test host's own apartment reference. If CHOC leaked any of its
-    // historical CoInitialize(nullptr) calls, this thread remains STA and the MTA
-    // probe below fails with RPC_E_CHANGED_MODE.
     CoUninitialize();
 
     const auto mtaProbe = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
