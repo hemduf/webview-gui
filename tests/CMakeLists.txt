@@ -134,3 +134,18 @@ if(WIN32)
     )
     add_test(NAME webview_gui_windows_isolation_tests COMMAND webview_gui_windows_isolation_tests)
 endif()
+
+if(UNIX AND NOT APPLE)
+    add_executable(webview_gui_linux_embed_tests linux_embed_tests.cpp)
+    target_include_directories(webview_gui_linux_embed_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+        ${CMAKE_CURRENT_LIST_DIR}/../include/webview-gui/_impl/platform/choc
+    )
+    target_link_libraries(webview_gui_linux_embed_tests PRIVATE
+        doctest::doctest
+        Threads::Threads
+        PkgConfig::gtk3
+        PkgConfig::webkit2
+    )
+    add_test(NAME webview_gui_linux_embed_tests COMMAND webview_gui_linux_embed_tests)
+endif()
