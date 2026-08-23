@@ -55,6 +55,9 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 60
 
+      - name: Verify parent BUILD_SHARED_LIBS cannot change plug-in-safe linkage
+        run: cmake -S tests -B build-parent-shared -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON
+
   sanitizers:
     name: ${{ matrix.os }} / ASan+UBSan
     strategy:
