@@ -26,13 +26,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(clap)
 
-# Build the production library as part of the test graph so adapter tests catch
-# compile/link regressions in the actual backend rather than a mocked copy.
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-under-test EXCLUDE_FROM_ALL)
 
-# Plug-in-safe integration contract: the parent project's BUILD_SHARED_LIBS must
-# never turn this helper into a shared runtime, and the static archive must be
-# suitable for linking into a hidden-symbol plug-in module.
 get_target_property(WEBVIEW_GUI_LIBRARY_TYPE webview-gui TYPE)
 if(NOT WEBVIEW_GUI_LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
     message(FATAL_ERROR "webview-gui must remain STATIC, got ${WEBVIEW_GUI_LIBRARY_TYPE}")
@@ -57,6 +52,11 @@ add_executable(webview_gui_core_tests core_tests.cpp)
 target_include_directories(webview_gui_core_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
 target_link_libraries(webview_gui_core_tests PRIVATE doctest::doctest Threads::Threads)
 add_test(NAME webview_gui_core_tests COMMAND webview_gui_core_tests)
+
+add_executable(webview_gui_bridge_security_tests bridge_security_tests.cpp)
+target_include_directories(webview_gui_bridge_security_tests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../include)
+target_link_libraries(webview_gui_bridge_security_tests PRIVATE doctest::doctest)
+add_test(NAME webview_gui_bridge_security_tests COMMAND webview_gui_bridge_security_tests)
 
 add_executable(webview_gui_clap_tests clap_adapter_tests.cpp)
 target_include_directories(webview_gui_clap_tests PRIVATE
