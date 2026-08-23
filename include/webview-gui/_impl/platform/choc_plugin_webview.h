@@ -2,6 +2,7 @@
 
 #include "choc/platform/choc_Platform.h"
 #include "../plugin_support.h"
+#include "../origin_policy.h"
 
 #if CHOC_APPLE
 
@@ -86,7 +87,7 @@ inline void installPluginNavigationPolicy(Class cls)
             const id absoluteString = url ? call<id>(url, "absoluteString") : nil;
             const auto absolute = absoluteString ? getString(absoluteString) : std::string{};
 
-            decisionHandler(isTrustedPluginURL(absolute) ? 1L : 0L);
+            decisionHandler(isTrustedAppleLinuxPluginURL(absolute) ? 1L : 0L);
         }),
         "v@:@@@@"
     );
@@ -181,10 +182,6 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 
 #include "./windows_plugin_runtime.h"
 
-// Patch CHOC's Win32 WindowClass definition before WebView includes it. The
-// upstream helper registers classes against GetModuleHandle(nullptr), which is
-// the DAW executable inside a plug-in. Use the DLL containing this code instead,
-// and replace the millisecond timestamp with a collision-free local sequence.
 #ifdef GetModuleHandle
 #undef GetModuleHandle
 #endif
@@ -194,8 +191,6 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #undef GetTickCount
 #undef GetModuleHandle
 
-// webview-gui owns a balanced STA COM apartment around the CHOC WebView. Suppress
-// CHOC's additional unbalanced CoInitialize(nullptr) call inside Pimpl::initialise().
 #define CoInitialize(...) webview_gui::detail::suppressedCHOCWebViewCoInitialize(nullptr)
 #include "choc/gui/choc_WebView.h"
 #undef CoInitialize
