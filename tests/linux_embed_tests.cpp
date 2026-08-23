@@ -130,13 +130,17 @@ TEST_CASE("CHOC WebKitGTK view embeds into an XEmbed GtkSocket host")
 
         REQUIRE(adapter.plugWidget() != nullptr);
         REQUIRE(pumpUntil([&] {
+            // GtkPlug/GtkSocket uses a direct same-process GTK child path when
+            // both endpoints live in this test process. In that mode
+            // GtkSocket::plug_window is intentionally not populated; the
+            // authoritative signals are GtkPlug::embedded plus GTK parenting.
             return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()))
-                && gtk_socket_get_plug_window(GTK_SOCKET(host.socket)) != nullptr;
+                && gtk_widget_get_parent(adapter.plugWidget()) == host.socket;
         }, std::chrono::seconds(2)));
 
         CHECK(gtk_widget_get_parent(child) == adapter.plugWidget());
         CHECK(gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget())));
-        CHECK(gtk_socket_get_plug_window(GTK_SOCKET(host.socket)) != nullptr);
+        CHECK(gtk_widget_get_parent(adapter.plugWidget()) == host.socket);
 
         REQUIRE(adapter.resize(640, 360));
         pumpEvents(4);
@@ -177,7 +181,7 @@ TEST_CASE("XEmbed adapter rejects invalid parents and duplicate attachment")
     CHECK_FALSE(adapter.attach(child, host.xid()));
 }
 
-TEST_CASE("native WebKitGTK policy blocks remote top-level navigation")
+TEST_CASE("native WebKitGTK policy blocks remote top-level navigation before commit")
 {
     REQUIRE(gtk_init_check(nullptr, nullptr));
 
@@ -193,10 +197,30 @@ TEST_CASE("native WebKitGTK policy blocks remote top-level navigation")
         return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()));
     }, std::chrono::seconds(2)));
 
+    REQUIRE(pumpUntil([&] {
+        return !webkit_web_view_is_loading(WEBKIT_WEB_VIEW(child));
+    }, std::chrono::seconds(2)));
+
+    bool remoteCommitted = false;
+    const auto loadHandler = g_signal_connect(
+        child,
+        "load-changed",
+        G_CALLBACK(+[](WebKitWebView* webView, WebKitLoadEvent event, gpointer data) {
+            if (event != WEBKIT_LOAD_COMMITTED)
+                return;
+
+            const char* uri = webkit_web_view_get_uri(webView);
+            const std::string committedURI = uri ? uri : "";
+            if (committedURI.find("https://example.com") == 0)
+                *static_cast<bool*>(data) = true;
+        }),
+        &remoteCommitted);
+
     webkit_web_view_load_uri(WEBKIT_WEB_VIEW(child), "https://example.com/should-not-load");
     pumpEvents(96);
 
-    const char* current = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(child));
-    const std::string currentURI = current ? current : "";
-    CHECK(currentURI.find("https://example.com") != 0);
+    CHECK_FALSE(remoteCommitted);
+
+    if (loadHandler != 0 && g_signal_handler_is_connected(child, loadHandler))
+        g_signal_handler_disconnect(child, loadHandler);
 }
