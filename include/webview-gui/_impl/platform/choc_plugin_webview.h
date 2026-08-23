@@ -3,6 +3,7 @@
 #include "choc/platform/choc_Platform.h"
 #include "../plugin_support.h"
 #include "../origin_policy.h"
+#include "../resource_security.h"
 
 #if CHOC_APPLE
 
@@ -150,7 +151,7 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
 inline id getPluginSafeNSStringForWebviewGui(const char* value)
 {
     if (value != nullptr && std::strcmp(value, "*") == 0)
-        return getNSString("choc://choc.choc");
+        return getNSString(webview_gui::detail::appleLinuxPluginResourceAllowOrigin.data());
 
     return getNSString(value);
 }
@@ -199,6 +200,35 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #error webview-gui requires its generated plugin-safe CHOC WebView2 bridge patch on Windows
 #endif
 #undef WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD
+
+#elif CHOC_LINUX
+
+// CHOC's general-purpose custom-scheme backend emits wildcard CORS. Interpose
+// only that header-level Soup call in the private plugin copy and narrow it to
+// the exact local origin. libsoup has already declared the real function before
+// the macro is enabled, avoiding changes to any system header declarations.
+#include <libsoup/soup.h>
+#include <cstring>
+
+namespace webview_gui::detail {
+
+inline void appendPluginSafeSoupHeader(SoupMessageHeaders* headers,
+                                       const char* name,
+                                       const char* value)
+{
+    if (name != nullptr && value != nullptr
+        && std::strcmp(name, "Access-Control-Allow-Origin") == 0
+        && std::strcmp(value, "*") == 0)
+        value = appleLinuxPluginResourceAllowOrigin.data();
+
+    ::soup_message_headers_append(headers, name, value);
+}
+
+} // namespace webview_gui::detail
+
+#define soup_message_headers_append webview_gui::detail::appendPluginSafeSoupHeader
+#include "choc/gui/choc_WebView.h"
+#undef soup_message_headers_append
 
 #else
 
