@@ -2,12 +2,27 @@
 #include <doctest/doctest.h>
 
 #include "webview-gui/_impl/plugin_support.h"
+#include "webview-gui/_impl/local_url.h"
 
 #include <set>
 #include <string>
 #include <vector>
 
 using namespace webview_gui;
+
+TEST_CASE("local plugin URLs are joined with exactly one path separator")
+{
+    CHECK(detail::joinLocalPluginURL("choc://choc.choc/", "/index.html")
+          == "choc://choc.choc/index.html");
+    CHECK(detail::joinLocalPluginURL("choc://choc.choc", "index.html")
+          == "choc://choc.choc/index.html");
+    CHECK(detail::joinLocalPluginURL("https://choc.localhost/", "index.html")
+          == "https://choc.localhost/index.html");
+    CHECK(detail::joinLocalPluginURL("https://choc.localhost", "/index.html")
+          == "https://choc.localhost/index.html");
+    CHECK(detail::joinLocalPluginURL("choc://choc.choc/", "")
+          == "choc://choc.choc/");
+}
 
 TEST_CASE("bridge capabilities are 256-bit lowercase hex and unique")
 {
@@ -84,7 +99,5 @@ TEST_CASE("HTML hardening injects a generic capability bootstrap without embeddi
     CHECK(hardened.find("_WebviewGui_receive64(token") != std::string::npos);
     CHECK(hardened.find("window['_WebviewGui_send_'+token]") != std::string::npos);
 
-    // The served resource is readable data. The per-instance capability must
-    // never be serialized into it; it lives in the URL fragment/sessionStorage.
     CHECK(hardened.find(token) == std::string::npos);
 }
