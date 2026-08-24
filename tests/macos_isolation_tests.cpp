@@ -116,7 +116,7 @@ TEST_CASE("plugin-safe CHOC modules use the system WKWebView class")
     CHECK(a.delegate != b.delegate);
 }
 
-TEST_CASE("unloading one CHOC module disposes its generated delegate class")
+TEST_CASE("the last CHOC WebView disposes its delegate class before module unload")
 {
     Module moduleA{MODULE_A_PATH};
     Module moduleB{MODULE_B_PATH};
@@ -133,7 +133,12 @@ TEST_CASE("unloading one CHOC module disposes its generated delegate class")
     REQUIRE(isCHOCDelegateClass(b.delegate));
 
     CHECK(objc_getClass("WKWebView") != nullptr);
-    CHECK(objc_getClass(a.delegate.c_str()) != nullptr);
+
+    // createNames() destroys its temporary WebView before it returns. A dynamic
+    // delegate class must therefore already be gone while the module is still
+    // loaded; waiting for dlclose makes objc_disposeClassPair race WebKit/ASan.
+    CHECK(objc_getClass(a.delegate.c_str()) == nullptr);
+    CHECK(objc_getClass(b.delegate.c_str()) == nullptr);
 
     moduleA.close();
 
@@ -142,8 +147,8 @@ TEST_CASE("unloading one CHOC module disposes its generated delegate class")
 
     const auto bAfter = moduleB.createNames();
     CHECK(bAfter.webview == b.webview);
-    CHECK(bAfter.delegate == b.delegate);
-    CHECK(objc_getClass(b.delegate.c_str()) != nullptr);
+    CHECK(bAfter.delegate != b.delegate);
+    CHECK(objc_getClass(bAfter.delegate.c_str()) == nullptr);
 }
 
 TEST_CASE("32 live WebViews remain isolated while one module unloads and reloads")
@@ -178,6 +183,7 @@ TEST_CASE("32 live WebViews remain isolated while one module unloads and reloads
             CHECK(objc_getClass(delegateB.c_str()) != nullptr);
 
             moduleA.release();
+            CHECK(objc_getClass(delegateA.c_str()) == nullptr);
             moduleA.close();
             CHECK(objc_getClass(delegateA.c_str()) == nullptr);
 
@@ -188,6 +194,7 @@ TEST_CASE("32 live WebViews remain isolated while one module unloads and reloads
             CHECK(objc_getClass(delegateB.c_str()) != nullptr);
 
             moduleB.release();
+            CHECK(objc_getClass(delegateB.c_str()) == nullptr);
             moduleB.close();
         }
 
