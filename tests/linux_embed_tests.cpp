@@ -338,3 +338,147 @@ TEST_CASE("native WebKitGTK policy blocks remote top-level navigation before com
     if (loadHandler != 0 && g_signal_handler_is_connected(child, loadHandler))
         g_signal_handler_disconnect(child, loadHandler);
 }
+
+#ifndef WEBVIEW_GUI_CHOC_LINUX_LIFETIME_GUARD
+#error Linux tests must compile against the generated CHOC lifetime patch
+#endif
+
+namespace {
+
+class WeakObjectRef {
+public:
+    WeakObjectRef()
+    {
+        g_weak_ref_init(&ref, nullptr);
+    }
+
+    WeakObjectRef(const WeakObjectRef&) = delete;
+    WeakObjectRef& operator=(const WeakObjectRef&) = delete;
+
+    ~WeakObjectRef()
+    {
+        g_weak_ref_clear(&ref);
+    }
+
+    void reset(GObject* object)
+    {
+        g_weak_ref_set(&ref, object);
+    }
+
+    [[nodiscard]] bool expired()
+    {
+        auto* object = g_weak_ref_get(&ref);
+        if (!object)
+            return true;
+
+        g_object_unref(object);
+        return false;
+    }
+
+private:
+    GWeakRef ref{};
+};
+
+} // namespace
+
+TEST_CASE("CHOC Linux lifetime releases GtkPlug and WebKit objects across cycles")
+{
+    REQUIRE(gtk_init_check(nullptr, nullptr));
+
+    HostSocket host;
+    REQUIRE(host.xid() != 0);
+
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        WeakObjectRef plugRef;
+        WeakObjectRef webViewRef;
+        WeakObjectRef managerRef;
+        WeakObjectRef contextRef;
+
+        {
+            choc::ui::WebView view{makeWebViewOptions()};
+            REQUIRE(view.loadedOK());
+
+            auto* child = static_cast<GtkWidget*>(view.getViewHandle());
+            REQUIRE(child != nullptr);
+            auto* nativeView = WEBKIT_WEB_VIEW(child);
+            auto* manager = webkit_web_view_get_user_content_manager(nativeView);
+            auto* context = webkit_web_view_get_context(nativeView);
+            REQUIRE(manager != nullptr);
+            REQUIRE(context != nullptr);
+
+            webViewRef.reset(G_OBJECT(child));
+            managerRef.reset(G_OBJECT(manager));
+            contextRef.reset(G_OBJECT(context));
+
+            // Exercise the caller-owned WebKitUserScript reference. In the
+            // sanitizer job these repeated scripts make an omitted unref visible
+            // to LeakSanitizer instead of relying on process RSS heuristics.
+            for (int script = 0; script < 8; ++script) {
+                REQUIRE(view.addInitScript(
+                    "globalThis.__webviewGuiLifetimeProbe = "
+                    + std::to_string(iteration * 8 + script) + ";"));
+            }
+
+            {
+                webview_gui::detail::GtkXEmbedHost adapter;
+                REQUIRE(adapter.attach(child, host.xid()));
+                REQUIRE(adapter.plugWidget() != nullptr);
+                plugRef.reset(G_OBJECT(adapter.plugWidget()));
+
+                REQUIRE(pumpUntil([&] {
+                    return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()))
+                        && gtk_widget_get_parent(adapter.plugWidget()) == host.socket;
+                }, std::chrono::seconds(2)));
+            }
+
+            REQUIRE(pumpUntil([&] { return plugRef.expired(); },
+                              std::chrono::seconds(2)));
+            CHECK(gtk_widget_get_parent(child) == nullptr);
+        }
+
+        REQUIRE(pumpUntil([&] {
+            return webViewRef.expired()
+                && managerRef.expired()
+                && contextRef.expired();
+        }, std::chrono::seconds(2)));
+    }
+}
+
+TEST_CASE("CHOC Linux JavaScript error completions release GLib errors")
+{
+    REQUIRE(gtk_init_check(nullptr, nullptr));
+
+    HostSocket host;
+    choc::ui::WebView view{makeWebViewOptions()};
+    REQUIRE(view.loadedOK());
+
+    auto* child = static_cast<GtkWidget*>(view.getViewHandle());
+    REQUIRE(child != nullptr);
+
+    webview_gui::detail::GtkXEmbedHost adapter;
+    REQUIRE(adapter.attach(child, host.xid()));
+    REQUIRE(pumpUntil([&] {
+        return gtk_plug_get_embedded(GTK_PLUG(adapter.plugWidget()));
+    }, std::chrono::seconds(2)));
+    REQUIRE(pumpUntil([&] {
+        return !webkit_web_view_is_loading(WEBKIT_WEB_VIEW(child));
+    }, std::chrono::seconds(2)));
+
+    // Upstream CHOC previously lost the GError returned by the failed finish()
+    // call. The assertions exercise that path; Linux ASan+LSan verifies the
+    // repeated failures leave no unreachable GError allocations behind.
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        bool completed = false;
+        std::string errorMessage;
+
+        REQUIRE(view.evaluateJavascript(
+            "(() => {",
+            [&](const std::string& error, const choc::value::ValueView&) {
+                errorMessage = error;
+                completed = true;
+            }));
+
+        REQUIRE(pumpUntil([&] { return completed; }, std::chrono::seconds(2)));
+        CHECK_FALSE(errorMessage.empty());
+    }
+}
