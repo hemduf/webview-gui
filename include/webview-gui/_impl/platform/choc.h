@@ -100,8 +100,13 @@ struct WebviewGui::Impl {
 	}
 	void setSize(double width, double height) {
 		if (!isOnGuiThread() || !webview) return;
+		int nativeWidth = 0;
+		int nativeHeight = 0;
+		if (!detail::tryConvertNativeHostDimension(width, nativeWidth)
+			|| !detail::tryConvertNativeHostDimension(height, nativeHeight))
+			return;
 		detail::resizeChildWindow(static_cast<::HWND>(webview->getViewHandle()),
-								 static_cast<int>(width), static_cast<int>(height));
+								 nativeWidth, nativeHeight);
 	}
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
@@ -137,7 +142,12 @@ struct WebviewGui::Impl {
 	}
 	void setSize(double width, double height) {
 		if (!isOnGuiThread() || !webview) return;
-		xembed.resize(static_cast<int>(width), static_cast<int>(height));
+		int nativeWidth = 0;
+		int nativeHeight = 0;
+		if (!detail::tryConvertNativeHostDimension(width, nativeWidth)
+			|| !detail::tryConvertNativeHostDimension(height, nativeHeight))
+			return;
+		xembed.resize(nativeWidth, nativeHeight);
 	}
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
