@@ -72,6 +72,8 @@ jobs:
           - ubuntu-latest
           - macos-latest
     runs-on: ${{ matrix.os }}
+    env:
+      LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-linux.supp:print_suppressions=1
 
     steps:
       - name: Checkout
