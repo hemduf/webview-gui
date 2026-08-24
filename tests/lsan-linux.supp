@@ -1,0 +1,14 @@
+# Linux GTK/WebKit integration tests intentionally initialise system GUI runtimes
+# that retain process-lifetime caches on the GitHub Ubuntu runner. Keep these
+# suppressions narrow: LeakSanitizer remains enabled and all project-owned
+# WebKit/GObject lifetimes are asserted explicitly by linux_embed_tests.cpp.
+
+# AT-SPI accessibility bridge: gtk_init_check() alone leaves 56 bytes behind.
+leak:atk_bridge_adaptor_init
+
+# Fontconfig caches created when GTK/WebKit first resolves fonts.
+leak:libfontconfig.so.1
+
+# X11 GDK bookkeeping retained across GTK process teardown under Xvfb.
+leak:gdk_window_destroy
+leak:gdk_window_ensure_native
