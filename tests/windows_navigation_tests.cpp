@@ -89,6 +89,22 @@ TEST_CASE("Windows navigation policy allows inert about:blank bootstrap without 
     CHECK_FALSE(webview_gui::detail::isTrustedWindowsBridgeSource(L"about:blank"));
 }
 
+TEST_CASE("short malformed Windows URIs are rejected without prefix over-read assumptions")
+{
+    CHECK_FALSE(webview_gui::detail::isTrustedWindowsBridgeSource(L"x"));
+    CHECK_FALSE(webview_gui::detail::isAllowedWindowsPluginNavigation(L"x"));
+    CHECK_FALSE(webview_gui::detail::hasWindowsWebScheme(L"x"));
+
+    FakeNavigationArgs args{L"x", TRUE, FALSE};
+    int externalLaunches = 0;
+    CHECK(webview_gui::detail::handleWindowsPluginNavigation(
+              &args,
+              [&](LPCWSTR) { ++externalLaunches; }) == S_OK);
+    CHECK(args.cancelWrites == 1);
+    CHECK(args.cancelled);
+    CHECK(externalLaunches == 0);
+}
+
 TEST_CASE("Windows navigation policy cancels remote and dangerous schemes")
 {
     const wchar_t* blocked[] = {
