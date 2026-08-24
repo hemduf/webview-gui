@@ -8,6 +8,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -234,4 +235,21 @@ TEST_CASE("HTML resources receive a restrictive plugin CSP before page scripts")
     CHECK(hardened.find("connect-src 'self'") != std::string::npos);
     CHECK(hardened.find("frame-src 'none'") != std::string::npos);
     CHECK(hardened.find("object-src 'none'") != std::string::npos);
+}
+
+TEST_CASE("native host dimensions reject invalid floating-point values before integer conversion")
+{
+    int native = -1;
+
+    CHECK(detail::tryConvertNativeHostDimension(0.0, native));
+    CHECK(native == 0);
+    CHECK(detail::tryConvertNativeHostDimension(640.75, native));
+    CHECK(native == 640);
+
+    CHECK_FALSE(detail::tryConvertNativeHostDimension(-1.0, native));
+    CHECK_FALSE(detail::tryConvertNativeHostDimension(std::numeric_limits<double>::infinity(), native));
+    CHECK_FALSE(detail::tryConvertNativeHostDimension(-std::numeric_limits<double>::infinity(), native));
+    CHECK_FALSE(detail::tryConvertNativeHostDimension(std::numeric_limits<double>::quiet_NaN(), native));
+    CHECK_FALSE(detail::tryConvertNativeHostDimension(
+        static_cast<double>(std::numeric_limits<int>::max()) + 1.0, native));
 }
