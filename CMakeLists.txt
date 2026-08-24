@@ -185,6 +185,30 @@ public:
     list(PREPEND WEBVIEW_GUI_CHOC_INCLUDE_DIRS ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
 endif()
 
+if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # CHOC releases WKWebView before detaching its delegate callbacks. In an
+    # unloadable plug-in that can leave WebKit with IMPs into an image that is
+    # about to disappear. Patch only the pinned private CHOC copy and fail the
+    # configure step if the upstream teardown drifts.
+    set(WEBVIEW_GUI_PATCHED_CHOC_DIR
+        ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-patched-choc)
+    set(WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE
+        ${WEBVIEW_GUI_CHOC_SOURCE_DIR}/choc/gui/choc_WebView.h)
+    set(WEBVIEW_GUI_CHOC_WEBVIEW_PATCHED
+        ${WEBVIEW_GUI_PATCHED_CHOC_DIR}/choc/gui/choc_WebView.h)
+
+    file(REMOVE_RECURSE ${WEBVIEW_GUI_PATCHED_CHOC_DIR}/choc)
+    file(COPY ${WEBVIEW_GUI_CHOC_SOURCE_DIR}/choc
+        DESTINATION ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
+
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WebviewGuiChocMacOSPatch.cmake)
+    webview_gui_apply_choc_macos_lifetime_patch(
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE}"
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_PATCHED}")
+
+    list(PREPEND WEBVIEW_GUI_CHOC_INCLUDE_DIRS ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
+endif()
+
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     # CHOC's pinned WebKitGTK backend has several ownership bugs that are benign
     # enough in a short-lived app but leak per editor lifecycle in an unloadable
