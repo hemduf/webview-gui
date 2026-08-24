@@ -61,6 +61,25 @@ inline bool isTrustedWindowsBridgeSource(LPCWSTR source) noexcept
     return next == L'\0' || next == L'/' || next == L'?' || next == L'#';
 }
 
+inline bool isAllowedWindowsPluginNavigation(LPCWSTR uri) noexcept
+{
+    if (isTrustedWindowsBridgeSource(uri))
+        return true;
+
+    if (!uri)
+        return false;
+
+    constexpr wchar_t aboutBlank[] = L"about:blank";
+    constexpr int aboutBlankLength = static_cast<int>((sizeof(aboutBlank) / sizeof(wchar_t)) - 1);
+
+    return CompareStringOrdinal(uri,
+                                aboutBlankLength,
+                                aboutBlank,
+                                aboutBlankLength,
+                                TRUE) == CSTR_EQUAL
+        && uri[aboutBlankLength] == L'\0';
+}
+
 inline bool hasWindowsWebScheme(LPCWSTR uri) noexcept
 {
     if (!uri)
@@ -114,10 +133,13 @@ HRESULT dispatchTrustedWindowsWebMessage(EventArgs* args, Dispatch&& dispatch)
     return S_OK;
 }
 
-// Keep the privileged WebView on its exact local origin. Every other top-level
-// navigation is cancelled before commit. A direct user navigation to http(s)
-// may be routed to the system browser, but redirects, script-driven navigation,
-// and non-web schemes are only cancelled.
+// Keep the privileged WebView on its exact local origin, while allowing only
+// WebView2's inert about:blank bootstrap document. Every other top-level
+// navigation is cancelled before commit. The bootstrap page is deliberately
+// not accepted by isTrustedWindowsBridgeSource(), so it never gets bridge
+// privileges. A direct user navigation to http(s) may be routed to the system
+// browser, but redirects, script-driven navigation, and non-web schemes are
+// only cancelled.
 template <typename EventArgs, typename OpenExternal>
 HRESULT handleWindowsPluginNavigation(EventArgs* args, OpenExternal&& openExternal)
 {
@@ -133,7 +155,7 @@ HRESULT handleWindowsPluginNavigation(EventArgs* args, OpenExternal&& openExtern
         return S_OK;
     }
 
-    if (isTrustedWindowsBridgeSource(uri)) {
+    if (isAllowedWindowsPluginNavigation(uri)) {
         CoTaskMemFree(uri);
         return S_OK;
     }
