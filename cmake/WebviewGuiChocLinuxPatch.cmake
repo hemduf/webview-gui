@@ -32,7 +32,10 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
     # Tear down callbacks/scripts while the borrowed content-manager pointer is
-    # still valid, then stop loading before releasing the WebView and its context.
+    # still valid, then synchronously destroy the GtkWidget before dropping our
+    # final GObject reference. gtk_widget_destroy() breaks WebKit/GTK widget-side
+    # ownership and signal relationships that a plain unref can leave alive until
+    # a later main-loop iteration, which is unsafe for an unloadable plug-in.
     set(WEBVIEW_GUI_CHOC_DESTRUCTOR_OLD [=[    ~Pimpl()
     {
         deletionChecker->deleted = true;
@@ -58,7 +61,10 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
         }
 
         if (webview != nullptr)
+        {
             webkit_web_view_stop_loading (WEBKIT_WEB_VIEW (webview));
+            gtk_widget_destroy (GTK_WIDGET (webview));
+        }
 
         signalHandlerID = 0;
         manager = nullptr;
