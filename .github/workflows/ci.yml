@@ -131,14 +131,18 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='GTK initialization baseline is sanitizer-observable'
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='GTK initialization baseline is sanitizer-observable' 2>&1 | tee gtk-init-sanitizer.log
 
       - name: Test Linux sanitizer raw WebKit context baseline
         if: runner.os == 'Linux' && always()
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='raw WebKitGTK context lifetime is sanitizer-observable'
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='raw WebKitGTK context lifetime is sanitizer-observable' 2>&1 | tee webkit-context-sanitizer.log
 
       - name: Test Linux sanitizer support negotiation
         if: runner.os == 'Linux' && always()
@@ -152,7 +156,9 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC WebKitGTK view embeds into an XEmbed GtkSocket host'
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC WebKitGTK view embeds into an XEmbed GtkSocket host' 2>&1 | tee webview-smoke-sanitizer.log
 
       - name: Test Linux sanitizer XEmbed cycles
         if: runner.os == 'Linux' && always()
@@ -188,6 +194,17 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux JavaScript error completions release GLib errors'
+
+      - name: Upload Linux sanitizer diagnostics
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-sanitizer-diagnostics
+          if-no-files-found: error
+          path: |
+            gtk-init-sanitizer.log
+            webkit-context-sanitizer.log
+            webview-smoke-sanitizer.log
 
       - name: Test sanitizers on macOS
         if: runner.os == 'macOS'
