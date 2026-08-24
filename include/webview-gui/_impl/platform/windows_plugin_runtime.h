@@ -49,12 +49,14 @@ inline bool isTrustedWindowsBridgeSource(LPCWSTR source) noexcept
 
     constexpr wchar_t trustedOrigin[] = L"https://choc.localhost";
     constexpr int trustedLength = static_cast<int>((sizeof(trustedOrigin) / sizeof(wchar_t)) - 1);
+    const int sourceLength = lstrlenW(source);
 
-    if (CompareStringOrdinal(source,
-                             trustedLength,
-                             trustedOrigin,
-                             trustedLength,
-                             TRUE) != CSTR_EQUAL)
+    if (sourceLength < trustedLength
+        || CompareStringOrdinal(source,
+                                trustedLength,
+                                trustedOrigin,
+                                trustedLength,
+                                TRUE) != CSTR_EQUAL)
         return false;
 
     const wchar_t next = source[trustedLength];
@@ -72,12 +74,12 @@ inline bool isAllowedWindowsPluginNavigation(LPCWSTR uri) noexcept
     constexpr wchar_t aboutBlank[] = L"about:blank";
     constexpr int aboutBlankLength = static_cast<int>((sizeof(aboutBlank) / sizeof(wchar_t)) - 1);
 
-    return CompareStringOrdinal(uri,
+    return lstrlenW(uri) == aboutBlankLength
+        && CompareStringOrdinal(uri,
                                 aboutBlankLength,
                                 aboutBlank,
                                 aboutBlankLength,
-                                TRUE) == CSTR_EQUAL
-        && uri[aboutBlankLength] == L'\0';
+                                TRUE) == CSTR_EQUAL;
 }
 
 inline bool hasWindowsWebScheme(LPCWSTR uri) noexcept
@@ -87,8 +89,9 @@ inline bool hasWindowsWebScheme(LPCWSTR uri) noexcept
 
     constexpr wchar_t http[] = L"http://";
     constexpr wchar_t https[] = L"https://";
-    return CompareStringOrdinal(uri, 7, http, 7, TRUE) == CSTR_EQUAL
-        || CompareStringOrdinal(uri, 8, https, 8, TRUE) == CSTR_EQUAL;
+    const int uriLength = lstrlenW(uri);
+    return (uriLength >= 7 && CompareStringOrdinal(uri, 7, http, 7, TRUE) == CSTR_EQUAL)
+        || (uriLength >= 8 && CompareStringOrdinal(uri, 8, https, 8, TRUE) == CSTR_EQUAL);
 }
 
 inline void openWindowsExternalURL(LPCWSTR uri) noexcept
