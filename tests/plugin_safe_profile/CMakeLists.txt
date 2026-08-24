@@ -22,7 +22,10 @@ function(webview_gui_read_git_revision output_variable repository_dir)
         OUTPUT_VARIABLE revision
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
-    if(NOT revision_result EQUAL 0 OR NOT revision MATCHES "^[0-9a-fA-F]{40}$")
+    string(LENGTH "${revision}" revision_length)
+    if(NOT revision_result EQUAL 0
+       OR NOT revision_length EQUAL 40
+       OR NOT revision MATCHES "^[0-9a-fA-F]+$")
         message(FATAL_ERROR "unable to resolve pinned revision for ${repository_dir}")
     endif()
     set(${output_variable} "${revision}" PARENT_SCOPE)
