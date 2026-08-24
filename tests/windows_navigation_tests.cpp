@@ -74,6 +74,21 @@ TEST_CASE("Windows navigation policy keeps privileged local pages in-process")
     CHECK(external.empty());
 }
 
+TEST_CASE("Windows navigation policy allows inert about:blank bootstrap without granting bridge trust")
+{
+    FakeNavigationArgs args{L"about:blank", FALSE, FALSE};
+    int externalLaunches = 0;
+
+    CHECK(webview_gui::detail::handleWindowsPluginNavigation(
+              &args,
+              [&](LPCWSTR) { ++externalLaunches; }) == S_OK);
+    CHECK(args.uriReads == 1);
+    CHECK(args.cancelWrites == 0);
+    CHECK_FALSE(args.cancelled);
+    CHECK(externalLaunches == 0);
+    CHECK_FALSE(webview_gui::detail::isTrustedWindowsBridgeSource(L"about:blank"));
+}
+
 TEST_CASE("Windows navigation policy cancels remote and dangerous schemes")
 {
     const wchar_t* blocked[] = {
@@ -84,7 +99,6 @@ TEST_CASE("Windows navigation policy cancels remote and dangerous schemes")
         L"file:///C:/plugin/index.html",
         L"data:text/html,evil",
         L"javascript:alert(1)",
-        L"about:blank",
     };
 
     for (const auto* uri : blocked) {
