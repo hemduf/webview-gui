@@ -127,53 +127,85 @@ jobs:
         run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_clap_tests$'
 
       - name: Test Linux sanitizer support negotiation
+        id: linux_webkit_support
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='public support negotiation exposes only Linux X11 embedding'
 
       - name: Test Linux sanitizer XEmbed smoke
+        id: linux_webkit_smoke
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC WebKitGTK view embeds into an XEmbed GtkSocket host'
 
       - name: Test Linux sanitizer XEmbed cycles
+        id: linux_webkit_cycles
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed host survives repeated WebView attach and destroy cycles'
 
       - name: Test Linux sanitizer invalid parents
+        id: linux_webkit_invalid_parents
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed adapter rejects invalid parents and duplicate attachment'
 
       - name: Test Linux sanitizer navigation policy
+        id: linux_webkit_navigation
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='native WebKitGTK policy blocks remote top-level navigation before commit'
 
       - name: Test Linux sanitizer lifetime cycles
+        id: linux_webkit_lifetime
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux lifetime releases GtkPlug and WebKit objects across cycles'
 
       - name: Test Linux sanitizer JavaScript errors
+        id: linux_webkit_js_errors
         if: runner.os == 'Linux'
+        continue-on-error: true
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux JavaScript error completions release GLib errors'
+
+      - name: Enforce Linux WebKit sanitizer results
+        if: runner.os == 'Linux' && always()
+        run: |
+          echo "support=${{ steps.linux_webkit_support.outcome }}"
+          echo "smoke=${{ steps.linux_webkit_smoke.outcome }}"
+          echo "cycles=${{ steps.linux_webkit_cycles.outcome }}"
+          echo "invalid_parents=${{ steps.linux_webkit_invalid_parents.outcome }}"
+          echo "navigation=${{ steps.linux_webkit_navigation.outcome }}"
+          echo "lifetime=${{ steps.linux_webkit_lifetime.outcome }}"
+          echo "js_errors=${{ steps.linux_webkit_js_errors.outcome }}"
+          test "${{ steps.linux_webkit_support.outcome }}" = success
+          test "${{ steps.linux_webkit_smoke.outcome }}" = success
+          test "${{ steps.linux_webkit_cycles.outcome }}" = success
+          test "${{ steps.linux_webkit_invalid_parents.outcome }}" = success
+          test "${{ steps.linux_webkit_navigation.outcome }}" = success
+          test "${{ steps.linux_webkit_lifetime.outcome }}" = success
+          test "${{ steps.linux_webkit_js_errors.outcome }}" = success
 
       - name: Test sanitizers on macOS
         if: runner.os == 'macOS'
