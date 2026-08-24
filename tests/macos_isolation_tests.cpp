@@ -9,6 +9,7 @@
 #include <objc/runtime.h>
 
 #include <array>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -27,13 +28,19 @@ struct Module {
     CreateRuntimeClassNamesFn createRuntimeClassNames = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
+    void* imageBase = nullptr;
 
     explicit Module(const char* path)
     {
         handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if (handle) {
-            createRuntimeClassNames = reinterpret_cast<CreateRuntimeClassNamesFn>(
-                dlsym(handle, "webview_gui_test_create_runtime_class_names"));
+            auto createSymbol = dlsym(handle, "webview_gui_test_create_runtime_class_names");
+            createRuntimeClassNames = reinterpret_cast<CreateRuntimeClassNamesFn>(createSymbol);
+
+            Dl_info info{};
+            if (createSymbol != nullptr && dladdr(createSymbol, &info) != 0)
+                imageBase = info.dli_fbase;
+
             retainWebViews = reinterpret_cast<RetainWebViewsFn>(
                 dlsym(handle, "webview_gui_test_retain_webviews"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
@@ -88,6 +95,47 @@ bool isCHOCDelegateClass(const std::string& name)
     return name.rfind("CHOCWebViewDelegate_", 0) == 0;
 }
 
+bool classHasIMPFromImage(const std::string& name, const void* imageBase)
+{
+    auto cls = (Class) objc_getClass(name.c_str());
+    if (cls == nullptr || imageBase == nullptr) return false;
+
+    unsigned int count = 0;
+    Method* methods = class_copyMethodList(cls, &count);
+    bool found = false;
+
+    for (unsigned int i = 0; i < count; ++i) {
+        Dl_info info{};
+        auto imp = reinterpret_cast<const void*>(method_getImplementation(methods[i]));
+        if (imp != nullptr && dladdr(imp, &info) != 0 && info.dli_fbase == imageBase) {
+            found = true;
+            break;
+        }
+    }
+
+    std::free(methods);
+    return found;
+}
+
+bool classOwnIMPsAreOutsideImage(const std::string& name, const void* imageBase)
+{
+    auto cls = (Class) objc_getClass(name.c_str());
+    if (cls == nullptr || imageBase == nullptr) return false;
+
+    unsigned int count = 0;
+    Method* methods = class_copyMethodList(cls, &count);
+    bool safe = count != 0;
+
+    for (unsigned int i = 0; safe && i < count; ++i) {
+        Dl_info info{};
+        auto imp = reinterpret_cast<const void*>(method_getImplementation(methods[i]));
+        safe = imp != nullptr && dladdr(imp, &info) != 0 && info.dli_fbase != imageBase;
+    }
+
+    std::free(methods);
+    return safe;
+}
+
 } // namespace
 
 TEST_CASE("plugin-safe CHOC modules use the system WKWebView class")
@@ -116,13 +164,15 @@ TEST_CASE("plugin-safe CHOC modules use the system WKWebView class")
     CHECK(a.delegate != b.delegate);
 }
 
-TEST_CASE("the last CHOC WebView disposes its delegate class before module unload")
+TEST_CASE("unloading a CHOC module neutralises delegate IMPs and reuses the class on reload")
 {
     Module moduleA{MODULE_A_PATH};
     Module moduleB{MODULE_B_PATH};
 
     REQUIRE(moduleA.handle != nullptr);
     REQUIRE(moduleB.handle != nullptr);
+    REQUIRE(moduleA.imageBase != nullptr);
+    REQUIRE(moduleB.imageBase != nullptr);
 
     const auto a = moduleA.createNames();
     const auto b = moduleB.createNames();
@@ -131,74 +181,98 @@ TEST_CASE("the last CHOC WebView disposes its delegate class before module unloa
     REQUIRE(b.webview == "WKWebView");
     REQUIRE(isCHOCDelegateClass(a.delegate));
     REQUIRE(isCHOCDelegateClass(b.delegate));
+    REQUIRE(a.delegate != b.delegate);
 
-    CHECK(objc_getClass("WKWebView") != nullptr);
+    CHECK(objc_getClass(a.delegate.c_str()) != nullptr);
+    CHECK(objc_getClass(b.delegate.c_str()) != nullptr);
+    CHECK(classHasIMPFromImage(a.delegate, moduleA.imageBase));
+    CHECK(classHasIMPFromImage(b.delegate, moduleB.imageBase));
 
-    // createNames() destroys its temporary WebView before it returns. A dynamic
-    // delegate class must therefore already be gone while the module is still
-    // loaded; waiting for dlclose makes objc_disposeClassPair race WebKit/ASan.
-    CHECK(objc_getClass(a.delegate.c_str()) == nullptr);
-    CHECK(objc_getClass(b.delegate.c_str()) == nullptr);
-
+    const auto unloadedImageA = moduleA.imageBase;
     moduleA.close();
 
-    CHECK(objc_getClass("WKWebView") != nullptr);
-    CHECK(objc_getClass(a.delegate.c_str()) == nullptr);
+    // The Objective-C runtime may retain the class metadata for process lifetime,
+    // but no method may continue pointing into the unloaded plug-in image.
+    CHECK(objc_getClass(a.delegate.c_str()) != nullptr);
+    CHECK(classOwnIMPsAreOutsideImage(a.delegate, unloadedImageA));
 
     const auto bAfter = moduleB.createNames();
     CHECK(bAfter.webview == b.webview);
-    CHECK(bAfter.delegate != b.delegate);
-    CHECK(objc_getClass(bAfter.delegate.c_str()) == nullptr);
+    CHECK(bAfter.delegate == b.delegate);
+    CHECK(classHasIMPFromImage(b.delegate, moduleB.imageBase));
+
+    Module reloadedA{MODULE_A_PATH};
+    REQUIRE(reloadedA.handle != nullptr);
+    REQUIRE(reloadedA.imageBase != nullptr);
+
+    const auto aReloaded = reloadedA.createNames();
+    CHECK(aReloaded.webview == a.webview);
+    CHECK(aReloaded.delegate == a.delegate);
+    CHECK(classHasIMPFromImage(a.delegate, reloadedA.imageBase));
+
+    const auto reloadedImageA = reloadedA.imageBase;
+    reloadedA.close();
+    CHECK(classOwnIMPsAreOutsideImage(a.delegate, reloadedImageA));
 }
 
-TEST_CASE("32 live WebViews remain isolated while one module unloads and reloads")
+TEST_CASE("32 live WebViews remain isolated across repeated module unload and reload")
 {
     constexpr std::size_t viewsPerModule = 16;
     constexpr int cycles = 5;
 
+    std::string stableDelegateA;
+    std::string stableDelegateB;
+
     for (int cycle = 0; cycle < cycles; ++cycle) {
         CAPTURE(cycle);
 
-        std::string delegateA;
-        std::string delegateB;
+        Module moduleA{MODULE_A_PATH};
+        Module moduleB{MODULE_B_PATH};
 
-        {
-            Module moduleA{MODULE_A_PATH};
-            Module moduleB{MODULE_B_PATH};
+        REQUIRE(moduleA.handle != nullptr);
+        REQUIRE(moduleB.handle != nullptr);
+        REQUIRE(moduleA.imageBase != nullptr);
+        REQUIRE(moduleB.imageBase != nullptr);
+        REQUIRE(moduleA.retainWebViews != nullptr);
+        REQUIRE(moduleA.releaseWebViews != nullptr);
+        REQUIRE(moduleB.retainWebViews != nullptr);
+        REQUIRE(moduleB.releaseWebViews != nullptr);
 
-            REQUIRE(moduleA.handle != nullptr);
-            REQUIRE(moduleB.handle != nullptr);
-            REQUIRE(moduleA.retainWebViews != nullptr);
-            REQUIRE(moduleA.releaseWebViews != nullptr);
-            REQUIRE(moduleB.retainWebViews != nullptr);
-            REQUIRE(moduleB.releaseWebViews != nullptr);
+        const auto delegateA = moduleA.retain(viewsPerModule);
+        const auto delegateB = moduleB.retain(viewsPerModule);
 
-            delegateA = moduleA.retain(viewsPerModule);
-            delegateB = moduleB.retain(viewsPerModule);
+        REQUIRE(isCHOCDelegateClass(delegateA));
+        REQUIRE(isCHOCDelegateClass(delegateB));
+        CHECK(delegateA != delegateB);
+        CHECK(classHasIMPFromImage(delegateA, moduleA.imageBase));
+        CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
 
-            REQUIRE(isCHOCDelegateClass(delegateA));
-            REQUIRE(isCHOCDelegateClass(delegateB));
-            CHECK(delegateA != delegateB);
-            CHECK(objc_getClass(delegateA.c_str()) != nullptr);
-            CHECK(objc_getClass(delegateB.c_str()) != nullptr);
-
-            moduleA.release();
-            CHECK(objc_getClass(delegateA.c_str()) == nullptr);
-            moduleA.close();
-            CHECK(objc_getClass(delegateA.c_str()) == nullptr);
-
-            // B remains alive with 16 retained WKWebViews and must still be usable.
-            const auto bAfter = moduleB.createNames();
-            CHECK(bAfter.webview == "WKWebView");
-            CHECK(bAfter.delegate == delegateB);
-            CHECK(objc_getClass(delegateB.c_str()) != nullptr);
-
-            moduleB.release();
-            CHECK(objc_getClass(delegateB.c_str()) == nullptr);
-            moduleB.close();
+        if (cycle == 0) {
+            stableDelegateA = delegateA;
+            stableDelegateB = delegateB;
+        } else {
+            CHECK(delegateA == stableDelegateA);
+            CHECK(delegateB == stableDelegateB);
         }
 
-        CHECK(objc_getClass(delegateA.c_str()) == nullptr);
-        CHECK(objc_getClass(delegateB.c_str()) == nullptr);
+        moduleA.release();
+        CHECK(classHasIMPFromImage(delegateA, moduleA.imageBase));
+        const auto unloadedImageA = moduleA.imageBase;
+        moduleA.close();
+        CHECK(objc_getClass(delegateA.c_str()) != nullptr);
+        CHECK(classOwnIMPsAreOutsideImage(delegateA, unloadedImageA));
+
+        // B remains alive with 16 retained WKWebViews and must still be usable.
+        const auto bAfter = moduleB.createNames();
+        CHECK(bAfter.webview == "WKWebView");
+        CHECK(bAfter.delegate == delegateB);
+        CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
+
+        moduleB.release();
+        CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
+        const auto unloadedImageB = moduleB.imageBase;
+        moduleB.close();
+        CHECK(objc_getClass(delegateB.c_str()) != nullptr);
+        CHECK(classOwnIMPsAreOutsideImage(delegateB, unloadedImageB));
     }
 }

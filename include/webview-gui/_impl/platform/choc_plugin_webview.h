@@ -16,13 +16,15 @@
 // For webview-gui's plug-in-safe profile we disable the two features implemented
 // by that subclass (acceptsFirstMouse: and performKeyEquivalent:) and arrange for
 // CHOC to use the system WKWebView class instead. Delegate classes remain dynamic,
-// but CHOC disposes those during module teardown after all WebViews are destroyed.
+// but their names are stable per module and their IMPs are neutralised before
+// unload, so the runtime never keeps pointers into an unloaded plug-in image.
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <dlfcn.h>
 
@@ -32,14 +34,30 @@ namespace webview_gui::detail {
 
 static void chocPluginModuleAnchor() {}
 
-inline const void* chocPluginModuleIdentity()
+inline std::uint64_t chocPluginStableModuleToken()
 {
     Dl_info info{};
-    auto anchor = reinterpret_cast<const void*>(&chocPluginModuleAnchor);
-    if (dladdr(anchor, &info) != 0 && info.dli_fbase != nullptr)
-        return info.dli_fbase;
+    const auto anchor = reinterpret_cast<const void*>(&chocPluginModuleAnchor);
+    const char* path = nullptr;
 
-    return anchor;
+    if (dladdr(anchor, &info) != 0)
+        path = info.dli_fname;
+
+    if (path == nullptr)
+        return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(anchor));
+
+    std::uint64_t hash = 14695981039346656037ull;
+    for (auto p = reinterpret_cast<const unsigned char*>(path); *p != 0; ++p) {
+        hash ^= static_cast<std::uint64_t>(*p);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+inline const void* chocPluginAssociatedObjectKey()
+{
+    static const unsigned char key = 0;
+    return &key;
 }
 
 inline bool isSystemWKWebViewClass(Class cls)
@@ -55,6 +73,23 @@ inline bool isCHOCWebViewDelegateClass(Class cls)
         && std::strncmp(name, "CHOCWebViewDelegate_", std::strlen("CHOCWebViewDelegate_")) == 0;
 }
 
+inline Method findOwnCHOCWebViewMethod(Class cls, SEL selector)
+{
+    unsigned int count = 0;
+    Method* methods = class_copyMethodList(cls, &count);
+    Method found = nullptr;
+
+    for (unsigned int i = 0; i < count; ++i) {
+        if (method_getName(methods[i]) == selector) {
+            found = methods[i];
+            break;
+        }
+    }
+
+    std::free(methods);
+    return found;
+}
+
 inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
                                           SEL selector,
                                           IMP implementation,
@@ -62,6 +97,11 @@ inline BOOL addCHOCWebViewMethodForPlugin(Class cls,
 {
     if (isSystemWKWebViewClass(cls))
         return YES;
+
+    if (auto method = findOwnCHOCWebViewMethod(cls, selector)) {
+        method_setImplementation(method, implementation);
+        return YES;
+    }
 
     return ::class_addMethod(cls, selector, implementation, types);
 }
@@ -73,9 +113,8 @@ inline void installPluginNavigationPolicy(Class cls)
     if (!isCHOCWebViewDelegateClass(cls)) return;
 
     const auto selector = sel_registerName("webView:decidePolicyForNavigationAction:decisionHandler:");
-    if (class_getInstanceMethod(cls, selector) != nullptr) return;
 
-    ::class_addMethod(
+    addCHOCWebViewMethodForPlugin(
         cls,
         selector,
         (IMP) (+[](id, SEL, id, id navigationAction, NavigationDecisionHandler decisionHandler)
@@ -98,8 +137,36 @@ inline void registerCHOCWebViewClassForPlugin(Class cls)
 {
     if (!isSystemWKWebViewClass(cls)) {
         installPluginNavigationPolicy(cls);
-        ::objc_registerClassPair(cls);
+
+        const char* name = class_getName(cls);
+        if (name != nullptr && objc_getClass(name) != cls)
+            ::objc_registerClassPair(cls);
     }
+}
+
+inline IMP processResidentFallbackIMP()
+{
+    auto nsObject = (Class) objc_getClass("NSObject");
+    auto method = class_getInstanceMethod(nsObject, sel_registerName("class"));
+    return method != nullptr ? method_getImplementation(method) : nullptr;
+}
+
+inline void disposeCHOCWebViewClassForPlugin(Class cls)
+{
+    if (!isCHOCWebViewDelegateClass(cls)) {
+        ::objc_disposeClassPair(cls);
+        return;
+    }
+
+    const auto fallback = processResidentFallbackIMP();
+    if (fallback == nullptr)
+        return;
+
+    unsigned int count = 0;
+    Method* methods = class_copyMethodList(cls, &count);
+    for (unsigned int i = 0; i < count; ++i)
+        method_setImplementation(methods[i], fallback);
+    std::free(methods);
 }
 
 inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
@@ -107,12 +174,12 @@ inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
                                                      id value,
                                                      objc_AssociationPolicy policy)
 {
-    ::objc_setAssociatedObject(object, chocPluginModuleIdentity(), value, policy);
+    ::objc_setAssociatedObject(object, chocPluginAssociatedObjectKey(), value, policy);
 }
 
 inline id getCHOCWebViewAssociatedObjectForPlugin(id object, const void*)
 {
-    return ::objc_getAssociatedObject(object, chocPluginModuleIdentity());
+    return ::objc_getAssociatedObject(object, chocPluginAssociatedObjectKey());
 }
 
 } // namespace webview_gui::detail
@@ -130,18 +197,23 @@ inline Class createDelegateClassForWebviewGuiPlugin(const char* baseClass,
     if (baseClass == nullptr || newClassName == nullptr)
         return nullptr;
 
-    static std::atomic<unsigned long long> counter{0};
     char className[256] = {};
-    const auto moduleToken = reinterpret_cast<std::uintptr_t>(webview_gui::detail::chocPluginModuleIdentity());
+    const auto moduleToken = webview_gui::detail::chocPluginStableModuleToken();
+    const auto expectedBase = (Class) objc_getClass(baseClass);
 
     for (unsigned int attempt = 0; attempt < 64; ++attempt) {
-        const auto serial = counter.fetch_add(1, std::memory_order_relaxed);
-        std::snprintf(className, sizeof(className), "%sWG_%llx_%llu",
+        std::snprintf(className, sizeof(className), "%sWG_%llx_%u",
                       newClassName,
                       static_cast<unsigned long long>(moduleToken),
-                      serial);
+                      attempt);
 
-        if (auto cls = objc_allocateClassPair(objc_getClass(baseClass), className, 0))
+        if (auto existing = (Class) objc_getClass(className)) {
+            if (class_getSuperclass(existing) == expectedBase)
+                return existing;
+            continue;
+        }
+
+        if (auto cls = objc_allocateClassPair(expectedBase, className, 0))
             return cls;
     }
 
@@ -166,6 +238,7 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #define createDelegateClass createDelegateClassForWebviewGuiPlugin
 #define class_addMethod webview_gui::detail::addCHOCWebViewMethodForPlugin
 #define objc_registerClassPair webview_gui::detail::registerCHOCWebViewClassForPlugin
+#define objc_disposeClassPair webview_gui::detail::disposeCHOCWebViewClassForPlugin
 #define objc_setAssociatedObject webview_gui::detail::setCHOCWebViewAssociatedObjectForPlugin
 #define objc_getAssociatedObject webview_gui::detail::getCHOCWebViewAssociatedObjectForPlugin
 #define getNSString getPluginSafeNSStringForWebviewGui
@@ -175,6 +248,7 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #undef getNSString
 #undef objc_getAssociatedObject
 #undef objc_setAssociatedObject
+#undef objc_disposeClassPair
 #undef objc_registerClassPair
 #undef class_addMethod
 #undef createDelegateClass
