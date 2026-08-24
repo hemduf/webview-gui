@@ -3,6 +3,12 @@
 #ifndef WEBVIEW_GUI_TEST_MODULE_VARIANT
 #define WEBVIEW_GUI_TEST_MODULE_VARIANT 0
 #endif
+#ifndef WEBVIEW_GUI_TEST_WEBVIEW_REVISION
+#define WEBVIEW_GUI_TEST_WEBVIEW_REVISION "unknown"
+#endif
+#ifndef WEBVIEW_GUI_TEST_CHOC_REVISION
+#define WEBVIEW_GUI_TEST_CHOC_REVISION "unknown"
+#endif
 
 #if defined(_WIN32)
 #define WEBVIEW_GUI_TEST_EXPORT extern "C" __declspec(dllexport)
@@ -10,13 +16,27 @@
 #define WEBVIEW_GUI_TEST_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
+struct WebviewGuiPluginTestInfo {
+    unsigned int abiVersion;
+    int variant;
+    int supportsNone;
+    const char* webviewRevision;
+    const char* chocRevision;
+};
+
 // Model a CLAP/VST3/AU wrapper entry point: this is intentionally the only
 // repository-owned symbol that the qualification module is allowed to export.
-WEBVIEW_GUI_TEST_EXPORT int webview_gui_plugin_test_entry()
+// Returning immutable module-local metadata lets the host prove that two loaded
+// modules were compiled from different pinned source/CHOC revisions without
+// exporting any webview-gui implementation detail.
+WEBVIEW_GUI_TEST_EXPORT const WebviewGuiPluginTestInfo* webview_gui_plugin_test_entry()
 {
-    // Reference a non-inline webview-gui function so the private static archive
-    // is actually pulled into this module before its export surface is scanned.
-    return webview_gui::WebviewGui::supports(webview_gui::WebviewGui::NONE)
-        ? 100 + WEBVIEW_GUI_TEST_MODULE_VARIANT
-        : WEBVIEW_GUI_TEST_MODULE_VARIANT;
+    static const WebviewGuiPluginTestInfo info {
+        1u,
+        WEBVIEW_GUI_TEST_MODULE_VARIANT,
+        webview_gui::WebviewGui::supports(webview_gui::WebviewGui::NONE) ? 1 : 0,
+        WEBVIEW_GUI_TEST_WEBVIEW_REVISION,
+        WEBVIEW_GUI_TEST_CHOC_REVISION,
+    };
+    return &info;
 }
