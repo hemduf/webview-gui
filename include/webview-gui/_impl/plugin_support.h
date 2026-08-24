@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <random>
 #include <shared_mutex>
@@ -27,6 +29,16 @@ inline constexpr std::size_t maxResourceBytes = WEBVIEW_GUI_MAX_RESOURCE_BYTES;
 inline constexpr std::string_view pluginLocalOrigin = "choc://choc.choc";
 inline constexpr std::string_view windowsPluginLocalOrigin = "https://choc.localhost";
 inline constexpr std::string_view bridgeFragmentKey = "__wg";
+
+inline bool tryConvertNativeHostDimension(double value, int& native) noexcept
+{
+    if (!std::isfinite(value) || value < 0.0
+        || value > static_cast<double>(std::numeric_limits<int>::max()))
+        return false;
+
+    native = static_cast<int>(value);
+    return true;
+}
 
 class ThreadAffinity {
 public:
