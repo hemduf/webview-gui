@@ -126,12 +126,54 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_clap_tests$'
 
-      - name: Test Linux sanitizer GTK/WebKit embed
+      - name: Test Linux sanitizer support negotiation
         if: runner.os == 'Linux'
         env:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_linux_embed_tests$'
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='public support negotiation exposes only Linux X11 embedding'
+
+      - name: Test Linux sanitizer XEmbed smoke
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC WebKitGTK view embeds into an XEmbed GtkSocket host'
+
+      - name: Test Linux sanitizer XEmbed cycles
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed host survives repeated WebView attach and destroy cycles'
+
+      - name: Test Linux sanitizer invalid parents
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed adapter rejects invalid parents and duplicate attachment'
+
+      - name: Test Linux sanitizer navigation policy
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='native WebKitGTK policy blocks remote top-level navigation before commit'
+
+      - name: Test Linux sanitizer lifetime cycles
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux lifetime releases GtkPlug and WebKit objects across cycles'
+
+      - name: Test Linux sanitizer JavaScript errors
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux JavaScript error completions release GLib errors'
 
       - name: Test sanitizers on macOS
         if: runner.os == 'macOS'
