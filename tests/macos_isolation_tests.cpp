@@ -218,7 +218,11 @@ TEST_CASE("unloading a CHOC module neutralises delegate IMPs and reuses the clas
 TEST_CASE("32 live WebViews remain isolated across repeated module unload and reload")
 {
     constexpr std::size_t viewsPerModule = 16;
-    constexpr int cycles = 5;
+    // CI #318 attempt 1 exposed an ASan global-buffer-overflow while a module
+    // was reloaded and its retained-view fixture storage was reconstructed.
+    // Exercise enough unload/reload cycles to make that stale-storage failure a
+    // deterministic release gate instead of relying on a single rerun.
+    constexpr int cycles = 20;
 
     std::string stableDelegateA;
     std::string stableDelegateB;
