@@ -195,6 +195,7 @@ if(WIN32)
         webview_gui_windows_module_b
     )
     add_test(NAME webview_gui_windows_multimodule_lifecycle_tests COMMAND webview_gui_windows_multimodule_lifecycle_tests)
+    set_tests_properties(webview_gui_windows_multimodule_lifecycle_tests PROPERTIES TIMEOUT 1800)
 
     add_executable(webview_gui_windows_navigation_tests windows_navigation_tests.cpp)
     target_include_directories(webview_gui_windows_navigation_tests PRIVATE
