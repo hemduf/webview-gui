@@ -214,3 +214,29 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build-sanitize --output-on-failure --timeout 60
+
+  thread-sanitizer:
+    name: ubuntu-latest / TSan registry
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure ThreadSanitizer registry qualification
+        run: cmake -S tests -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DWEBVIEW_GUI_ENABLE_TSAN_TESTS=ON
+
+      - name: Build ThreadSanitizer registry qualification
+        run: cmake --build build-tsan --target webview_gui_callback_registry_tsan_tests --parallel
+
+      - name: Run ThreadSanitizer registry qualification
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 60 -R '^webview_gui_callback_registry_tsan_tests$'
