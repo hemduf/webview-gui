@@ -194,11 +194,10 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
 
     constexpr std::size_t viewsPerModule = 16;
     constexpr std::size_t editorsPerLifecycleBatch = viewsPerModule * 2;
-    constexpr std::size_t requiredEditorLifecycles = 200;
     constexpr std::size_t requiredLifecycleIterations = 200;
-    constexpr std::size_t lifecycleBatches =
-        (requiredEditorLifecycles + editorsPerLifecycleBatch - 1)
-        / editorsPerLifecycleBatch;
+    constexpr std::size_t requiredEditorLifecycles =
+        requiredLifecycleIterations * editorsPerLifecycleBatch;
+    constexpr std::size_t lifecycleBatches = requiredLifecycleIterations;
     std::size_t completedEditorLifecycles = 0;
     std::size_t completedLifecycleIterations = 0;
 
@@ -222,10 +221,10 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(moduleA.hasExchange());
     REQUIRE(moduleB.hasExchange());
 
-    // Seven batches keep 32 editors alive simultaneously and execute 224 full
-    // create -> attach -> resize -> hide/show -> bridge-message -> destroy
-    // editor lifecycles. Keeping the DSOs loaded here isolates editor lifecycle
-    // stress from the separate peer-module unload/reload qualification below.
+    // Two hundred batches keep 32 editors alive simultaneously and execute
+    // 6,400 full create -> attach -> resize -> hide/show -> bridge-message ->
+    // destroy editor lifecycles. Keeping the DSOs loaded here isolates editor
+    // lifecycle stress from the separate peer-module unload/reload gate below.
     for (std::size_t batch = 0; batch < lifecycleBatches; ++batch) {
         CAPTURE(batch);
         REQUIRE(moduleA.retain(viewsPerModule));
