@@ -9,6 +9,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(WEBVIEW_GUI_ENABLE_TSAN_TESTS "Build the callback-registry ThreadSanitizer qualification target" OFF)
+
 FetchContent_Declare(
     doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
@@ -72,11 +74,23 @@ target_compile_definitions(webview_gui_clap_tests PRIVATE WEBVIEW_GUI_TESTING=1)
 target_link_libraries(webview_gui_clap_tests PRIVATE doctest::doctest webview-gui)
 add_test(NAME webview_gui_clap_tests COMMAND webview_gui_clap_tests)
 
-if(UNIX AND NOT APPLE)
+if(WEBVIEW_GUI_ENABLE_TSAN_TESTS)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "WEBVIEW_GUI_ENABLE_TSAN_TESTS is currently supported only on Linux")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "WEBVIEW_GUI_ENABLE_TSAN_TESTS requires GCC or Clang")
+    endif()
+
     add_executable(webview_gui_callback_registry_tsan_tests callback_registry_tsan_tests.cpp)
     target_include_directories(webview_gui_callback_registry_tsan_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../include
     )
+    target_compile_options(webview_gui_callback_registry_tsan_tests PRIVATE
+        -fsanitize=thread
+        -fno-omit-frame-pointer
+    )
+    target_link_options(webview_gui_callback_registry_tsan_tests PRIVATE -fsanitize=thread)
     target_link_libraries(webview_gui_callback_registry_tsan_tests PRIVATE
         doctest::doctest
         Threads::Threads
