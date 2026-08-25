@@ -19,6 +19,7 @@ using CreateRetainedStateFn = void* (*)();
 using DestroyRetainedStateFn = void (*)(void*);
 using RetainWebViewsFn = bool (*)(void*, std::size_t, char*, std::size_t);
 using ReleaseWebViewsFn = void (*)(void*);
+using ExerciseRetainedWebViewsFn = bool (*)(void*, std::size_t);
 
 struct RuntimeNames {
     std::string webview;
@@ -32,6 +33,7 @@ struct Module {
     DestroyRetainedStateFn destroyRetainedState = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
+    ExerciseRetainedWebViewsFn exerciseRetainedWebViews = nullptr;
     void* retainedState = nullptr;
     void* imageBase = nullptr;
 
@@ -54,6 +56,8 @@ struct Module {
                 dlsym(handle, "webview_gui_test_retain_webviews"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
                 dlsym(handle, "webview_gui_test_release_webviews"));
+            exerciseRetainedWebViews = reinterpret_cast<ExerciseRetainedWebViewsFn>(
+                dlsym(handle, "webview_gui_test_exercise_retained_webviews"));
 
             if (createRetainedState && destroyRetainedState
                 && retainWebViews && releaseWebViews)
@@ -91,6 +95,13 @@ struct Module {
         return delegate.data();
     }
 
+    bool exercise(std::size_t passes) const
+    {
+        return retainedState != nullptr
+            && exerciseRetainedWebViews != nullptr
+            && exerciseRetainedWebViews(retainedState, passes);
+    }
+
     void release() const
     {
         if (retainedState && releaseWebViews)
@@ -117,6 +128,7 @@ struct Module {
             destroyRetainedState = nullptr;
             retainWebViews = nullptr;
             releaseWebViews = nullptr;
+            exerciseRetainedWebViews = nullptr;
             imageBase = nullptr;
         }
     }
@@ -245,6 +257,37 @@ TEST_CASE("unloading a CHOC module neutralises delegate IMPs and reuses the clas
     const auto reloadedImageA = reloadedA.imageBase;
     reloadedA.close();
     CHECK(classOwnIMPsAreOutsideImage(a.delegate, reloadedImageA));
+}
+
+TEST_CASE("32 live WebViews remain interactive when a peer module unloads")
+{
+    constexpr std::size_t viewsPerModule = 16;
+
+    Module moduleA{MODULE_A_PATH};
+    Module moduleB{MODULE_B_PATH};
+
+    REQUIRE(moduleA.handle != nullptr);
+    REQUIRE(moduleB.handle != nullptr);
+    REQUIRE(moduleA.hasRetainedState());
+    REQUIRE(moduleB.hasRetainedState());
+    REQUIRE(moduleA.exerciseRetainedWebViews != nullptr);
+    REQUIRE(moduleB.exerciseRetainedWebViews != nullptr);
+
+    const auto delegateA = moduleA.retain(viewsPerModule);
+    const auto delegateB = moduleB.retain(viewsPerModule);
+    REQUIRE(isCHOCDelegateClass(delegateA));
+    REQUIRE(isCHOCDelegateClass(delegateB));
+
+    CHECK(moduleA.exercise(2));
+    CHECK(moduleB.exercise(2));
+
+    const auto unloadedImageA = moduleA.imageBase;
+    moduleA.close();
+    CHECK(classOwnIMPsAreOutsideImage(delegateA, unloadedImageA));
+
+    // This must do real work in every still-live B WebView, not merely inspect
+    // class metadata, after A's code image has gone away.
+    CHECK(moduleB.exercise(2));
 }
 
 TEST_CASE("32 live WebViews remain isolated across repeated module unload and reload")
