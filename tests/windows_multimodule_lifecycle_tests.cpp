@@ -130,55 +130,59 @@ private:
 
 } // namespace
 
-TEST_CASE("32 retained Windows editors survive peer-module unload and reload host lifecycle")
+TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload lifecycle cycles")
 {
     constexpr std::size_t viewsPerModule = 16;
     constexpr std::size_t requiredCycles = 200;
     std::size_t completedCycles = 0;
-
-    Module moduleA{MODULE_A_PATH};
-    Module moduleB{MODULE_B_PATH};
-    REQUIRE(moduleA.handle != nullptr);
-    REQUIRE(moduleB.handle != nullptr);
-    REQUIRE(moduleA.retainWebViews != nullptr);
-    REQUIRE(moduleB.retainWebViews != nullptr);
-    REQUIRE(moduleA.exerciseHostLifecycle != nullptr);
-    REQUIRE(moduleB.exerciseHostLifecycle != nullptr);
 
     HostWindow hostA{L"webview-gui module A host"};
     HostWindow hostB{L"webview-gui module B host"};
     REQUIRE(hostA.get() != nullptr);
     REQUIRE(hostB.get() != nullptr);
 
-    REQUIRE(moduleA.retain(viewsPerModule));
-    REQUIRE(moduleB.retain(viewsPerModule));
-    CHECK(moduleA.exercise(hostA.get(), 2));
-    CHECK(moduleB.exercise(hostB.get(), 2));
+    for (std::size_t cycle = 0; cycle < requiredCycles; ++cycle) {
+        CAPTURE(cycle);
 
-    moduleA.close();
+        Module moduleA{MODULE_A_PATH};
+        Module moduleB{MODULE_B_PATH};
+        REQUIRE(moduleA.handle != nullptr);
+        REQUIRE(moduleB.handle != nullptr);
+        REQUIRE(moduleA.retainWebViews != nullptr);
+        REQUIRE(moduleB.retainWebViews != nullptr);
+        REQUIRE(moduleA.exerciseHostLifecycle != nullptr);
+        REQUIRE(moduleB.exerciseHostLifecycle != nullptr);
 
-    // B stays loaded with sixteen native editors and must remain usable after
-    // A's DLL and every A-owned window class have been unloaded.
-    CHECK(IsWindow(hostB.get()));
-    CHECK(moduleB.exercise(hostB.get(), 2));
+        REQUIRE(moduleA.retain(viewsPerModule));
+        REQUIRE(moduleB.retain(viewsPerModule));
+        CHECK(moduleA.exercise(hostA.get(), 1));
+        CHECK(moduleB.exercise(hostB.get(), 1));
 
-    Module reloadedA{MODULE_A_PATH};
-    REQUIRE(reloadedA.handle != nullptr);
-    REQUIRE(reloadedA.exerciseHostLifecycle != nullptr);
-    REQUIRE(reloadedA.retain(viewsPerModule));
-    CHECK(reloadedA.exercise(hostA.get(), 2));
-    CHECK(moduleB.exercise(hostB.get(), 2));
+        moduleA.close();
 
-    reloadedA.close();
-    moduleB.close();
+        // B stays loaded with sixteen native editors and must remain usable after
+        // A's DLL and every A-owned window class have been unloaded.
+        CHECK(IsWindow(hostB.get()));
+        CHECK(moduleB.exercise(hostB.get(), 1));
 
-    // Host parents outlive all plug-in editor modules and are released by RAII
-    // even if a REQUIRE above aborts the test early.
-    CHECK(IsWindow(hostA.get()));
-    CHECK(IsWindow(hostB.get()));
+        Module reloadedA{MODULE_A_PATH};
+        REQUIRE(reloadedA.handle != nullptr);
+        REQUIRE(reloadedA.exerciseHostLifecycle != nullptr);
+        REQUIRE(reloadedA.retain(viewsPerModule));
+        CHECK(reloadedA.exercise(hostA.get(), 1));
+        CHECK(moduleB.exercise(hostB.get(), 1));
 
-    ++completedCycles;
-    // RED acceptance guard: #15 requires hundreds of complete lifecycle
-    // iterations, while this harness currently performs only one.
+        reloadedA.close();
+        moduleB.close();
+
+        // Host parents outlive all plug-in editor modules and are reused across
+        // every cycle. This catches child teardown that accidentally destroys or
+        // corrupts host-owned HWNDs.
+        CHECK(IsWindow(hostA.get()));
+        CHECK(IsWindow(hostB.get()));
+
+        ++completedCycles;
+    }
+
     CHECK(completedCycles >= requiredCycles);
 }
