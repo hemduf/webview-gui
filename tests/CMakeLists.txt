@@ -181,6 +181,16 @@ if(WIN32)
     )
     add_test(NAME webview_gui_windows_isolation_tests COMMAND webview_gui_windows_isolation_tests)
 
+    add_executable(webview_gui_windows_dpi_tests windows_dpi_tests.cpp)
+    target_include_directories(webview_gui_windows_dpi_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_windows_dpi_tests PRIVATE
+        doctest::doctest
+        user32
+    )
+    add_test(NAME webview_gui_windows_dpi_tests COMMAND webview_gui_windows_dpi_tests)
+
     add_executable(webview_gui_windows_multimodule_lifecycle_tests windows_multimodule_lifecycle_tests.cpp)
     target_link_libraries(webview_gui_windows_multimodule_lifecycle_tests PRIVATE
         doctest::doctest
