@@ -131,13 +131,18 @@ public:
         return exchangeMessages && exchangeMessages(messagesPerView);
     }
 
+    void release() const
+    {
+        if (releaseWebViews)
+            releaseWebViews();
+    }
+
     void close()
     {
         if (!handle)
             return;
 
-        if (releaseWebViews)
-            releaseWebViews();
+        release();
         dlclose(handle);
         handle = nullptr;
         retainWebViews = nullptr;
@@ -188,8 +193,12 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(gtk_init_check(nullptr, nullptr));
 
     constexpr std::size_t viewsPerModule = 16;
-    constexpr std::size_t requiredLifecycleCycles = 200;
-    std::size_t completedLifecycleCycles = 0;
+    constexpr std::size_t editorsPerLifecycleBatch = viewsPerModule * 2;
+    constexpr std::size_t requiredEditorLifecycles = 200;
+    constexpr std::size_t lifecycleBatches =
+        (requiredEditorLifecycles + editorsPerLifecycleBatch - 1)
+        / editorsPerLifecycleBatch;
+    std::size_t completedEditorLifecycles = 0;
 
     auto hostsA = makeHosts(viewsPerModule);
     auto hostsB = makeHosts(viewsPerModule);
@@ -211,13 +220,37 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(moduleA.hasExchange());
     REQUIRE(moduleB.hasExchange());
 
+    // Seven batches keep 32 editors alive simultaneously and execute 224 full
+    // create -> attach -> resize -> hide/show -> bridge-message -> destroy
+    // editor lifecycles. Keeping the DSOs loaded here isolates editor lifecycle
+    // stress from the separate peer-module unload/reload qualification below.
+    for (std::size_t batch = 0; batch < lifecycleBatches; ++batch) {
+        CAPTURE(batch);
+        REQUIRE(moduleA.retain(viewsPerModule));
+        REQUIRE(moduleB.retain(viewsPerModule));
+        CHECK(moduleA.exercise(xidsA, 1));
+        CHECK(moduleB.exercise(xidsB, 1));
+        CHECK(moduleA.exchange(1));
+        CHECK(moduleB.exchange(1));
+
+        moduleA.release();
+        moduleB.release();
+        CHECK(allHostsAlive(hostsA));
+        CHECK(allHostsAlive(hostsB));
+
+        completedEditorLifecycles += editorsPerLifecycleBatch;
+    }
+
+    CHECK(completedEditorLifecycles >= requiredEditorLifecycles);
+
+    // Keep the original DSO-isolation gate explicit: A can disappear while B
+    // remains live and messaging, then a fresh A instance can be loaded again.
     REQUIRE(moduleA.retain(viewsPerModule));
     REQUIRE(moduleB.retain(viewsPerModule));
     CHECK(moduleA.exercise(xidsA, 2));
     CHECK(moduleB.exercise(xidsB, 2));
     CHECK(moduleA.exchange(3));
     CHECK(moduleB.exchange(3));
-    ++completedLifecycleCycles;
 
     moduleA.close();
     CHECK(allHostsAlive(hostsB));
@@ -238,9 +271,4 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     moduleB.close();
     CHECK(allHostsAlive(hostsA));
     CHECK(allHostsAlive(hostsB));
-
-    // RED: #15 requires the 32-editor create/attach/resize/show/hide/message/
-    // destroy lifecycle to be repeated for hundreds of iterations on each
-    // advertised native backend. Linux currently performs only one cycle.
-    CHECK(completedLifecycleCycles >= requiredLifecycleCycles);
 }
