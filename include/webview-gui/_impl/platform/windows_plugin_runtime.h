@@ -227,7 +227,7 @@ private:
 // mixed-DPI plug-in hosting when it creates the native editor parent. Detect the
 // contract before touching the CHOC child styles so a failed attach is atomic.
 // Resolve the newer APIs dynamically so the plug-in image itself does not gain
-// a hard loader dependency on the Windows 10 1803 DPI-hosting export.
+// a hard loader dependency on the Windows 10 DPI-awareness/hosting exports.
 inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
 {
     if (!IsWindow(child) || !IsWindow(parent))
@@ -239,16 +239,19 @@ inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
 
     using GetContextFn = DPI_AWARENESS_CONTEXT (WINAPI*)(HWND);
     using ContextsEqualFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+    using GetAwarenessFn = DPI_AWARENESS (WINAPI*)(DPI_AWARENESS_CONTEXT);
     using GetHostingFn = DPI_HOSTING_BEHAVIOR (WINAPI*)(HWND);
 
     static const auto getWindowContext = reinterpret_cast<GetContextFn>(
         GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
     static const auto contextsEqual = reinterpret_cast<ContextsEqualFn>(
         GetProcAddress(user32, "AreDpiAwarenessContextsEqual"));
+    static const auto getAwareness = reinterpret_cast<GetAwarenessFn>(
+        GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext"));
     static const auto getWindowHosting = reinterpret_cast<GetHostingFn>(
         GetProcAddress(user32, "GetWindowDpiHostingBehavior"));
 
-    if (!getWindowContext || !contextsEqual)
+    if (!getWindowContext || !contextsEqual || !getAwareness)
         return false;
 
     const auto childContext = getWindowContext(child);
@@ -258,6 +261,20 @@ inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
 
     if (contextsEqual(childContext, parentContext) != FALSE)
         return true;
+
+    const auto childAwareness = getAwareness(childContext);
+    const auto parentAwareness = getAwareness(parentContext);
+    if (childAwareness == DPI_AWARENESS_INVALID
+        || parentAwareness == DPI_AWARENESS_INVALID)
+        return false;
+
+    // Windows mixed-DPI hosting is intentionally directional. It exists so a
+    // per-monitor-aware host can contain legacy plug-in children. The inverse
+    // (per-monitor child under a system-aware/unaware parent) is not supported,
+    // even when the parent was created with MIXED hosting behavior.
+    if (childAwareness == DPI_AWARENESS_PER_MONITOR_AWARE
+        && parentAwareness != DPI_AWARENESS_PER_MONITOR_AWARE)
+        return false;
 
     return getWindowHosting != nullptr
         && getWindowHosting(parent) == DPI_HOSTING_BEHAVIOR_MIXED;
