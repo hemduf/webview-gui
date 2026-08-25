@@ -128,6 +128,13 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_clap_tests$'
 
+      - name: Test Linux sanitizer multi-module lifecycle
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_linux_multimodule_lifecycle_tests$'
+
       - name: Test Linux sanitizer GTK initialization baseline
         if: runner.os == 'Linux' && always()
         env:
