@@ -15,6 +15,7 @@
 #	endif
 
 #	include <cassert>
+#	include <cstddef>
 #	include <cstdint>
 #	include <filesystem>
 #	include <fstream>
@@ -22,6 +23,24 @@
 #	include <optional>
 
 namespace webview_gui {
+
+namespace detail {
+
+inline constexpr std::size_t maxPendingBridgeMessages = 64;
+inline constexpr std::size_t maxPendingBridgeEncodedBytes = ((maxMessageBytes + 2u) / 3u) * 4u;
+
+inline bool canQueuePendingBridgeMessage(std::size_t messageCount,
+                                         std::size_t encodedBytes,
+                                         std::size_t nextEncodedBytes) noexcept
+{
+	if (messageCount >= maxPendingBridgeMessages)
+		return false;
+	if (encodedBytes > maxPendingBridgeEncodedBytes)
+		return false;
+	return nextEncodedBytes <= maxPendingBridgeEncodedBytes - encodedBytes;
+}
+
+} // namespace detail
 
 #	if CHOC_APPLE
 } // close namespace
@@ -69,6 +88,7 @@ struct WebviewGui::Impl {
 	std::string bridgeToken = detail::makeSecureBridgeToken();
 	bool bridgeReady = false;
 	std::vector<std::string> pendingBridgeMessages;
+	std::size_t pendingBridgeEncodedBytes = 0;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -118,6 +138,7 @@ struct WebviewGui::Impl {
 	std::string bridgeToken = detail::makeSecureBridgeToken();
 	bool bridgeReady = false;
 	std::vector<std::string> pendingBridgeMessages;
+	std::size_t pendingBridgeEncodedBytes = 0;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -159,6 +180,7 @@ struct WebviewGui::Impl {
 	std::string bridgeToken = detail::makeSecureBridgeToken();
 	bool bridgeReady = false;
 	std::vector<std::string> pendingBridgeMessages;
+	std::size_t pendingBridgeEncodedBytes = 0;
 	WebviewGui *main = nullptr;
 	std::unique_ptr<choc::ui::WebView> webview;
 };
@@ -262,6 +284,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 
 			auto pending = std::move(impl->pendingBridgeMessages);
 			impl->pendingBridgeMessages.clear();
+			impl->pendingBridgeEncodedBytes = 0;
 			for (const auto& base64 : pending) {
 				impl->webview->evaluateJavascript("if(typeof window['" + functionName
 					+ "']==='function')window['" + functionName + "'](\"" + base64 + "\");");
@@ -342,7 +365,13 @@ void WebviewGui::send(const unsigned char *bytes, size_t length) {
 	if (functionName.empty()) return;
 	auto base64 = choc::base64::encodeToString(bytes, length);
 	if (!impl->bridgeReady) {
+		const auto encodedBytes = base64.size();
+		if (!detail::canQueuePendingBridgeMessage(impl->pendingBridgeMessages.size(),
+											impl->pendingBridgeEncodedBytes,
+											encodedBytes))
+			return;
 		impl->pendingBridgeMessages.push_back(std::move(base64));
+		impl->pendingBridgeEncodedBytes += encodedBytes;
 		return;
 	}
 
