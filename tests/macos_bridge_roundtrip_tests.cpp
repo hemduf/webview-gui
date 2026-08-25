@@ -61,3 +61,56 @@ TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque
     REQUIRE(done.load(std::memory_order_acquire));
     CHECK(received == expected);
 }
+
+TEST_CASE("public WebviewGui bounds the number of messages queued before bridge readiness")
+{
+    auto gui = WebviewGui::createUnique(
+        WebviewGui::COCOA,
+        "/index.html",
+        [](const char* path, WebviewGui::Resource& resource)
+        {
+            if (!path || std::string(path) != "/index.html")
+                return false;
+
+            static constexpr const char html[] =
+                "<!doctype html><html><head><title>bridge</title></head><body>ready</body></html>";
+            resource.mediaType = "text/html";
+            resource.bytes.assign(html, html + sizeof(html) - 1);
+            return true;
+        });
+
+    REQUIRE(gui != nullptr);
+
+    constexpr std::size_t pendingLimit = 64;
+    constexpr std::size_t sentCount = pendingLimit + 16;
+    std::vector<unsigned char> received;
+
+    gui->receive = [&](const unsigned char* bytes, std::size_t size)
+    {
+        if (size == 1)
+            received.push_back(bytes[0]);
+    };
+
+    // No run-loop pumping occurs before these sends, so the page cannot have
+    // signalled bridge readiness yet. A plug-in host must not be able to grow
+    // native memory without bound by repeatedly publishing UI state during this
+    // asynchronous startup window.
+    for (std::size_t i = 0; i < sentCount; ++i) {
+        const auto value = static_cast<unsigned char>(i);
+        gui->send(&value, 1);
+    }
+
+    for (int attempt = 0; attempt < 300 && received.size() < pendingLimit; ++attempt)
+        pumpMainRunLoop(0.01);
+
+    REQUIRE(received.size() >= pendingLimit);
+
+    // Keep pumping after the expected retained messages arrive so an unbounded
+    // implementation deterministically exposes the extra queued messages.
+    for (int attempt = 0; attempt < 50; ++attempt)
+        pumpMainRunLoop(0.01);
+
+    REQUIRE(received.size() == pendingLimit);
+    for (std::size_t i = 0; i < pendingLimit; ++i)
+        CHECK(received[i] == static_cast<unsigned char>(i));
+}
