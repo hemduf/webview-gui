@@ -195,10 +195,12 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     constexpr std::size_t viewsPerModule = 16;
     constexpr std::size_t editorsPerLifecycleBatch = viewsPerModule * 2;
     constexpr std::size_t requiredEditorLifecycles = 200;
+    constexpr std::size_t requiredLifecycleIterations = 200;
     constexpr std::size_t lifecycleBatches =
         (requiredEditorLifecycles + editorsPerLifecycleBatch - 1)
         / editorsPerLifecycleBatch;
     std::size_t completedEditorLifecycles = 0;
+    std::size_t completedLifecycleIterations = 0;
 
     auto hostsA = makeHosts(viewsPerModule);
     auto hostsB = makeHosts(viewsPerModule);
@@ -239,9 +241,11 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
         CHECK(allHostsAlive(hostsB));
 
         completedEditorLifecycles += editorsPerLifecycleBatch;
+        ++completedLifecycleIterations;
     }
 
     CHECK(completedEditorLifecycles >= requiredEditorLifecycles);
+    CHECK(completedLifecycleIterations >= requiredLifecycleIterations);
 
     // Keep the original DSO-isolation gate explicit: A can disappear while B
     // remains live and messaging, then a fresh A instance can be loaded again.
