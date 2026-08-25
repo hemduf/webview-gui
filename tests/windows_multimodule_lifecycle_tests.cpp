@@ -169,7 +169,8 @@ TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload
         REQUIRE(moduleB.retain(viewsPerModule));
         CHECK(moduleA.exercise(hostA.get(), 1));
         CHECK(moduleB.exercise(hostB.get(), 1));
-        CHECK(moduleA.exchange(1));
+        REQUIRE_MESSAGE(moduleA.exchange(1),
+                        "cold-start bridge exchange must become ready before lifecycle stress continues");
         CHECK(moduleB.exchange(1));
 
         moduleA.close();
