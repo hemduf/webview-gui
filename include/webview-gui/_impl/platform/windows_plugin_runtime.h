@@ -222,9 +222,32 @@ private:
     bool ownsReference = false;
 };
 
+// SetParent can fail with ERROR_INVALID_STATE on Windows 10 1703+ when two
+// same-process windows use different DPI-awareness contexts. A DAW can opt into
+// mixed-DPI plug-in hosting when it creates the native editor parent. Detect the
+// contract before touching the CHOC child styles so a failed attach is atomic.
+inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
+{
+    if (!IsWindow(child) || !IsWindow(parent))
+        return false;
+
+    const auto childContext = GetWindowDpiAwarenessContext(child);
+    const auto parentContext = GetWindowDpiAwarenessContext(parent);
+    if (childContext == nullptr || parentContext == nullptr)
+        return false;
+
+    if (AreDpiAwarenessContextsEqual(childContext, parentContext) != FALSE)
+        return true;
+
+    return GetWindowDpiHostingBehavior(parent) == DPI_HOSTING_BEHAVIOR_MIXED;
+}
+
 inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
 {
     if (!IsWindow(child) || !IsWindow(parent) || child == parent)
+        return false;
+
+    if (!windowsDpiHostingAllowsChild(child, parent))
         return false;
 
     SetLastError(ERROR_SUCCESS);
