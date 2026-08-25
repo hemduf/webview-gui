@@ -15,8 +15,10 @@
 namespace {
 
 using CreateRuntimeClassNamesFn = bool (*)(char*, std::size_t, char*, std::size_t);
-using RetainWebViewsFn = bool (*)(std::size_t, char*, std::size_t);
-using ReleaseWebViewsFn = void (*)();
+using CreateRetainedStateFn = void* (*)();
+using DestroyRetainedStateFn = void (*)(void*);
+using RetainWebViewsFn = bool (*)(void*, std::size_t, char*, std::size_t);
+using ReleaseWebViewsFn = void (*)(void*);
 
 struct RuntimeNames {
     std::string webview;
@@ -26,8 +28,11 @@ struct RuntimeNames {
 struct Module {
     void* handle = nullptr;
     CreateRuntimeClassNamesFn createRuntimeClassNames = nullptr;
+    CreateRetainedStateFn createRetainedState = nullptr;
+    DestroyRetainedStateFn destroyRetainedState = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
+    void* retainedState = nullptr;
     void* imageBase = nullptr;
 
     explicit Module(const char* path)
@@ -41,10 +46,18 @@ struct Module {
             if (createSymbol != nullptr && dladdr(createSymbol, &info) != 0)
                 imageBase = info.dli_fbase;
 
+            createRetainedState = reinterpret_cast<CreateRetainedStateFn>(
+                dlsym(handle, "webview_gui_test_create_retained_state"));
+            destroyRetainedState = reinterpret_cast<DestroyRetainedStateFn>(
+                dlsym(handle, "webview_gui_test_destroy_retained_state"));
             retainWebViews = reinterpret_cast<RetainWebViewsFn>(
                 dlsym(handle, "webview_gui_test_retain_webviews"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
                 dlsym(handle, "webview_gui_test_release_webviews"));
+
+            if (createRetainedState && destroyRetainedState
+                && retainWebViews && releaseWebViews)
+                retainedState = createRetainedState();
         }
     }
 
@@ -64,28 +77,47 @@ struct Module {
         return {webview.data(), delegate.data()};
     }
 
+    [[nodiscard]] bool hasRetainedState() const noexcept
+    {
+        return retainedState != nullptr;
+    }
+
     std::string retain(std::size_t count) const
     {
         std::array<char, 256> delegate{};
-        if (!retainWebViews || !retainWebViews(count, delegate.data(), delegate.size()))
+        if (!retainedState || !retainWebViews
+            || !retainWebViews(retainedState, count, delegate.data(), delegate.size()))
             return {};
         return delegate.data();
     }
 
     void release() const
     {
-        if (releaseWebViews)
-            releaseWebViews();
+        if (retainedState && releaseWebViews)
+            releaseWebViews(retainedState);
     }
 
     void close()
     {
         if (handle) {
+            // All C++ state created by the module must be destroyed while its
+            // code and sanitizer metadata are still loaded. Keeping this state
+            // outside module-static storage also avoids reinitialising a
+            // poisoned DSO global after dlclose/dlopen under ASan.
+            if (retainedState && releaseWebViews)
+                releaseWebViews(retainedState);
+            if (retainedState && destroyRetainedState)
+                destroyRetainedState(retainedState);
+            retainedState = nullptr;
+
             dlclose(handle);
             handle = nullptr;
             createRuntimeClassNames = nullptr;
+            createRetainedState = nullptr;
+            destroyRetainedState = nullptr;
             retainWebViews = nullptr;
             releaseWebViews = nullptr;
+            imageBase = nullptr;
         }
     }
 };
@@ -241,6 +273,8 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         REQUIRE(moduleA.releaseWebViews != nullptr);
         REQUIRE(moduleB.retainWebViews != nullptr);
         REQUIRE(moduleB.releaseWebViews != nullptr);
+        REQUIRE(moduleA.hasRetainedState());
+        REQUIRE(moduleB.hasRetainedState());
 
         const auto delegateA = moduleA.retain(viewsPerModule);
         const auto delegateB = moduleB.retain(viewsPerModule);

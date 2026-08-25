@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <vector>
 
 namespace {
@@ -35,39 +36,16 @@ choc::ui::WebView::Options makePluginOptions()
     return options;
 }
 
-std::vector<std::unique_ptr<choc::ui::WebView>>& retainedViews()
+struct RetainedWebViewsState {
+    std::vector<std::unique_ptr<choc::ui::WebView>> views;
+};
+
+bool retainWebViews(RetainedWebViewsState& state,
+                    std::size_t count,
+                    char* delegateClass,
+                    std::size_t delegateCapacity)
 {
-    static std::vector<std::unique_ptr<choc::ui::WebView>> views;
-    return views;
-}
-
-} // namespace
-
-extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
-    char* webviewClass,
-    std::size_t webviewCapacity,
-    char* delegateClass,
-    std::size_t delegateCapacity)
-{
-    choc::ui::WebView view{makePluginOptions()};
-    if (!view.loadedOK() || !view.getViewHandle())
-        return false;
-
-    auto webview = reinterpret_cast<id>(view.getViewHandle());
-    auto delegate = choc::objc::call<id>(webview, "navigationDelegate");
-
-    copyClassName(webview, webviewClass, webviewCapacity);
-    copyClassName(delegate, delegateClass, delegateCapacity);
-    return webviewClass && webviewClass[0] != '\0'
-        && delegateClass && delegateClass[0] != '\0';
-}
-
-extern "C" __attribute__((visibility("default"))) bool webview_gui_test_retain_webviews(
-    std::size_t count,
-    char* delegateClass,
-    std::size_t delegateCapacity)
-{
-    auto& views = retainedViews();
+    auto& views = state.views;
     views.clear();
     views.reserve(count);
 
@@ -113,7 +91,52 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_retain_w
     return count == 0 || firstDelegate[0] != '\0';
 }
 
-extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_webviews()
+} // namespace
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
+    char* webviewClass,
+    std::size_t webviewCapacity,
+    char* delegateClass,
+    std::size_t delegateCapacity)
 {
-    retainedViews().clear();
+    choc::ui::WebView view{makePluginOptions()};
+    if (!view.loadedOK() || !view.getViewHandle())
+        return false;
+
+    auto webview = reinterpret_cast<id>(view.getViewHandle());
+    auto delegate = choc::objc::call<id>(webview, "navigationDelegate");
+
+    copyClassName(webview, webviewClass, webviewCapacity);
+    copyClassName(delegate, delegateClass, delegateCapacity);
+    return webviewClass && webviewClass[0] != '\0'
+        && delegateClass && delegateClass[0] != '\0';
+}
+
+extern "C" __attribute__((visibility("default"))) void* webview_gui_test_create_retained_state()
+{
+    return new (std::nothrow) RetainedWebViewsState{};
+}
+
+extern "C" __attribute__((visibility("default"))) void webview_gui_test_destroy_retained_state(
+    void* opaqueState)
+{
+    delete static_cast<RetainedWebViewsState*>(opaqueState);
+}
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_retain_webviews(
+    void* opaqueState,
+    std::size_t count,
+    char* delegateClass,
+    std::size_t delegateCapacity)
+{
+    auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
+    return state != nullptr
+        && retainWebViews(*state, count, delegateClass, delegateCapacity);
+}
+
+extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_webviews(
+    void* opaqueState)
+{
+    if (auto* state = static_cast<RetainedWebViewsState*>(opaqueState))
+        state->views.clear();
 }
