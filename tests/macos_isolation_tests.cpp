@@ -319,6 +319,14 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         REQUIRE(moduleA.hasRetainedState());
         REQUIRE(moduleB.hasRetainedState());
 
+        using ExerciseRetainedHostLifecycleFn = bool (*)(void*);
+        auto exerciseHostLifecycleA = reinterpret_cast<ExerciseRetainedHostLifecycleFn>(
+            dlsym(moduleA.handle, "webview_gui_test_exercise_retained_host_lifecycle"));
+        auto exerciseHostLifecycleB = reinterpret_cast<ExerciseRetainedHostLifecycleFn>(
+            dlsym(moduleB.handle, "webview_gui_test_exercise_retained_host_lifecycle"));
+        REQUIRE(exerciseHostLifecycleA != nullptr);
+        REQUIRE(exerciseHostLifecycleB != nullptr);
+
         const auto delegateA = moduleA.retain(viewsPerModule);
         const auto delegateB = moduleB.retain(viewsPerModule);
 
@@ -327,6 +335,12 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         CHECK(delegateA != delegateB);
         CHECK(classHasIMPFromImage(delegateA, moduleA.imageBase));
         CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
+
+        // Each outer cycle owns 32 simultaneous WebViews (16 per independently
+        // loaded module). Across 20 unload/reload cycles this qualifies 640
+        // editor lifecycles through the native host sequence before destruction.
+        CHECK(exerciseHostLifecycleA(moduleA.retainedState));
+        CHECK(exerciseHostLifecycleB(moduleB.retainedState));
 
         if (cycle == 0) {
             stableDelegateA = delegateA;
