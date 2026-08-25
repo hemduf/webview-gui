@@ -33,6 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           test "${NSZombieEnabled:-}" = "YES"
+          test "${NSDeallocateZombies:-}" = "NO"
           test "${MallocStackLogging:-}" = "1"
 
       - name: Install Ninja
