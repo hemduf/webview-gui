@@ -10,8 +10,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cwchar>
-#include <string>
 
 namespace {
 
@@ -86,6 +84,8 @@ struct Module {
         if (!handle)
             return;
 
+        // Destroy every module-owned editor and its COM apartment while this
+        // DLL's code is still resident. Only then may the host unload it.
         release();
         FreeLibrary(handle);
         handle = nullptr;
@@ -95,21 +95,38 @@ struct Module {
     }
 };
 
-HWND createHostWindow(const wchar_t* title)
-{
-    return CreateWindowExW(0,
-                           L"STATIC",
-                           title,
-                           WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                           CW_USEDEFAULT,
-                           CW_USEDEFAULT,
-                           700,
-                           500,
-                           nullptr,
-                           nullptr,
-                           GetModuleHandleW(nullptr),
-                           nullptr);
-}
+class HostWindow {
+public:
+    explicit HostWindow(const wchar_t* title)
+    {
+        handle = CreateWindowExW(0,
+                                 L"STATIC",
+                                 title,
+                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                 CW_USEDEFAULT,
+                                 CW_USEDEFAULT,
+                                 700,
+                                 500,
+                                 nullptr,
+                                 nullptr,
+                                 GetModuleHandleW(nullptr),
+                                 nullptr);
+    }
+
+    HostWindow(const HostWindow&) = delete;
+    HostWindow& operator=(const HostWindow&) = delete;
+
+    ~HostWindow()
+    {
+        if (handle && IsWindow(handle))
+            DestroyWindow(handle);
+    }
+
+    [[nodiscard]] HWND get() const noexcept { return handle; }
+
+private:
+    HWND handle = nullptr;
+};
 
 } // namespace
 
@@ -123,45 +140,38 @@ TEST_CASE("32 retained Windows editors survive peer-module unload and reload hos
     REQUIRE(moduleB.handle != nullptr);
     REQUIRE(moduleA.retainWebViews != nullptr);
     REQUIRE(moduleB.retainWebViews != nullptr);
-
-    // RED: #15 requires the full host-style lifecycle for every retained editor,
-    // including while a peer module unloads. The module fixture must expose that
-    // operation explicitly rather than letting this test observe only one HWND.
     REQUIRE(moduleA.exerciseHostLifecycle != nullptr);
     REQUIRE(moduleB.exerciseHostLifecycle != nullptr);
 
-    const auto hostA = createHostWindow(L"webview-gui module A host");
-    const auto hostB = createHostWindow(L"webview-gui module B host");
-    REQUIRE(hostA != nullptr);
-    REQUIRE(hostB != nullptr);
+    HostWindow hostA{L"webview-gui module A host"};
+    HostWindow hostB{L"webview-gui module B host"};
+    REQUIRE(hostA.get() != nullptr);
+    REQUIRE(hostB.get() != nullptr);
 
     REQUIRE(moduleA.retain(viewsPerModule));
     REQUIRE(moduleB.retain(viewsPerModule));
-    CHECK(moduleA.exercise(hostA, 2));
-    CHECK(moduleB.exercise(hostB, 2));
+    CHECK(moduleA.exercise(hostA.get(), 2));
+    CHECK(moduleB.exercise(hostB.get(), 2));
 
-    moduleA.release();
     moduleA.close();
 
     // B stays loaded with sixteen native editors and must remain usable after
     // A's DLL and every A-owned window class have been unloaded.
-    CHECK(IsWindow(hostB));
-    CHECK(moduleB.exercise(hostB, 2));
+    CHECK(IsWindow(hostB.get()));
+    CHECK(moduleB.exercise(hostB.get(), 2));
 
     Module reloadedA{MODULE_A_PATH};
     REQUIRE(reloadedA.handle != nullptr);
     REQUIRE(reloadedA.exerciseHostLifecycle != nullptr);
     REQUIRE(reloadedA.retain(viewsPerModule));
-    CHECK(reloadedA.exercise(hostA, 2));
-    CHECK(moduleB.exercise(hostB, 2));
+    CHECK(reloadedA.exercise(hostA.get(), 2));
+    CHECK(moduleB.exercise(hostB.get(), 2));
 
-    reloadedA.release();
     reloadedA.close();
-    moduleB.release();
     moduleB.close();
 
-    CHECK(IsWindow(hostA));
-    CHECK(IsWindow(hostB));
-    CHECK(DestroyWindow(hostA));
-    CHECK(DestroyWindow(hostB));
+    // Host parents outlive all plug-in editor modules and are released by RAII
+    // even if a REQUIRE above aborts the test early.
+    CHECK(IsWindow(hostA.get()));
+    CHECK(IsWindow(hostB.get()));
 }
