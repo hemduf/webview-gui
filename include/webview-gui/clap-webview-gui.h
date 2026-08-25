@@ -48,6 +48,8 @@ struct ClapWebviewGui {
     }
 
     void init(const clap_plugin *initPlugin, const clap_host *initHost) {
+        if (uiThread.isBound() && !uiThread.isCurrentThread())
+            return;
         clearSelf(plugin);
         plugin = initPlugin;
         host = initHost;
@@ -56,6 +58,8 @@ struct ClapWebviewGui {
     }
 
     void init() {
+        if (uiThread.isBound() && !uiThread.isCurrentThread())
+            return;
         uiThread.bindToCurrentThread();
         pluginWebview = nullptr;
         hostWebview = nullptr;
