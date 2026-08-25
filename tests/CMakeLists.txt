@@ -72,6 +72,18 @@ target_compile_definitions(webview_gui_clap_tests PRIVATE WEBVIEW_GUI_TESTING=1)
 target_link_libraries(webview_gui_clap_tests PRIVATE doctest::doctest webview-gui)
 add_test(NAME webview_gui_clap_tests COMMAND webview_gui_clap_tests)
 
+if(UNIX AND NOT APPLE)
+    add_executable(webview_gui_callback_registry_tsan_tests callback_registry_tsan_tests.cpp)
+    target_include_directories(webview_gui_callback_registry_tsan_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_callback_registry_tsan_tests PRIVATE
+        doctest::doctest
+        Threads::Threads
+    )
+    add_test(NAME webview_gui_callback_registry_tsan_tests COMMAND webview_gui_callback_registry_tsan_tests)
+endif()
+
 if(APPLE)
     add_library(webview_gui_test_module_a MODULE macos_module.cpp)
     add_library(webview_gui_test_module_b MODULE macos_module.cpp)
