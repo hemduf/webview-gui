@@ -142,6 +142,34 @@ TEST_CASE("CLAP reinitialisation unregisters the previous plugin key")
     CHECK(height == 333);
 }
 
+TEST_CASE("CLAP reinitialisation from a worker cannot steal GUI thread ownership")
+{
+    auto host = makeHost();
+    auto pluginA = makePlugin();
+    auto pluginB = makePlugin();
+
+    webview_gui::ClapWebviewGui gui{&pluginA, &host};
+    gui.init();
+    REQUIRE(gui.setSize(640, 480));
+
+    std::atomic<bool> workerSetSize{true};
+    std::thread worker([&] {
+        gui.init(&pluginB, &host);
+        workerSetSize.store(gui.setSize(1, 1), std::memory_order_relaxed);
+    });
+    worker.join();
+
+    CHECK_FALSE(workerSetSize.load(std::memory_order_relaxed));
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    REQUIRE(gui.extPluginGui->get_size(&pluginA, &width, &height));
+    CHECK(width == 640);
+    CHECK(height == 480);
+
+    CHECK_FALSE(gui.extPluginGui->get_size(&pluginB, &width, &height));
+}
+
 TEST_CASE("Synthetic host webview proxy is not exposed")
 {
     auto host = makeHost();
