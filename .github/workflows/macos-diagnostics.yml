@@ -1,0 +1,52 @@
+name: macOS plugin diagnostics
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zombies:
+    name: macOS Zombies lifecycle
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Require Objective-C lifecycle diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${NSZombieEnabled:-}" = "YES"
+          test "${MallocStackLogging:-}" = "1"
+
+      - name: Install Ninja
+        run: brew install ninja || true
+
+      - name: Configure diagnostics build
+        run: cmake -S tests -B build-macos-diagnostics -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build macOS lifecycle targets
+        run: |
+          cmake --build build-macos-diagnostics --target webview_gui_macos_isolation_tests --parallel
+          cmake --build build-macos-diagnostics --target webview_gui_macos_bridge_roundtrip_tests --parallel
+
+      - name: Run Objective-C Zombies lifecycle qualification
+        env:
+          NSZombieEnabled: "YES"
+          NSDeallocateZombies: "NO"
+          MallocStackLogging: "1"
+        run: |
+          ctest --test-dir build-macos-diagnostics --output-on-failure --timeout 180 \
+            -R '^webview_gui_macos_(isolation|bridge_roundtrip)_tests$'
