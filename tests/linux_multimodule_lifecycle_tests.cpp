@@ -188,6 +188,9 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(gtk_init_check(nullptr, nullptr));
 
     constexpr std::size_t viewsPerModule = 16;
+    constexpr std::size_t requiredLifecycleCycles = 200;
+    std::size_t completedLifecycleCycles = 0;
+
     auto hostsA = makeHosts(viewsPerModule);
     auto hostsB = makeHosts(viewsPerModule);
     REQUIRE(allHostsAlive(hostsA));
@@ -205,10 +208,6 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(moduleB.hasRelease());
     REQUIRE(moduleA.hasExercise());
     REQUIRE(moduleB.hasExercise());
-
-    // RED: the multi-module release gate must exchange real WebView bridge
-    // messages independently, including through the still-live peer after A
-    // has been dlclose()d and after A is loaded again.
     REQUIRE(moduleA.hasExchange());
     REQUIRE(moduleB.hasExchange());
 
@@ -218,6 +217,7 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     CHECK(moduleB.exercise(xidsB, 2));
     CHECK(moduleA.exchange(3));
     CHECK(moduleB.exchange(3));
+    ++completedLifecycleCycles;
 
     moduleA.close();
     CHECK(allHostsAlive(hostsB));
@@ -238,4 +238,9 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     moduleB.close();
     CHECK(allHostsAlive(hostsA));
     CHECK(allHostsAlive(hostsB));
+
+    // RED: #15 requires the 32-editor create/attach/resize/show/hide/message/
+    // destroy lifecycle to be repeated for hundreds of iterations on each
+    // advertised native backend. Linux currently performs only one cycle.
+    CHECK(completedLifecycleCycles >= requiredLifecycleCycles);
 }
