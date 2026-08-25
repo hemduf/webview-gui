@@ -36,6 +36,15 @@ jobs:
           test "${NSDeallocateZombies:-}" = "NO"
           test "${MallocStackLogging:-}" = "1"
 
+      - name: Require hundreds-of-cycles lifecycle gate
+        shell: bash
+        env:
+          MACOS_LIFECYCLE_REPEATS: "1"
+        run: |
+          set -euo pipefail
+          [[ "${MACOS_LIFECYCLE_REPEATS}" =~ ^[0-9]+$ ]]
+          test "${MACOS_LIFECYCLE_REPEATS}" -ge 10
+
       - name: Install Ninja
         run: brew install ninja || true
 
