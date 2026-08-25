@@ -179,3 +179,46 @@ TEST_CASE("Win32 embedding is explicit about mixed-DPI host compatibility")
     REQUIRE(child.destroy());
     REQUIRE(mixedHost.destroy());
 }
+
+TEST_CASE("mixed DPI hosting rejects a per-monitor child under a legacy host")
+{
+    ScopedWindow perMonitorChild;
+    {
+        ScopedThreadDpiAwareness perMonitor{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+        REQUIRE_MESSAGE(perMonitor.ok(), "Windows runner must support per-monitor-v2 DPI awareness");
+        perMonitorChild.reset(createFixtureWindow(L"webview-gui per-monitor DPI child"));
+    }
+    REQUIRE(perMonitorChild.get() != nullptr);
+
+    ScopedWindow legacyMixedHost;
+    {
+        ScopedThreadDpiAwareness unaware{DPI_AWARENESS_CONTEXT_UNAWARE};
+        REQUIRE_MESSAGE(unaware.ok(), "Windows runner must support unaware DPI contexts");
+        ScopedThreadDpiHosting mixed{DPI_HOSTING_BEHAVIOR_MIXED};
+        REQUIRE_MESSAGE(mixed.ok(), "Windows runner must support mixed DPI hosting");
+        legacyMixedHost.reset(createFixtureWindow(L"webview-gui legacy mixed DPI host"));
+    }
+    REQUIRE(legacyMixedHost.get() != nullptr);
+
+    const auto childContext = GetWindowDpiAwarenessContext(perMonitorChild.get());
+    const auto hostContext = GetWindowDpiAwarenessContext(legacyMixedHost.get());
+    REQUIRE(childContext != nullptr);
+    REQUIRE(hostContext != nullptr);
+    REQUIRE_FALSE(AreDpiAwarenessContextsEqual(childContext, hostContext));
+    REQUIRE(GetWindowDpiHostingBehavior(legacyMixedHost.get()) == DPI_HOSTING_BEHAVIOR_MIXED);
+
+    SetLastError(ERROR_SUCCESS);
+    const auto styleBeforeRejectedAttach = GetWindowLongPtrW(perMonitorChild.get(), GWL_STYLE);
+    const bool styleReadable = styleBeforeRejectedAttach != 0 || GetLastError() == ERROR_SUCCESS;
+    REQUIRE_MESSAGE(styleReadable, "fixture child style must be readable");
+
+    // Windows mixed-DPI hosting is directional: a per-monitor-aware host may
+    // host legacy children, but a legacy host may not host a per-monitor child.
+    // Reject this before SetParent so the child cannot be left half-mutated.
+    CHECK_FALSE(webview_gui::detail::windowsDpiHostingAllowsChild(
+        perMonitorChild.get(), legacyMixedHost.get()));
+    CHECK_FALSE(webview_gui::detail::attachChildWindowToHost(
+        perMonitorChild.get(), legacyMixedHost.get()));
+    CHECK(GetParent(perMonitorChild.get()) == nullptr);
+    CHECK(GetWindowLongPtrW(perMonitorChild.get(), GWL_STYLE) == styleBeforeRejectedAttach);
+}
