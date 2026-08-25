@@ -181,6 +181,21 @@ if(WIN32)
     )
     add_test(NAME webview_gui_windows_isolation_tests COMMAND webview_gui_windows_isolation_tests)
 
+    add_executable(webview_gui_windows_multimodule_lifecycle_tests windows_multimodule_lifecycle_tests.cpp)
+    target_link_libraries(webview_gui_windows_multimodule_lifecycle_tests PRIVATE
+        doctest::doctest
+        user32
+    )
+    target_compile_definitions(webview_gui_windows_multimodule_lifecycle_tests PRIVATE
+        MODULE_A_PATH="$<TARGET_FILE:webview_gui_windows_module_a>"
+        MODULE_B_PATH="$<TARGET_FILE:webview_gui_windows_module_b>"
+    )
+    add_dependencies(webview_gui_windows_multimodule_lifecycle_tests
+        webview_gui_windows_module_a
+        webview_gui_windows_module_b
+    )
+    add_test(NAME webview_gui_windows_multimodule_lifecycle_tests COMMAND webview_gui_windows_multimodule_lifecycle_tests)
+
     add_executable(webview_gui_windows_navigation_tests windows_navigation_tests.cpp)
     target_include_directories(webview_gui_windows_navigation_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../include
