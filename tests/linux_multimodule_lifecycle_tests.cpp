@@ -83,6 +83,7 @@ private:
 
 using RetainWebViewsFn = bool (*)(std::size_t);
 using ExerciseHostLifecycleFn = bool (*)(const std::uintptr_t*, std::size_t, std::size_t);
+using ExchangeMessagesFn = bool (*)(std::size_t);
 using ReleaseWebViewsFn = void (*)();
 
 class Module {
@@ -97,6 +98,8 @@ public:
             dlsym(handle, "webview_gui_test_retain_linux_webviews"));
         exerciseHostLifecycle = reinterpret_cast<ExerciseHostLifecycleFn>(
             dlsym(handle, "webview_gui_test_exercise_linux_host_lifecycle"));
+        exchangeMessages = reinterpret_cast<ExchangeMessagesFn>(
+            dlsym(handle, "webview_gui_test_exchange_linux_messages"));
         releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
             dlsym(handle, "webview_gui_test_release_linux_webviews"));
     }
@@ -109,6 +112,7 @@ public:
     [[nodiscard]] bool loaded() const noexcept { return handle != nullptr; }
     [[nodiscard]] bool hasRetain() const noexcept { return retainWebViews != nullptr; }
     [[nodiscard]] bool hasExercise() const noexcept { return exerciseHostLifecycle != nullptr; }
+    [[nodiscard]] bool hasExchange() const noexcept { return exchangeMessages != nullptr; }
     [[nodiscard]] bool hasRelease() const noexcept { return releaseWebViews != nullptr; }
 
     bool retain(std::size_t count) const
@@ -122,6 +126,11 @@ public:
             && exerciseHostLifecycle(hosts.data(), hosts.size(), passes);
     }
 
+    bool exchange(std::size_t messagesPerView) const
+    {
+        return exchangeMessages && exchangeMessages(messagesPerView);
+    }
+
     void close()
     {
         if (!handle)
@@ -133,6 +142,7 @@ public:
         handle = nullptr;
         retainWebViews = nullptr;
         exerciseHostLifecycle = nullptr;
+        exchangeMessages = nullptr;
         releaseWebViews = nullptr;
     }
 
@@ -140,6 +150,7 @@ private:
     void* handle = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
     ExerciseHostLifecycleFn exerciseHostLifecycle = nullptr;
+    ExchangeMessagesFn exchangeMessages = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
 };
 
@@ -192,27 +203,36 @@ TEST_CASE("32 retained Linux editors survive peer-module unload and reload host 
     REQUIRE(moduleB.hasRetain());
     REQUIRE(moduleA.hasRelease());
     REQUIRE(moduleB.hasRelease());
-
-    // RED: the Linux plug-in module must expose a host-lifecycle operation so
-    // the long-lived host can prove that B remains active across dlclose(A).
     REQUIRE(moduleA.hasExercise());
     REQUIRE(moduleB.hasExercise());
+
+    // RED: the multi-module release gate must exchange real WebView bridge
+    // messages independently, including through the still-live peer after A
+    // has been dlclose()d and after A is loaded again.
+    REQUIRE(moduleA.hasExchange());
+    REQUIRE(moduleB.hasExchange());
 
     REQUIRE(moduleA.retain(viewsPerModule));
     REQUIRE(moduleB.retain(viewsPerModule));
     CHECK(moduleA.exercise(xidsA, 2));
     CHECK(moduleB.exercise(xidsB, 2));
+    CHECK(moduleA.exchange(3));
+    CHECK(moduleB.exchange(3));
 
     moduleA.close();
     CHECK(allHostsAlive(hostsB));
     CHECK(moduleB.exercise(xidsB, 2));
+    CHECK(moduleB.exchange(3));
 
     Module reloadedA{MODULE_A_PATH};
     REQUIRE(reloadedA.loaded());
     REQUIRE(reloadedA.hasExercise());
+    REQUIRE(reloadedA.hasExchange());
     REQUIRE(reloadedA.retain(viewsPerModule));
     CHECK(reloadedA.exercise(xidsA, 2));
+    CHECK(reloadedA.exchange(3));
     CHECK(moduleB.exercise(xidsB, 2));
+    CHECK(moduleB.exchange(3));
 
     reloadedA.close();
     moduleB.close();
