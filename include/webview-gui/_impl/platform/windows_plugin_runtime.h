@@ -226,20 +226,41 @@ private:
 // same-process windows use different DPI-awareness contexts. A DAW can opt into
 // mixed-DPI plug-in hosting when it creates the native editor parent. Detect the
 // contract before touching the CHOC child styles so a failed attach is atomic.
+// Resolve the newer APIs dynamically so the plug-in image itself does not gain
+// a hard loader dependency on the Windows 10 1803 DPI-hosting export.
 inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
 {
     if (!IsWindow(child) || !IsWindow(parent))
         return false;
 
-    const auto childContext = GetWindowDpiAwarenessContext(child);
-    const auto parentContext = GetWindowDpiAwarenessContext(parent);
+    const auto user32 = GetModuleHandleW(L"user32.dll");
+    if (!user32)
+        return false;
+
+    using GetContextFn = DPI_AWARENESS_CONTEXT (WINAPI*)(HWND);
+    using ContextsEqualFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+    using GetHostingFn = DPI_HOSTING_BEHAVIOR (WINAPI*)(HWND);
+
+    static const auto getWindowContext = reinterpret_cast<GetContextFn>(
+        GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+    static const auto contextsEqual = reinterpret_cast<ContextsEqualFn>(
+        GetProcAddress(user32, "AreDpiAwarenessContextsEqual"));
+    static const auto getWindowHosting = reinterpret_cast<GetHostingFn>(
+        GetProcAddress(user32, "GetWindowDpiHostingBehavior"));
+
+    if (!getWindowContext || !contextsEqual)
+        return false;
+
+    const auto childContext = getWindowContext(child);
+    const auto parentContext = getWindowContext(parent);
     if (childContext == nullptr || parentContext == nullptr)
         return false;
 
-    if (AreDpiAwarenessContextsEqual(childContext, parentContext) != FALSE)
+    if (contextsEqual(childContext, parentContext) != FALSE)
         return true;
 
-    return GetWindowDpiHostingBehavior(parent) == DPI_HOSTING_BEHAVIOR_MIXED;
+    return getWindowHosting != nullptr
+        && getWindowHosting(parent) == DPI_HOSTING_BEHAVIOR_MIXED;
 }
 
 inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
