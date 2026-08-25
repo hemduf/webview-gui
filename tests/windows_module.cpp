@@ -146,6 +146,54 @@ extern "C" __declspec(dllexport) std::uintptr_t webview_gui_test_first_windows_h
     return reinterpret_cast<std::uintptr_t>(views.front()->getViewHandle());
 }
 
+extern "C" __declspec(dllexport) bool webview_gui_test_exercise_windows_host_lifecycle(
+    std::uintptr_t hostHandle,
+    std::size_t passes)
+{
+    const auto host = reinterpret_cast<HWND>(hostHandle);
+    auto& views = retainedViews();
+    if (!IsWindow(host) || views.empty() || passes == 0)
+        return false;
+
+    for (std::size_t pass = 0; pass < passes; ++pass) {
+        for (std::size_t i = 0; i < views.size(); ++i) {
+            auto& view = views[i];
+            if (!view || !view->loadedOK() || !view->getViewHandle())
+                return false;
+
+            const auto child = static_cast<HWND>(view->getViewHandle());
+            if (!IsWindow(child))
+                return false;
+
+            if (GetParent(child) != host
+                && !webview_gui::detail::attachChildWindowToHost(child, host))
+                return false;
+            if (GetParent(child) != host)
+                return false;
+
+            const int width = 480 + static_cast<int>((i + pass) % 17) * 8;
+            const int height = 280 + static_cast<int>((i + pass) % 13) * 6;
+            if (!webview_gui::detail::resizeChildWindow(child, width, height))
+                return false;
+
+            RECT rect{};
+            if (!GetClientRect(child, &rect)
+                || rect.right - rect.left != width
+                || rect.bottom - rect.top != height)
+                return false;
+
+            if (!webview_gui::detail::setChildWindowVisible(child, false)
+                || IsWindowVisible(child))
+                return false;
+            if (!webview_gui::detail::setChildWindowVisible(child, true)
+                || !IsWindowVisible(child))
+                return false;
+        }
+    }
+
+    return true;
+}
+
 extern "C" __declspec(dllexport) void webview_gui_test_release_windows_webviews()
 {
     retainedViews().clear();
