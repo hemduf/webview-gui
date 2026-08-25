@@ -91,6 +91,39 @@ bool retainWebViews(RetainedWebViewsState& state,
     return count == 0 || firstDelegate[0] != '\0';
 }
 
+bool exerciseRetainedWebViews(RetainedWebViewsState& state, std::size_t passes)
+{
+    if (state.views.empty() || passes == 0)
+        return false;
+
+    for (std::size_t pass = 0; pass < passes; ++pass) {
+        for (auto& view : state.views) {
+            if (!view || !view->loadedOK() || !view->getViewHandle())
+                return false;
+
+            auto webview = reinterpret_cast<id>(view->getViewHandle());
+
+            // Exercise host-visible WKWebView state synchronously so the test
+            // proves the still-loaded module is usable after its peer unloads.
+            choc::objc::call<void>(webview, "setHidden:", YES);
+            if (choc::objc::call<BOOL>(webview, "isHidden") != YES)
+                return false;
+
+            choc::objc::call<void>(webview, "setHidden:", NO);
+            if (choc::objc::call<BOOL>(webview, "isHidden") != NO)
+                return false;
+
+            // Also enqueue a real JavaScript evaluation on every live WebView.
+            // On macOS CHOC is ready synchronously after construction, so false
+            // here indicates the live view can no longer accept bridge work.
+            if (!view->evaluateJavascript("void 0"))
+                return false;
+        }
+    }
+
+    return true;
+}
+
 } // namespace
 
 extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
@@ -132,6 +165,15 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_retain_w
     auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
     return state != nullptr
         && retainWebViews(*state, count, delegateClass, delegateCapacity);
+}
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exercise_retained_webviews(
+    void* opaqueState,
+    std::size_t passes)
+{
+    auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
+    return state != nullptr
+        && exerciseRetainedWebViews(*state, passes);
 }
 
 extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_webviews(
