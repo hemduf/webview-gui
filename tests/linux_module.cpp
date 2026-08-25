@@ -5,14 +5,12 @@
 #error Linux-only test module
 #endif
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 #define WEBVIEW_GUI_TEST_EXPORT extern "C" __attribute__((visibility("default")))
@@ -36,21 +34,6 @@ void pumpEvents()
 {
     while (g_main_context_pending(nullptr))
         g_main_context_iteration(nullptr, FALSE);
-}
-
-template <typename Predicate>
-bool pumpUntil(Predicate&& predicate, std::chrono::milliseconds timeout)
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    do {
-        pumpEvents();
-        if (predicate())
-            return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    } while (std::chrono::steady_clock::now() < deadline);
-
-    pumpEvents();
-    return predicate();
 }
 
 void releaseState()
@@ -132,13 +115,18 @@ WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_exercise_linux_host_lifecycle(
             if (!adapter->attach(child, hostXids[i]) || !adapter->plugWidget())
                 return false;
 
-            if (!pumpUntil([&] {
-                    return gtk_plug_get_embedded(GTK_PLUG(adapter->plugWidget()));
-                }, std::chrono::seconds(2)))
+            // The dedicated XEmbed tests assert the asynchronous GtkSocket /
+            // GtkPlug negotiation and final child allocation. This multi-module
+            // stress test intentionally uses synchronous GTK ownership
+            // invariants so 32 simultaneous editor windows do not serialize on
+            // per-editor Xvfb round-trip timeouts.
+            if (!gtk_widget_get_realized(adapter->plugWidget())
+                || gtk_widget_get_parent(child) != adapter->plugWidget())
                 return false;
 
             state->adapters.push_back(std::move(adapter));
         }
+        pumpEvents();
     }
 
     if (state->adapters.size() != state->views.size())
@@ -158,11 +146,10 @@ WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_exercise_linux_host_lifecycle(
             if (!adapter->resize(width, height))
                 return false;
 
-            if (!pumpUntil([&] {
-                    GtkAllocation allocation{};
-                    gtk_widget_get_allocation(child, &allocation);
-                    return allocation.width == width && allocation.height == height;
-                }, std::chrono::seconds(2)))
+            int requestedWidth = 0;
+            int requestedHeight = 0;
+            gtk_widget_get_size_request(child, &requestedWidth, &requestedHeight);
+            if (requestedWidth != width || requestedHeight != height)
                 return false;
 
             if (!adapter->setVisible(false)
@@ -172,6 +159,7 @@ WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_exercise_linux_host_lifecycle(
                 || !gtk_widget_get_visible(adapter->plugWidget()))
                 return false;
         }
+        pumpEvents();
     }
 
     return true;
