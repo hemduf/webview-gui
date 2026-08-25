@@ -1,14 +1,18 @@
 #include "webview-gui/_impl/platform/choc_plugin_webview.h"
+#include "webview-gui/_impl/platform/linux_plugin_runtime.h"
 
 #if !defined(__linux__)
 #error Linux-only test module
 #endif
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define WEBVIEW_GUI_TEST_EXPORT extern "C" __attribute__((visibility("default")))
@@ -17,6 +21,7 @@ namespace {
 
 struct ModuleState {
     std::vector<std::unique_ptr<choc::ui::WebView>> views;
+    std::vector<std::unique_ptr<webview_gui::detail::GtkXEmbedHost>> adapters;
 };
 
 ModuleState*& stateSlot()
@@ -27,10 +32,42 @@ ModuleState*& stateSlot()
     return state;
 }
 
+void pumpEvents()
+{
+    while (g_main_context_pending(nullptr))
+        g_main_context_iteration(nullptr, FALSE);
+}
+
+template <typename Predicate>
+bool pumpUntil(Predicate&& predicate, std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+        pumpEvents();
+        if (predicate())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    pumpEvents();
+    return predicate();
+}
+
 void releaseState()
 {
-    delete stateSlot();
-    stateSlot() = nullptr;
+    auto*& state = stateSlot();
+    if (!state)
+        return;
+
+    // GtkXEmbedHost owns GtkPlug objects that reference the CHOC WebKit child.
+    // Detach all plugs while both the WebViews and this module's code are still
+    // alive, then destroy the WebViews, then finally release the state itself.
+    state->adapters.clear();
+    pumpEvents();
+    state->views.clear();
+    pumpEvents();
+    delete state;
+    state = nullptr;
 }
 
 choc::ui::WebView::Options makeWebViewOptions()
@@ -61,6 +98,7 @@ WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_retain_linux_webviews(std::size_t 
 
     stateSlot() = state;
     state->views.reserve(count);
+    state->adapters.reserve(count);
 
     for (std::size_t i = 0; i < count; ++i) {
         auto view = std::make_unique<choc::ui::WebView>(makeWebViewOptions());
@@ -72,6 +110,71 @@ WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_retain_linux_webviews(std::size_t 
     }
 
     return state->views.size() == count;
+}
+
+WEBVIEW_GUI_TEST_EXPORT bool webview_gui_test_exercise_linux_host_lifecycle(
+    const std::uintptr_t* hostXids,
+    std::size_t hostCount,
+    std::size_t passes)
+{
+    auto* state = stateSlot();
+    if (!state || !hostXids || passes == 0 || hostCount != state->views.size())
+        return false;
+
+    if (state->adapters.empty()) {
+        for (std::size_t i = 0; i < state->views.size(); ++i) {
+            auto& view = state->views[i];
+            if (!view || !view->loadedOK() || !view->getViewHandle() || hostXids[i] == 0)
+                return false;
+
+            auto adapter = std::make_unique<webview_gui::detail::GtkXEmbedHost>();
+            auto* child = static_cast<GtkWidget*>(view->getViewHandle());
+            if (!adapter->attach(child, hostXids[i]) || !adapter->plugWidget())
+                return false;
+
+            if (!pumpUntil([&] {
+                    return gtk_plug_get_embedded(GTK_PLUG(adapter->plugWidget()));
+                }, std::chrono::seconds(2)))
+                return false;
+
+            state->adapters.push_back(std::move(adapter));
+        }
+    }
+
+    if (state->adapters.size() != state->views.size())
+        return false;
+
+    for (std::size_t pass = 0; pass < passes; ++pass) {
+        for (std::size_t i = 0; i < state->views.size(); ++i) {
+            auto& view = state->views[i];
+            auto& adapter = state->adapters[i];
+            if (!view || !adapter || !view->loadedOK() || !view->getViewHandle()
+                || !adapter->plugWidget())
+                return false;
+
+            auto* child = static_cast<GtkWidget*>(view->getViewHandle());
+            const int width = 480 + static_cast<int>((i + pass) % 17) * 8;
+            const int height = 280 + static_cast<int>((i + pass) % 13) * 6;
+            if (!adapter->resize(width, height))
+                return false;
+
+            if (!pumpUntil([&] {
+                    GtkAllocation allocation{};
+                    gtk_widget_get_allocation(child, &allocation);
+                    return allocation.width == width && allocation.height == height;
+                }, std::chrono::seconds(2)))
+                return false;
+
+            if (!adapter->setVisible(false)
+                || gtk_widget_get_visible(adapter->plugWidget()))
+                return false;
+            if (!adapter->setVisible(true)
+                || !gtk_widget_get_visible(adapter->plugWidget()))
+                return false;
+        }
+    }
+
+    return true;
 }
 
 WEBVIEW_GUI_TEST_EXPORT void webview_gui_test_release_linux_webviews()
