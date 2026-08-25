@@ -107,8 +107,8 @@ TEST_CASE("Win32 embedding is explicit about mixed-DPI host compatibility")
     // OS-side partial reparent failure.
     SetLastError(ERROR_SUCCESS);
     const auto styleBeforeRejectedAttach = GetWindowLongPtrW(child, GWL_STYLE);
-    REQUIRE_MESSAGE(styleBeforeRejectedAttach != 0 || GetLastError() == ERROR_SUCCESS,
-                    "fixture child style must be readable");
+    const bool styleReadable = styleBeforeRejectedAttach != 0 || GetLastError() == ERROR_SUCCESS;
+    REQUIRE_MESSAGE(styleReadable, "fixture child style must be readable");
     CHECK_FALSE(webview_gui::detail::windowsDpiHostingAllowsChild(child, strictHost));
     CHECK_FALSE(webview_gui::detail::attachChildWindowToHost(child, strictHost));
     CHECK(GetParent(child) == nullptr);
