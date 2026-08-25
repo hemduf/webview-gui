@@ -3,6 +3,7 @@
 #include "clap/clap.h"
 #include "webview-gui.h"
 #include "_impl/plugin_support.h"
+#include "_impl/callback_registry.h"
 #include "_impl/bounded_buffer.h"
 
 #include <algorithm>
@@ -32,14 +33,13 @@ struct ClapWebviewGui {
 
     ClapWebviewGui(const clap_plugin *plugin=nullptr, const clap_host *host=nullptr)
         : plugin(plugin), host(host) {
-        setSelf(plugin);
         extPluginGui = &pluginGuiProxy;
     }
 
     ~ClapWebviewGui() {
         assert(!uiThread.isBound() || uiThread.isCurrentThread());
-        destroy();
         clearSelf(plugin);
+        destroy();
         plugin = nullptr;
         host = nullptr;
         pluginWebview = nullptr;
@@ -53,13 +53,13 @@ struct ClapWebviewGui {
         clearSelf(plugin);
         plugin = initPlugin;
         host = initHost;
-        setSelf(plugin);
         init();
     }
 
     void init() {
         if (uiThread.isBound() && !uiThread.isCurrentThread())
             return;
+        clearSelf(plugin);
         uiThread.bindToCurrentThread();
         pluginWebview = nullptr;
         hostWebview = nullptr;
@@ -71,6 +71,7 @@ struct ClapWebviewGui {
             hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
 
         extHostWebview = hostWebview;
+        setSelf(plugin);
     }
 
     [[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
@@ -271,11 +272,28 @@ private:
     std::unique_ptr<WebviewGui> nativeWebview;
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
 
-    inline static detail::PointerRegistry<ClapWebviewGui> pluginRegistry;
+    inline static detail::CallbackRegistry<ClapWebviewGui> pluginRegistry;
 
-    static ClapWebviewGui * getSelf(const void *pluginPtr) { return pluginRegistry.find(pluginPtr); }
     void setSelf(const void *pluginPtr) { pluginRegistry.set(pluginPtr, this); }
     void clearSelf(const void *pluginPtr) { pluginRegistry.eraseIfMatches(pluginPtr, this); }
+
+    template <typename Callback>
+    static bool visitSelf(const void *pluginPtr, Callback&& callback) {
+        bool result = false;
+        pluginRegistry.visit(pluginPtr, [&](ClapWebviewGui& self) {
+            if (self.isOnGuiThread())
+                result = callback(self);
+        });
+        return result;
+    }
+
+    template <typename Callback>
+    static void visitSelfVoid(const void *pluginPtr, Callback&& callback) {
+        pluginRegistry.visit(pluginPtr, [&](ClapWebviewGui& self) {
+            if (self.isOnGuiThread())
+                callback(self);
+        });
+    }
 
     char startUrlBuffer[2048] = {0};
     const char * getNativeStartUrl() {
@@ -337,62 +355,55 @@ private:
     };
 
     static bool gui_is_api_supported(const clap_plugin *plugin, const char *api, bool is_floating) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->isApiSupported(api, is_floating) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) {
+            return self.isApiSupported(api, is_floating);
+        });
     }
     static bool gui_get_preferred_api(const clap_plugin *plugin, const char **api, bool *is_floating) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->getPreferredApi(api, is_floating) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) {
+            return self.getPreferredApi(api, is_floating);
+        });
     }
     static bool gui_create(const clap_plugin *plugin, const char *api, bool is_floating) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->create(api, is_floating) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) {
+            return self.create(api, is_floating);
+        });
     }
     static void gui_destroy(const clap_plugin *plugin) {
-        if (auto *self = getSelf(plugin); self && self->isOnGuiThread()) self->destroy();
+        visitSelfVoid(plugin, [&](ClapWebviewGui& self) { self.destroy(); });
     }
     static bool gui_set_scale(const clap_plugin *plugin, double scale) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->setScale(scale) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setScale(scale); });
     }
     static bool gui_get_size(const clap_plugin *plugin, uint32_t *w, uint32_t *h) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->getSize(w, h) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.getSize(w, h); });
     }
     static bool gui_can_resize(const clap_plugin *plugin) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->canResize() : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.canResize(); });
     }
     static bool gui_get_resize_hints(const clap_plugin *plugin, clap_gui_resize_hints_t *hints) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->getResizeHints(hints) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.getResizeHints(hints); });
     }
     static bool gui_adjust_size(const clap_plugin *plugin, uint32_t *w, uint32_t *h) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->adjustSize(w, h) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.adjustSize(w, h); });
     }
     static bool gui_set_size(const clap_plugin *plugin, uint32_t w, uint32_t h) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->setSize(w, h) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setSize(w, h); });
     }
     static bool gui_set_parent(const clap_plugin *plugin, const clap_window *window) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->setParent(window) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setParent(window); });
     }
     static bool gui_set_transient(const clap_plugin *plugin, const clap_window *window) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->setTransient(window) : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setTransient(window); });
     }
     static void gui_suggest_title(const clap_plugin *plugin, const char *title) {
-        if (auto *self = getSelf(plugin); self && self->isOnGuiThread()) self->suggestTitle(title);
+        visitSelfVoid(plugin, [&](ClapWebviewGui& self) { self.suggestTitle(title); });
     }
     static bool gui_show(const clap_plugin *plugin) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->show() : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.show(); });
     }
     static bool gui_hide(const clap_plugin *plugin) {
-        auto *self = getSelf(plugin);
-        return self && self->isOnGuiThread() ? self->hide() : false;
+        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.hide(); });
     }
 };
 
