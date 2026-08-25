@@ -111,7 +111,9 @@ void releaseRetainedState()
     apartment().reset();
 }
 
-bool waitForJavascriptBarrier(choc::ui::WebView& view)
+bool waitForJavascriptBarrier(
+    choc::ui::WebView& view,
+    std::chrono::milliseconds timeout = std::chrono::seconds(5))
 {
     struct BarrierState {
         bool completed = false;
@@ -128,7 +130,7 @@ bool waitForJavascriptBarrier(choc::ui::WebView& view)
             }))
         return false;
 
-    return waitFor([&] { return barrier->completed; }) && !barrier->failed;
+    return waitFor([&] { return barrier->completed; }, timeout) && !barrier->failed;
 }
 
 bool waitForTrustedDocument(choc::ui::WebView& view)
@@ -155,8 +157,16 @@ bool waitForTrustedDocument(choc::ui::WebView& view)
             continue;
         }
 
-        if (!waitFor([&] { return probe->completed; }, std::chrono::milliseconds(250)))
-            continue;
+        // Never issue a second ExecuteScript while a prior completion callback
+        // may still be owned by WebView2. Keeping at most one probe in flight is
+        // important for DLL unload: every callback object has code in this DSO.
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+            return false;
+
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        if (!waitFor([&] { return probe->completed; }, remaining))
+            return false;
         if (probe->trusted)
             return true;
 
@@ -197,7 +207,7 @@ bool installBridgeBinding(BridgeState& state, std::size_t index)
 
     // bind() queues the JavaScript wrapper. A completion-bearing evaluation
     // behind it proves that the wrapper is installed in the trusted local page.
-    if (!waitForJavascriptBarrier(*view))
+    if (!waitForJavascriptBarrier(*view, bridgeStartupTimeout))
         return false;
 
     state.bridgeInstalled[index] = true;
