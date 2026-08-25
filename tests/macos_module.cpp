@@ -105,18 +105,16 @@ bool exerciseRetainedWebViews(RetainedWebViewsState& state, std::size_t passes)
 
             // Exercise host-visible WKWebView state synchronously so the test
             // proves the still-loaded module is usable after its peer unloads.
+            // Keep this helper synchronous: queuing evaluateJavaScript here made
+            // teardown race with WebKit process startup and, on macOS 26 ASan,
+            // exposed an unrelated system FontRegistry overflow before the
+            // module-isolation assertion could be evaluated.
             choc::objc::call<void>(webview, "setHidden:", YES);
             if (choc::objc::call<BOOL>(webview, "isHidden") != YES)
                 return false;
 
             choc::objc::call<void>(webview, "setHidden:", NO);
             if (choc::objc::call<BOOL>(webview, "isHidden") != NO)
-                return false;
-
-            // Also enqueue a real JavaScript evaluation on every live WebView.
-            // On macOS CHOC is ready synchronously after construction, so false
-            // here indicates the live view can no longer accept bridge work.
-            if (!view->evaluateJavascript("void 0"))
                 return false;
         }
     }
