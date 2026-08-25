@@ -236,4 +236,40 @@ if(UNIX AND NOT APPLE)
         PkgConfig::test_webkit2
     )
     add_test(NAME webview_gui_linux_embed_tests COMMAND webview_gui_linux_embed_tests)
+
+    add_library(webview_gui_linux_module_a MODULE linux_module.cpp)
+    add_library(webview_gui_linux_module_b MODULE linux_module.cpp)
+    foreach(target webview_gui_linux_module_a webview_gui_linux_module_b)
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/../include
+            ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
+        )
+        target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
+        target_link_libraries(${target} PRIVATE
+            Threads::Threads
+            PkgConfig::test_gtk3
+            PkgConfig::test_webkit2
+        )
+        set_target_properties(${target} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN YES
+        )
+    endforeach()
+
+    add_executable(webview_gui_linux_multimodule_lifecycle_tests linux_multimodule_lifecycle_tests.cpp)
+    target_link_libraries(webview_gui_linux_multimodule_lifecycle_tests PRIVATE
+        doctest::doctest
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        PkgConfig::test_gtk3
+    )
+    target_compile_definitions(webview_gui_linux_multimodule_lifecycle_tests PRIVATE
+        MODULE_A_PATH="$<TARGET_FILE:webview_gui_linux_module_a>"
+        MODULE_B_PATH="$<TARGET_FILE:webview_gui_linux_module_b>"
+    )
+    add_dependencies(webview_gui_linux_multimodule_lifecycle_tests
+        webview_gui_linux_module_a
+        webview_gui_linux_module_b
+    )
+    add_test(NAME webview_gui_linux_multimodule_lifecycle_tests COMMAND webview_gui_linux_multimodule_lifecycle_tests)
 endif()
