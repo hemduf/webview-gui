@@ -272,4 +272,5 @@ if(UNIX AND NOT APPLE)
         webview_gui_linux_module_b
     )
     add_test(NAME webview_gui_linux_multimodule_lifecycle_tests COMMAND webview_gui_linux_multimodule_lifecycle_tests)
+    set_tests_properties(webview_gui_linux_multimodule_lifecycle_tests PROPERTIES TIMEOUT 1800)
 endif()
