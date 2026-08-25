@@ -3,6 +3,7 @@
 
 #include "webview-gui/helpers.h"
 #include "webview-gui/_impl/plugin_support.h"
+#include "webview-gui/_impl/callback_registry.h"
 #include "webview-gui/_impl/bounded_buffer.h"
 
 #include <atomic>
@@ -110,6 +111,80 @@ TEST_CASE("PointerRegistry tolerates concurrent readers while registrations chan
 
     stop.store(true, std::memory_order_relaxed);
     reader.join();
+}
+
+TEST_CASE("CallbackRegistry keeps an owner pinned until an in-flight callback returns")
+{
+    detail::CallbackRegistry<int> registry;
+    int key = 0;
+    int value = 42;
+    registry.set(&key, &value);
+
+    std::atomic<bool> callbackEntered{false};
+    std::atomic<bool> releaseCallback{false};
+    std::atomic<bool> eraseStarted{false};
+    std::atomic<bool> eraseFinished{false};
+
+    std::thread callback([&] {
+        REQUIRE(registry.visit(&key, [&](int& current) {
+            CHECK(&current == &value);
+            callbackEntered.store(true, std::memory_order_release);
+            while (!releaseCallback.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            CHECK(current == 42);
+        }));
+    });
+
+    while (!callbackEntered.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    std::thread eraser([&] {
+        eraseStarted.store(true, std::memory_order_release);
+        CHECK(registry.eraseIfMatches(&key, &value));
+        eraseFinished.store(true, std::memory_order_release);
+    });
+
+    while (!eraseStarted.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    for (int i = 0; i < 1000; ++i)
+        std::this_thread::yield();
+    CHECK_FALSE(eraseFinished.load(std::memory_order_acquire));
+
+    releaseCallback.store(true, std::memory_order_release);
+    callback.join();
+    eraser.join();
+
+    CHECK(eraseFinished.load(std::memory_order_acquire));
+    CHECK(registry.size() == 0);
+    CHECK_FALSE(registry.visit(&key, [](int&) {}));
+}
+
+TEST_CASE("CallbackRegistry tolerates concurrent visits while registrations change")
+{
+    detail::CallbackRegistry<int> registry;
+    int key = 0;
+    int value = 22;
+    std::atomic<bool> stop{false};
+    std::atomic<unsigned> visits{0};
+
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            registry.visit(&key, [&](int& current) {
+                CHECK(current == 22);
+                visits.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+    });
+
+    for (int i = 0; i < 10000; ++i) {
+        registry.set(&key, &value);
+        registry.eraseIfMatches(&key, &value);
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    reader.join();
+    CHECK(registry.size() == 0);
 }
 
 TEST_CASE("Resource paths remain inside the configured root")
