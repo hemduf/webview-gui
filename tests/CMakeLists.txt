@@ -108,7 +108,10 @@ if(APPLE)
             ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
         )
         target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_HEADER_ONLY=1 WEBVIEW_GUI_TESTING=1)
-        target_link_libraries(${target} PRIVATE "-framework WebKit")
+        target_link_libraries(${target} PRIVATE
+            "-framework WebKit"
+            "-framework CoreFoundation"
+        )
         set_target_properties(${target} PROPERTIES
             CXX_VISIBILITY_PRESET hidden
             VISIBILITY_INLINES_HIDDEN YES
