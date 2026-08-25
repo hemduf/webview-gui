@@ -40,6 +40,63 @@ struct RetainedWebViewsState {
     std::vector<std::unique_ptr<choc::ui::WebView>> views;
 };
 
+class ScopedHostAttachment {
+public:
+    explicit ScopedHostAttachment(id childToAttach)
+        : child(childToAttach)
+    {
+        auto nsViewClass = reinterpret_cast<id>(objc_getClass("NSView"));
+        if (!nsViewClass || !child)
+            return;
+
+        auto allocated = choc::objc::call<id>(nsViewClass, "alloc");
+        if (!allocated)
+            return;
+
+        parent = choc::objc::call<id>(allocated, "init");
+        if (!parent) {
+            choc::objc::call<void>(allocated, "release");
+            return;
+        }
+
+        choc::objc::call<void>(parent, "addSubview:", child);
+        if (choc::objc::call<id>(child, "superview") != parent) {
+            choc::objc::call<void>(parent, "release");
+            parent = nullptr;
+        }
+    }
+
+    ScopedHostAttachment(const ScopedHostAttachment&) = delete;
+    ScopedHostAttachment& operator=(const ScopedHostAttachment&) = delete;
+
+    ~ScopedHostAttachment()
+    {
+        detach();
+        if (parent)
+            choc::objc::call<void>(parent, "release");
+    }
+
+    [[nodiscard]] bool attached() const noexcept
+    {
+        return parent != nullptr && child != nullptr;
+    }
+
+    bool detach()
+    {
+        if (!child)
+            return parent != nullptr;
+
+        if (parent && choc::objc::call<id>(child, "superview") == parent)
+            choc::objc::call<void>(child, "removeFromSuperview");
+
+        return choc::objc::call<id>(child, "superview") == nullptr;
+    }
+
+private:
+    id parent = nullptr;
+    id child = nullptr;
+};
+
 bool retainWebViews(RetainedWebViewsState& state,
                     std::size_t count,
                     char* delegateClass,
@@ -122,6 +179,61 @@ bool exerciseRetainedWebViews(RetainedWebViewsState& state, std::size_t passes)
     return true;
 }
 
+bool exerciseRetainedHostLifecycle(RetainedWebViewsState& state)
+{
+    if (state.views.empty())
+        return false;
+
+    std::vector<std::unique_ptr<ScopedHostAttachment>> attachments;
+    attachments.reserve(state.views.size());
+
+    // Keep every parent and child alive simultaneously. This mirrors an audio
+    // host with many open editors rather than serially attaching one temporary
+    // view at a time.
+    for (std::size_t i = 0; i < state.views.size(); ++i) {
+        auto& view = state.views[i];
+        if (!view || !view->loadedOK() || !view->getViewHandle())
+            return false;
+
+        auto webview = reinterpret_cast<id>(view->getViewHandle());
+        auto attachment = std::make_unique<ScopedHostAttachment>(webview);
+        if (!attachment->attached())
+            return false;
+
+        const CGFloat width = static_cast<CGFloat>(320 + (i % 7));
+        const CGFloat height = static_cast<CGFloat>(180 + (i % 5));
+        const CGRect expectedFrame{{0, 0}, {width, height}};
+        choc::objc::call<void>(webview, "setFrame:", expectedFrame);
+
+        const auto actualFrame = choc::objc::call<CGRect>(webview, "frame");
+        if (actualFrame.size.width != width || actualFrame.size.height != height)
+            return false;
+
+        choc::objc::call<void>(webview, "setHidden:", NO);
+        if (choc::objc::call<BOOL>(webview, "isHidden") != NO)
+            return false;
+
+        choc::objc::call<void>(webview, "setHidden:", YES);
+        if (choc::objc::call<BOOL>(webview, "isHidden") != YES)
+            return false;
+
+        choc::objc::call<void>(webview, "setHidden:", NO);
+        if (choc::objc::call<BOOL>(webview, "isHidden") != NO)
+            return false;
+
+        attachments.push_back(std::move(attachment));
+    }
+
+    // Explicitly detach before the WebView owners are cleared by the caller.
+    // The RAII destructor repeats this defensively on every early-return path.
+    for (auto& attachment : attachments) {
+        if (!attachment || !attachment->detach())
+            return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 extern "C" __attribute__((visibility("default"))) bool webview_gui_test_create_runtime_class_names(
@@ -172,6 +284,14 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exercise
     auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
     return state != nullptr
         && exerciseRetainedWebViews(*state, passes);
+}
+
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exercise_retained_host_lifecycle(
+    void* opaqueState)
+{
+    auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
+    return state != nullptr
+        && exerciseRetainedHostLifecycle(*state);
 }
 
 extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_webviews(
