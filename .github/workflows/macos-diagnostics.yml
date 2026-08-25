@@ -26,6 +26,10 @@ jobs:
 
       - name: Require Objective-C lifecycle diagnostics
         shell: bash
+        env:
+          NSZombieEnabled: "YES"
+          NSDeallocateZombies: "NO"
+          MallocStackLogging: "1"
         run: |
           set -euo pipefail
           test "${NSZombieEnabled:-}" = "YES"
