@@ -20,6 +20,7 @@ using DestroyRetainedStateFn = void (*)(void*);
 using RetainWebViewsFn = bool (*)(void*, std::size_t, char*, std::size_t);
 using ReleaseWebViewsFn = void (*)(void*);
 using ExerciseRetainedWebViewsFn = bool (*)(void*, std::size_t);
+using ExerciseRetainedMessagesFn = bool (*)(void*, std::size_t);
 
 struct RuntimeNames {
     std::string webview;
@@ -34,6 +35,7 @@ struct Module {
     RetainWebViewsFn retainWebViews = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
     ExerciseRetainedWebViewsFn exerciseRetainedWebViews = nullptr;
+    ExerciseRetainedMessagesFn exerciseRetainedMessages = nullptr;
     void* retainedState = nullptr;
     void* imageBase = nullptr;
 
@@ -58,6 +60,8 @@ struct Module {
                 dlsym(handle, "webview_gui_test_release_webviews"));
             exerciseRetainedWebViews = reinterpret_cast<ExerciseRetainedWebViewsFn>(
                 dlsym(handle, "webview_gui_test_exercise_retained_webviews"));
+            exerciseRetainedMessages = reinterpret_cast<ExerciseRetainedMessagesFn>(
+                dlsym(handle, "webview_gui_test_exchange_retained_messages"));
 
             if (createRetainedState && destroyRetainedState
                 && retainWebViews && releaseWebViews)
@@ -102,6 +106,13 @@ struct Module {
             && exerciseRetainedWebViews(retainedState, passes);
     }
 
+    bool exchangeMessages(std::size_t messagesPerView) const
+    {
+        return retainedState != nullptr
+            && exerciseRetainedMessages != nullptr
+            && exerciseRetainedMessages(retainedState, messagesPerView);
+    }
+
     void release() const
     {
         if (retainedState && releaseWebViews)
@@ -129,6 +140,7 @@ struct Module {
             retainWebViews = nullptr;
             releaseWebViews = nullptr;
             exerciseRetainedWebViews = nullptr;
+            exerciseRetainedMessages = nullptr;
             imageBase = nullptr;
         }
     }
@@ -316,6 +328,8 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         REQUIRE(moduleA.releaseWebViews != nullptr);
         REQUIRE(moduleB.retainWebViews != nullptr);
         REQUIRE(moduleB.releaseWebViews != nullptr);
+        REQUIRE(moduleA.exerciseRetainedMessages != nullptr);
+        REQUIRE(moduleB.exerciseRetainedMessages != nullptr);
         REQUIRE(moduleA.hasRetainedState());
         REQUIRE(moduleB.hasRetainedState());
 
@@ -342,6 +356,12 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         CHECK(exerciseHostLifecycleA(moduleA.retainedState));
         CHECK(exerciseHostLifecycleB(moduleB.retainedState));
 
+        // The same retained editors must exchange bridge messages before any
+        // module unload. Different message counts make accidental cross-routing
+        // observable rather than allowing equal aggregate counts to hide it.
+        CHECK(moduleA.exchangeMessages(2));
+        CHECK(moduleB.exchangeMessages(3));
+
         if (cycle == 0) {
             stableDelegateA = delegateA;
             stableDelegateB = delegateB;
@@ -357,11 +377,13 @@ TEST_CASE("32 live WebViews remain isolated across repeated module unload and re
         CHECK(objc_getClass(delegateA.c_str()) != nullptr);
         CHECK(classOwnIMPsAreOutsideImage(delegateA, unloadedImageA));
 
-        // B remains alive with 16 retained WKWebViews and must still be usable.
+        // B remains alive with 16 retained WKWebViews and must still exchange
+        // messages through its own module-local CHOC bridge after A is gone.
         const auto bAfter = moduleB.createNames();
         CHECK(bAfter.webview == "WKWebView");
         CHECK(bAfter.delegate == delegateB);
         CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
+        CHECK(moduleB.exchangeMessages(2));
 
         moduleB.release();
         CHECK(classHasIMPFromImage(delegateB, moduleB.imageBase));
