@@ -4,6 +4,7 @@
 #error macOS-only test module
 #endif
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <objc/runtime.h>
 #include <cstddef>
 #include <cstring>
@@ -37,8 +38,27 @@ choc::ui::WebView::Options makePluginOptions()
 }
 
 struct RetainedWebViewsState {
+    // Keep state captured by bridge callbacks before the view owners so member
+    // destruction tears down every callback-owning WebView first.
+    std::vector<std::size_t> receivedMessageCounts;
+    bool acceptingMessages = false;
+    bool unexpectedMessage = false;
+    std::size_t drainCompletions = 0;
+    bool drainFailed = false;
     std::vector<std::unique_ptr<choc::ui::WebView>> views;
 };
+
+void clearRetainedWebViews(RetainedWebViewsState& state)
+{
+    // Bridge callbacks capture state fields. Destroy the views/callbacks before
+    // clearing the storage they refer to.
+    state.views.clear();
+    state.receivedMessageCounts.clear();
+    state.acceptingMessages = false;
+    state.unexpectedMessage = false;
+    state.drainCompletions = 0;
+    state.drainFailed = false;
+}
 
 class ScopedHostAttachment {
 public:
@@ -102,8 +122,9 @@ bool retainWebViews(RetainedWebViewsState& state,
                     char* delegateClass,
                     std::size_t delegateCapacity)
 {
+    clearRetainedWebViews(state);
     auto& views = state.views;
-    views.clear();
+    state.receivedMessageCounts.assign(count, 0);
     views.reserve(count);
 
     char firstDelegate[256] = {};
@@ -111,14 +132,14 @@ bool retainWebViews(RetainedWebViewsState& state,
     for (std::size_t i = 0; i < count; ++i) {
         auto view = std::make_unique<choc::ui::WebView>(makePluginOptions());
         if (!view->loadedOK() || !view->getViewHandle()) {
-            views.clear();
+            clearRetainedWebViews(state);
             return false;
         }
 
         auto webview = reinterpret_cast<id>(view->getViewHandle());
         auto webviewClass = object_getClass(webview);
         if (webviewClass != objc_getClass("WKWebView")) {
-            views.clear();
+            clearRetainedWebViews(state);
             return false;
         }
 
@@ -126,14 +147,36 @@ bool retainWebViews(RetainedWebViewsState& state,
         char currentDelegate[256] = {};
         copyClassName(delegate, currentDelegate, sizeof(currentDelegate));
         if (currentDelegate[0] == '\0') {
-            views.clear();
+            clearRetainedWebViews(state);
             return false;
         }
 
         if (i == 0) {
             std::strncpy(firstDelegate, currentDelegate, sizeof(firstDelegate) - 1);
         } else if (std::strcmp(firstDelegate, currentDelegate) != 0) {
-            views.clear();
+            clearRetainedWebViews(state);
+            return false;
+        }
+
+        // Exercise CHOC's real JS -> native binding path. Each WebView owns its
+        // own binding callback so cross-view routing changes a different counter.
+        if (!view->bind("__webviewGuiIsolationMessage",
+                        [&state, i](const choc::value::ValueView&)
+                        {
+                            if (i >= state.receivedMessageCounts.size()) {
+                                state.unexpectedMessage = true;
+                                return choc::value::Value{false};
+                            }
+
+                            if (!state.acceptingMessages) {
+                                state.unexpectedMessage = true;
+                                return choc::value::Value{false};
+                            }
+
+                            ++state.receivedMessageCounts[i];
+                            return choc::value::Value{true};
+                        })) {
+            clearRetainedWebViews(state);
             return false;
         }
 
@@ -162,10 +205,6 @@ bool exerciseRetainedWebViews(RetainedWebViewsState& state, std::size_t passes)
 
             // Exercise host-visible WKWebView state synchronously so the test
             // proves the still-loaded module is usable after its peer unloads.
-            // Keep this helper synchronous: queuing evaluateJavaScript here made
-            // teardown race with WebKit process startup and, on macOS 26 ASan,
-            // exposed an unrelated system FontRegistry overflow before the
-            // module-isolation assertion could be evaluated.
             choc::objc::call<void>(webview, "setHidden:", YES);
             if (choc::objc::call<BOOL>(webview, "isHidden") != YES)
                 return false;
@@ -177,6 +216,81 @@ bool exerciseRetainedWebViews(RetainedWebViewsState& state, std::size_t passes)
     }
 
     return true;
+}
+
+bool exchangeRetainedMessages(RetainedWebViewsState& state, std::size_t messagesPerView)
+{
+    if (state.views.empty() || messagesPerView == 0
+        || state.receivedMessageCounts.size() != state.views.size()
+        || state.unexpectedMessage)
+        return false;
+
+    const auto before = state.receivedMessageCounts;
+    state.acceptingMessages = true;
+
+    bool allQueued = true;
+    for (auto& view : state.views) {
+        if (!view || !view->loadedOK() || !view->getViewHandle()) {
+            allQueued = false;
+            continue;
+        }
+
+        for (std::size_t message = 0; message < messagesPerView; ++message) {
+            if (!view->evaluateJavascript(
+                    "if(typeof window.__webviewGuiIsolationMessage==='function')"
+                    "window.__webviewGuiIsolationMessage();"))
+                allQueued = false;
+        }
+    }
+
+    const auto receivedExactlyExpected = [&state, &before, messagesPerView]
+    {
+        if (state.unexpectedMessage)
+            return false;
+        for (std::size_t i = 0; i < state.receivedMessageCounts.size(); ++i) {
+            if (state.receivedMessageCounts[i] != before[i] + messagesPerView)
+                return false;
+        }
+        return true;
+    };
+
+    for (int attempt = 0; attempt < 500 && !receivedExactlyExpected(); ++attempt)
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+
+    const bool messagesOK = allQueued && receivedExactlyExpected();
+    state.acceptingMessages = false;
+
+    // CHOC resolves each native binding call by queueing JavaScript after the
+    // native callback returns. Submit one completion-bearing evaluation per
+    // view only after all native callbacks have arrived, then wait for those
+    // completions as a barrier. This prevents queued response work from crossing
+    // release/dlclose even when the message-count assertion has already passed.
+    const auto drainTarget = state.drainCompletions + state.views.size();
+    state.drainFailed = false;
+    bool drainsQueued = true;
+    for (auto& view : state.views) {
+        if (!view || !view->evaluateJavascript(
+                "0",
+                [&state](const std::string& error, const choc::value::ValueView&)
+                {
+                    if (!error.empty())
+                        state.drainFailed = true;
+                    ++state.drainCompletions;
+                }))
+            drainsQueued = false;
+    }
+
+    for (int attempt = 0;
+         attempt < 500 && state.drainCompletions < drainTarget;
+         ++attempt)
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+
+    return messagesOK
+        && drainsQueued
+        && state.drainCompletions == drainTarget
+        && !state.drainFailed
+        && !state.unexpectedMessage
+        && receivedExactlyExpected();
 }
 
 bool exerciseRetainedHostLifecycle(RetainedWebViewsState& state)
@@ -286,6 +400,15 @@ extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exercise
         && exerciseRetainedWebViews(*state, passes);
 }
 
+extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exchange_retained_messages(
+    void* opaqueState,
+    std::size_t messagesPerView)
+{
+    auto* state = static_cast<RetainedWebViewsState*>(opaqueState);
+    return state != nullptr
+        && exchangeRetainedMessages(*state, messagesPerView);
+}
+
 extern "C" __attribute__((visibility("default"))) bool webview_gui_test_exercise_retained_host_lifecycle(
     void* opaqueState)
 {
@@ -298,5 +421,5 @@ extern "C" __attribute__((visibility("default"))) void webview_gui_test_release_
     void* opaqueState)
 {
     if (auto* state = static_cast<RetainedWebViewsState*>(opaqueState))
-        state->views.clear();
+        clearRetainedWebViews(*state);
 }
