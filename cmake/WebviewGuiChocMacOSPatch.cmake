@@ -56,5 +56,82 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    # CHOC's WebView Pimpl owns a std::shared_ptr<DeletionChecker>. In an
+    # unloadable header-only plug-in DSO, libc++'s make_shared control block is
+    # a polymorphic template instantiation emitted by that DSO. The macOS ASan
+    # multi-module gate has observed the surviving module release a checker whose
+    # control-block dispatch/storage was associated with the peer image after
+    # dlclose, producing a global-buffer-overflow in __shared_count::__release_shared.
+    #
+    # The checker only needs shared lifetime across the synchronous native binding
+    # callback (so that deleting a WebView from its own callback remains safe).
+    # Replace the macOS-only member with a tiny non-polymorphic intrusive holder:
+    # copies retain plain heap state, and all retain/release code executes while
+    # the owning plug-in image is necessarily resident. This preserves CHOC's
+    # deletion-during-callback semantics without a cross-DSO shared_ptr control
+    # block. Linux/Windows keep upstream CHOC's shared_ptr implementation.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_DELETION_CHECKER [=[    static constexpr const char* postMessageFn = "window.webkit.messageHandlers.external.postMessage";
+
+    bool stillInitialising() const  { return false; }
+    void* getViewHandle() const     { return (CHOC_OBJC_CAST_BRIDGED void*) webview; }
+
+    std::shared_ptr<DeletionChecker> deletionChecker { std::make_shared<DeletionChecker>() };]=])
+
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_DELETION_CHECKER [=[    static constexpr const char* postMessageFn = "window.webkit.messageHandlers.external.postMessage";
+
+    bool stillInitialising() const  { return false; }
+    void* getViewHandle() const     { return (CHOC_OBJC_CAST_BRIDGED void*) webview; }
+
+    struct PluginDeletionCheckerRef
+    {
+        struct Control
+        {
+            DeletionChecker checker;
+            std::size_t references = 1;
+        };
+
+        PluginDeletionCheckerRef() : control (new Control()) {}
+
+        PluginDeletionCheckerRef (const PluginDeletionCheckerRef& other) noexcept
+            : control (other.control)
+        {
+            if (control != nullptr)
+                ++control->references;
+        }
+
+        PluginDeletionCheckerRef& operator= (const PluginDeletionCheckerRef&) = delete;
+        PluginDeletionCheckerRef (PluginDeletionCheckerRef&&) = delete;
+        PluginDeletionCheckerRef& operator= (PluginDeletionCheckerRef&&) = delete;
+
+        ~PluginDeletionCheckerRef()
+        {
+            if (control != nullptr && --control->references == 0)
+                delete control;
+        }
+
+        DeletionChecker* operator->() const noexcept
+        {
+            return control != nullptr ? std::addressof (control->checker) : nullptr;
+        }
+
+        Control* control = nullptr;
+    };
+
+    PluginDeletionCheckerRef deletionChecker;]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_DELETION_CHECKER}"
+        WEBVIEW_GUI_CHOC_MACOS_DELETION_CHECKER_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_DELETION_CHECKER_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS deletion checker changed; refusing to build without revalidating the plug-in unload patch")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_DELETION_CHECKER}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_DELETION_CHECKER}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     file(WRITE "${output_file}" "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 endfunction()
