@@ -133,6 +133,8 @@ private:
 TEST_CASE("32 retained Windows editors survive peer-module unload and reload host lifecycle")
 {
     constexpr std::size_t viewsPerModule = 16;
+    constexpr std::size_t requiredCycles = 200;
+    std::size_t completedCycles = 0;
 
     Module moduleA{MODULE_A_PATH};
     Module moduleB{MODULE_B_PATH};
@@ -174,4 +176,9 @@ TEST_CASE("32 retained Windows editors survive peer-module unload and reload hos
     // even if a REQUIRE above aborts the test early.
     CHECK(IsWindow(hostA.get()));
     CHECK(IsWindow(hostB.get()));
+
+    ++completedCycles;
+    // RED acceptance guard: #15 requires hundreds of complete lifecycle
+    // iterations, while this harness currently performs only one.
+    CHECK(completedCycles >= requiredCycles);
 }
