@@ -22,6 +22,8 @@
 
 namespace {
 
+constexpr auto bridgeStartupTimeout = std::chrono::seconds(20);
+
 struct BridgeState {
     std::vector<std::size_t> receivedMessageCounts;
     std::vector<bool> bridgeInstalled;
@@ -131,7 +133,7 @@ bool waitForJavascriptBarrier(choc::ui::WebView& view)
 
 bool waitForTrustedDocument(choc::ui::WebView& view)
 {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + bridgeStartupTimeout;
 
     while (std::chrono::steady_clock::now() < deadline) {
         struct ProbeState {
@@ -175,7 +177,8 @@ bool installBridgeBinding(BridgeState& state, std::size_t index)
     auto& view = views[index];
     if (!view || !view->loadedOK() || !view->getViewHandle())
         return false;
-    if (!waitFor([&] { return view->isReady(); }) || !waitForTrustedDocument(*view))
+    if (!waitFor([&] { return view->isReady(); }, bridgeStartupTimeout)
+        || !waitForTrustedDocument(*view))
         return false;
 
     if (!view->bind("__webviewGuiWindowsIsolationMessage",
