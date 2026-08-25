@@ -15,12 +15,14 @@ namespace {
 
 using RetainWebViewsFn = bool (*)(std::size_t, std::uintptr_t*, std::uintptr_t*, wchar_t*, std::size_t, bool*, bool*);
 using ExerciseHostLifecycleFn = bool (*)(std::uintptr_t, std::size_t);
+using ExchangeMessagesFn = bool (*)(std::size_t);
 using ReleaseWebViewsFn = void (*)();
 
 struct Module {
     HMODULE handle = nullptr;
     RetainWebViewsFn retainWebViews = nullptr;
     ExerciseHostLifecycleFn exerciseHostLifecycle = nullptr;
+    ExchangeMessagesFn exchangeMessages = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
 
     explicit Module(const char* path)
@@ -33,6 +35,8 @@ struct Module {
             GetProcAddress(handle, "webview_gui_test_retain_windows_webviews"));
         exerciseHostLifecycle = reinterpret_cast<ExerciseHostLifecycleFn>(
             GetProcAddress(handle, "webview_gui_test_exercise_windows_host_lifecycle"));
+        exchangeMessages = reinterpret_cast<ExchangeMessagesFn>(
+            GetProcAddress(handle, "webview_gui_test_exchange_windows_messages"));
         releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
             GetProcAddress(handle, "webview_gui_test_release_windows_webviews"));
     }
@@ -73,6 +77,11 @@ struct Module {
             && exerciseHostLifecycle(reinterpret_cast<std::uintptr_t>(host), passes);
     }
 
+    bool exchange(std::size_t messagesPerView) const
+    {
+        return exchangeMessages && exchangeMessages(messagesPerView);
+    }
+
     void release() const
     {
         if (releaseWebViews)
@@ -91,6 +100,7 @@ struct Module {
         handle = nullptr;
         retainWebViews = nullptr;
         exerciseHostLifecycle = nullptr;
+        exchangeMessages = nullptr;
         releaseWebViews = nullptr;
     }
 };
@@ -130,7 +140,7 @@ private:
 
 } // namespace
 
-TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload lifecycle cycles")
+TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload lifecycle cycles with independent messages")
 {
     constexpr std::size_t viewsPerModule = 16;
     constexpr std::size_t requiredCycles = 200;
@@ -152,11 +162,15 @@ TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload
         REQUIRE(moduleB.retainWebViews != nullptr);
         REQUIRE(moduleA.exerciseHostLifecycle != nullptr);
         REQUIRE(moduleB.exerciseHostLifecycle != nullptr);
+        REQUIRE(moduleA.exchangeMessages != nullptr);
+        REQUIRE(moduleB.exchangeMessages != nullptr);
 
         REQUIRE(moduleA.retain(viewsPerModule));
         REQUIRE(moduleB.retain(viewsPerModule));
         CHECK(moduleA.exercise(hostA.get(), 1));
         CHECK(moduleB.exercise(hostB.get(), 1));
+        CHECK(moduleA.exchange(1));
+        CHECK(moduleB.exchange(1));
 
         moduleA.close();
 
@@ -164,13 +178,17 @@ TEST_CASE("32 retained Windows editors survive 200 peer-module unload and reload
         // A's DLL and every A-owned window class have been unloaded.
         CHECK(IsWindow(hostB.get()));
         CHECK(moduleB.exercise(hostB.get(), 1));
+        CHECK(moduleB.exchange(1));
 
         Module reloadedA{MODULE_A_PATH};
         REQUIRE(reloadedA.handle != nullptr);
         REQUIRE(reloadedA.exerciseHostLifecycle != nullptr);
+        REQUIRE(reloadedA.exchangeMessages != nullptr);
         REQUIRE(reloadedA.retain(viewsPerModule));
         CHECK(reloadedA.exercise(hostA.get(), 1));
+        CHECK(reloadedA.exchange(1));
         CHECK(moduleB.exercise(hostB.get(), 1));
+        CHECK(moduleB.exchange(1));
 
         reloadedA.close();
         moduleB.close();
