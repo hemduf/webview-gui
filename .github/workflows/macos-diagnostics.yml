@@ -17,6 +17,8 @@ jobs:
   zombies:
     name: macOS Zombies lifecycle
     runs-on: macos-latest
+    env:
+      MACOS_LIFECYCLE_REPEATS: "10"
 
     steps:
       - name: Checkout
@@ -38,8 +40,6 @@ jobs:
 
       - name: Require hundreds-of-cycles lifecycle gate
         shell: bash
-        env:
-          MACOS_LIFECYCLE_REPEATS: "10"
         run: |
           set -euo pipefail
           [[ "${MACOS_LIFECYCLE_REPEATS}" =~ ^[0-9]+$ ]]
@@ -61,13 +61,12 @@ jobs:
           NSZombieEnabled: "YES"
           NSDeallocateZombies: "NO"
           MallocStackLogging: "1"
-          MACOS_LIFECYCLE_REPEATS: "10"
         run: |
           set -euo pipefail
           for iteration in $(seq 1 "${MACOS_LIFECYCLE_REPEATS}"); do
             echo "macOS multi-module lifecycle repetition ${iteration}/${MACOS_LIFECYCLE_REPEATS}"
-            ctest --test-dir build-macos-diagnostics --output-on-failure --timeout 180 \
+            ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
               -R '^webview_gui_macos_isolation_tests$'
           done
-          ctest --test-dir build-macos-diagnostics --output-on-failure --timeout 180 \
+          ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
             -R '^webview_gui_macos_bridge_roundtrip_tests$'
