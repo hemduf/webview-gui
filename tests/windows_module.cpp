@@ -8,16 +8,26 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cwchar>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
+
+struct BridgeState {
+    std::vector<std::size_t> receivedMessageCounts;
+    std::vector<bool> bridgeInstalled;
+    bool acceptingMessages = false;
+    bool unexpectedMessage = false;
+};
 
 std::vector<std::unique_ptr<choc::ui::WebView>>& retainedViews()
 {
@@ -29,6 +39,229 @@ std::unique_ptr<webview_gui::detail::ScopedCOMApartment>& apartment()
 {
     static std::unique_ptr<webview_gui::detail::ScopedCOMApartment> value;
     return value;
+}
+
+BridgeState& bridgeState()
+{
+    static BridgeState state;
+    return state;
+}
+
+void pumpMessages()
+{
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+}
+
+template <typename Predicate>
+bool waitFor(Predicate&& predicate,
+             std::chrono::milliseconds timeout = std::chrono::seconds(5))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        pumpMessages();
+        if (!predicate())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    pumpMessages();
+    return predicate();
+}
+
+choc::ui::WebView::Options makeMessageWebViewOptions()
+{
+    choc::ui::WebView::Options options;
+    options.fetchResource = [](const std::string& path)
+        -> std::optional<choc::ui::WebView::Options::Resource>
+    {
+        if (path == "/" || path == "/index.html")
+            return choc::ui::WebView::Options::Resource{
+                "<!doctype html><html><body>webview-gui windows module</body></html>",
+                "text/html"};
+        return std::nullopt;
+    };
+    return options;
+}
+
+void resetBridgeState(std::size_t count)
+{
+    auto& state = bridgeState();
+    state.receivedMessageCounts.assign(count, 0);
+    state.bridgeInstalled.assign(count, false);
+    state.acceptingMessages = false;
+    state.unexpectedMessage = false;
+}
+
+void releaseRetainedState()
+{
+    auto& state = bridgeState();
+    state.acceptingMessages = false;
+
+    // Native bridge callbacks capture BridgeState. Destroy every WebView and its
+    // WebView2 handlers before clearing the callback state or releasing COM.
+    retainedViews().clear();
+    state.receivedMessageCounts.clear();
+    state.bridgeInstalled.clear();
+    state.unexpectedMessage = false;
+    apartment().reset();
+}
+
+bool waitForJavascriptBarrier(choc::ui::WebView& view)
+{
+    struct BarrierState {
+        bool completed = false;
+        bool failed = false;
+    };
+
+    auto barrier = std::make_shared<BarrierState>();
+    if (!view.evaluateJavascript(
+            "0",
+            [barrier](const std::string& error, const choc::value::ValueView&)
+            {
+                barrier->failed = !error.empty();
+                barrier->completed = true;
+            }))
+        return false;
+
+    return waitFor([&] { return barrier->completed; }) && !barrier->failed;
+}
+
+bool waitForTrustedDocument(choc::ui::WebView& view)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        struct ProbeState {
+            bool completed = false;
+            bool trusted = false;
+        };
+
+        auto probe = std::make_shared<ProbeState>();
+        if (!view.evaluateJavascript(
+                "if(window.location.origin!=='https://choc.localhost')"
+                "throw new Error('webview-gui-not-ready'); 0;",
+                [probe](const std::string& error, const choc::value::ValueView&)
+                {
+                    probe->trusted = error.empty();
+                    probe->completed = true;
+                })) {
+            pumpMessages();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        if (!waitFor([&] { return probe->completed; }, std::chrono::milliseconds(250)))
+            continue;
+        if (probe->trusted)
+            return true;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return false;
+}
+
+bool installBridgeBinding(BridgeState& state, std::size_t index)
+{
+    auto& views = retainedViews();
+    if (index >= views.size() || index >= state.bridgeInstalled.size())
+        return false;
+    if (state.bridgeInstalled[index])
+        return true;
+
+    auto& view = views[index];
+    if (!view || !view->loadedOK() || !view->getViewHandle())
+        return false;
+    if (!waitFor([&] { return view->isReady(); }) || !waitForTrustedDocument(*view))
+        return false;
+
+    if (!view->bind("__webviewGuiWindowsIsolationMessage",
+                    [&state, index](const choc::value::ValueView&)
+                    {
+                        if (index >= state.receivedMessageCounts.size()
+                            || !state.acceptingMessages) {
+                            state.unexpectedMessage = true;
+                            return choc::value::Value{false};
+                        }
+
+                        ++state.receivedMessageCounts[index];
+                        return choc::value::Value{true};
+                    }))
+        return false;
+
+    // bind() queues the JavaScript wrapper. A completion-bearing evaluation
+    // behind it proves that the wrapper is installed in the trusted local page.
+    if (!waitForJavascriptBarrier(*view))
+        return false;
+
+    state.bridgeInstalled[index] = true;
+    return true;
+}
+
+bool exchangeMessages(std::size_t messagesPerView)
+{
+    auto& views = retainedViews();
+    auto& state = bridgeState();
+    if (views.empty() || messagesPerView == 0
+        || state.receivedMessageCounts.size() != views.size()
+        || state.bridgeInstalled.size() != views.size()
+        || state.unexpectedMessage)
+        return false;
+
+    // Keep all sixteen editors in each DLL alive, but activate two independent
+    // JS endpoints per module. Exact per-view counters catch instance or module
+    // cross-routing while keeping the 200-cycle qualification runtime bounded.
+    const auto activeViews = (std::min<std::size_t>)(2, views.size());
+    for (std::size_t i = 0; i < activeViews; ++i) {
+        if (!installBridgeBinding(state, i))
+            return false;
+    }
+
+    const auto before = state.receivedMessageCounts;
+    state.acceptingMessages = true;
+
+    bool allQueued = true;
+    for (std::size_t i = 0; i < activeViews; ++i) {
+        auto& view = views[i];
+        for (std::size_t message = 0; message < messagesPerView; ++message) {
+            if (!view->evaluateJavascript(
+                    "if(typeof window.__webviewGuiWindowsIsolationMessage==='function')"
+                    "window.__webviewGuiWindowsIsolationMessage();"))
+                allQueued = false;
+        }
+    }
+
+    const auto receivedExactlyExpected = [&]
+    {
+        if (state.unexpectedMessage)
+            return false;
+
+        for (std::size_t i = 0; i < state.receivedMessageCounts.size(); ++i) {
+            const auto expected = before[i] + (i < activeViews ? messagesPerView : 0);
+            if (state.receivedMessageCounts[i] != expected)
+                return false;
+        }
+        return true;
+    };
+
+    const bool messagesOK = allQueued && waitFor(receivedExactlyExpected);
+    state.acceptingMessages = false;
+
+    // CHOC posts a JavaScript response after each native binding callback.
+    // Drain every activated view before any DLL teardown can occur.
+    bool drainsOK = true;
+    for (std::size_t i = 0; i < activeViews; ++i) {
+        if (!views[i] || !waitForJavascriptBarrier(*views[i]))
+            drainsOK = false;
+    }
+
+    return messagesOK
+        && drainsOK
+        && !state.unexpectedMessage
+        && receivedExactlyExpected();
 }
 
 void copyWide(const std::wstring& source, wchar_t* output, std::size_t capacity)
@@ -50,9 +283,7 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
     bool* allOwnedByModule,
     bool* allClassNamesUnique)
 {
-    auto& views = retainedViews();
-    views.clear();
-    apartment().reset();
+    releaseRetainedState();
 
     apartment() = std::make_unique<webview_gui::detail::ScopedCOMApartment>();
     if (!apartment()->ok()) {
@@ -66,6 +297,9 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
         return false;
     }
 
+    auto& views = retainedViews();
+    resetBridgeState(count);
+
     std::set<std::wstring> classNames;
     bool owned = true;
     std::wstring firstClass;
@@ -73,10 +307,11 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
 
     views.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        auto view = std::make_unique<choc::ui::WebView>();
+        auto view = i < 2
+            ? std::make_unique<choc::ui::WebView>(makeMessageWebViewOptions())
+            : std::make_unique<choc::ui::WebView>();
         if (!view->loadedOK() || !view->getViewHandle()) {
-            views.clear();
-            apartment().reset();
+            releaseRetainedState();
             return false;
         }
 
@@ -87,8 +322,7 @@ extern "C" __declspec(dllexport) bool webview_gui_test_retain_windows_webviews(
 
         wchar_t className[256] = {};
         if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) <= 0) {
-            views.clear();
-            apartment().reset();
+            releaseRetainedState();
             return false;
         }
 
@@ -194,8 +428,13 @@ extern "C" __declspec(dllexport) bool webview_gui_test_exercise_windows_host_lif
     return true;
 }
 
+extern "C" __declspec(dllexport) bool webview_gui_test_exchange_windows_messages(
+    std::size_t messagesPerView)
+{
+    return exchangeMessages(messagesPerView);
+}
+
 extern "C" __declspec(dllexport) void webview_gui_test_release_windows_webviews()
 {
-    retainedViews().clear();
-    apartment().reset();
+    releaseRetainedState();
 }
