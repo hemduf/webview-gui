@@ -200,12 +200,12 @@ bool exerciseRetainedHostLifecycle(RetainedWebViewsState& state)
         if (!attachment->attached())
             return false;
 
-        const CGFloat width = static_cast<CGFloat>(320 + (i % 7));
-        const CGFloat height = static_cast<CGFloat>(180 + (i % 5));
-        const CGRect expectedFrame{{0, 0}, {width, height}};
+        const choc::objc::CGFloat width = static_cast<choc::objc::CGFloat>(320 + (i % 7));
+        const choc::objc::CGFloat height = static_cast<choc::objc::CGFloat>(180 + (i % 5));
+        const choc::objc::CGRect expectedFrame{{0, 0}, {width, height}};
         choc::objc::call<void>(webview, "setFrame:", expectedFrame);
 
-        const auto actualFrame = choc::objc::call<CGRect>(webview, "frame");
+        const auto actualFrame = choc::objc::call<choc::objc::CGRect>(webview, "frame");
         if (actualFrame.size.width != width || actualFrame.size.height != height)
             return false;
 
