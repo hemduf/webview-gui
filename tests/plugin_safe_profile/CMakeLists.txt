@@ -8,6 +8,37 @@ find_package(Git REQUIRED)
 # Reproduce a common plug-in superbuild where shared libraries are the parent
 # default. The webview-gui implementation must still remain module-private.
 set(BUILD_SHARED_LIBS ON CACHE BOOL "Parent shared-library default" FORCE)
+
+# The pinned CHOC revision no longer contains the environment-option builder
+# that an earlier Windows build workaround tried to rewrite. Catch stale patch
+# machinery before adding the production project so a source/patch mismatch is
+# reported as the regression itself rather than as an opaque configure failure.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(WEBVIEW_GUI_PINNED_CHOC_WEBVIEW
+        "${CMAKE_CURRENT_LIST_DIR}/../../include/webview-gui/_impl/platform/choc/choc/gui/choc_WebView.h")
+    file(READ "${WEBVIEW_GUI_PINNED_CHOC_WEBVIEW}" WEBVIEW_GUI_PINNED_CHOC_CONTENT)
+    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += L\" --\";"
+        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_PREFIX_OFFSET)
+    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += key;"
+        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_KEY_OFFSET)
+    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += value;"
+        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_VALUE_OFFSET)
+
+    if(WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_PREFIX_OFFSET EQUAL -1
+       AND WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_KEY_OFFSET EQUAL -1
+       AND WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_VALUE_OFFSET EQUAL -1)
+        file(READ "${CMAKE_CURRENT_LIST_DIR}/../../CMakeLists.txt"
+            WEBVIEW_GUI_ROOT_CMAKE_CONTENT)
+        string(FIND "${WEBVIEW_GUI_ROOT_CMAKE_CONTENT}"
+            "WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES"
+            WEBVIEW_GUI_STALE_ENVIRONMENT_PATCH_OFFSET)
+        if(NOT WEBVIEW_GUI_STALE_ENVIRONMENT_PATCH_OFFSET EQUAL -1)
+            message(FATAL_ERROR
+                "plugin-safe Windows profile found stale CHOC environment-option patch machinery for source patterns absent from the pinned WebView")
+        endif()
+    endif()
+endif()
+
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui EXCLUDE_FROM_ALL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/WebviewGuiPluginSafe.cmake)
 
