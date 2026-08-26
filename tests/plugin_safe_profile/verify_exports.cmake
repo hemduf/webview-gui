@@ -58,30 +58,59 @@ endif()
 set(exported_symbols)
 
 if(PLATFORM STREQUAL "Windows" AND windows_export_tool STREQUAL "objdump")
-    # objdump -p contains several PE tables. Only parse the export name-pointer
-    # table; other bracketed rows describe RVAs rather than exported names.
-    string(FIND "${exports}" "[Ordinal/Name Pointer] Table" export_table_offset)
-    if(export_table_offset EQUAL -1)
-        message(FATAL_ERROR "PE export name table was not found:\n${exports}")
-    endif()
+    # GNU objdump and LLVM llvm-objdump intentionally use different PE export
+    # layouts. Parse only the dedicated export-name table in either format so
+    # import/debug tables cannot be mistaken for plug-in ABI symbols.
+    string(REPLACE "\r\n" "\n" normalized_exports "${exports}")
+    string(REPLACE "\r" "\n" normalized_exports "${normalized_exports}")
+    string(FIND "${normalized_exports}" "[Ordinal/Name Pointer] Table" gnu_export_table_offset)
 
-    string(SUBSTRING "${exports}" ${export_table_offset} -1 export_name_table)
-    string(REPLACE "\r\n" "\n" export_name_table "${export_name_table}")
-    string(REPLACE "\r" "\n" export_name_table "${export_name_table}")
-    string(REPLACE "\n" ";" export_lines "${export_name_table}")
+    if(NOT gnu_export_table_offset EQUAL -1)
+        string(SUBSTRING "${normalized_exports}" ${gnu_export_table_offset} -1 export_name_table)
+        string(REPLACE "\n" ";" export_lines "${export_name_table}")
 
-    set(seen_export_name FALSE)
-    foreach(line IN LISTS export_lines)
-        if(line MATCHES "^[ \t]*\\[[ \t]*[0-9]+\\][ \t]+([^ \t]+)[ \t]*$")
-            list(APPEND exported_symbols "${CMAKE_MATCH_1}")
-            set(seen_export_name TRUE)
-        elseif(seen_export_name)
-            string(STRIP "${line}" stripped_line)
-            if(stripped_line STREQUAL "")
-                break()
+        set(seen_export_name FALSE)
+        foreach(line IN LISTS export_lines)
+            if(line MATCHES "^[ \t]*\\[[ \t]*[0-9]+\\][ \t]+([^ \t]+)[ \t]*$")
+                list(APPEND exported_symbols "${CMAKE_MATCH_1}")
+                set(seen_export_name TRUE)
+            elseif(seen_export_name)
+                string(STRIP "${line}" stripped_line)
+                if(stripped_line STREQUAL "")
+                    break()
+                endif()
             endif()
+        endforeach()
+    else()
+        # LLVM's PE printer emits:
+        #   Export Table:
+        #    Ordinal      RVA  Name
+        #          1   0x1234  exported_symbol
+        # Scope parsing to that table and capture exactly the first name token.
+        string(REPLACE "\n" ";" export_lines "${normalized_exports}")
+        set(in_llvm_export_table FALSE)
+        set(in_llvm_export_rows FALSE)
+        foreach(line IN LISTS export_lines)
+            if(line MATCHES "^[ \t]*Export Table:[ \t]*$")
+                set(in_llvm_export_table TRUE)
+            elseif(in_llvm_export_table
+                   AND line MATCHES "^[ \t]*Ordinal[ \t]+RVA[ \t]+Name[ \t]*$")
+                set(in_llvm_export_rows TRUE)
+            elseif(in_llvm_export_rows
+                   AND line MATCHES "^[ \t]*[0-9]+[ \t]+0x[0-9A-Fa-f]+[ \t]+([^ \t]+)([ \t].*)?$")
+                list(APPEND exported_symbols "${CMAKE_MATCH_1}")
+            elseif(in_llvm_export_rows)
+                string(STRIP "${line}" stripped_line)
+                if(stripped_line STREQUAL "" AND exported_symbols)
+                    break()
+                endif()
+            endif()
+        endforeach()
+
+        if(NOT in_llvm_export_rows)
+            message(FATAL_ERROR "PE export table was not found:\n${exports}")
         endif()
-    endforeach()
+    endif()
 elseif(PLATFORM STREQUAL "Windows")
     # dumpbin /EXPORTS rows are: ordinal, hex hint, RVA, exported name. Start
     # only after its column header so summary/import text cannot be mistaken for
