@@ -24,6 +24,33 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 
     file(READ ${WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE} WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
+    # The pinned Windows backend uses std::wstring but relies on a transitive
+    # standard-library include. That happens to compile in some translation
+    # units but fails in the isolated plug-in profile under MSVC. Patch only the
+    # private build-tree copy and stop patching automatically once upstream adds
+    # the direct dependency itself.
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}" "#include <string>"
+        WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET)
+    if(WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET EQUAL -1)
+        set(WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE
+            "#include \"../platform/choc_Platform.h\"")
+        string(REGEX MATCHALL
+            "#include \\\"\\.\\./platform/choc_Platform\\.h\\\""
+            WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_MATCHES
+            "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+        list(LENGTH WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_MATCHES
+            WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT)
+        if(NOT WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT EQUAL 1)
+            message(FATAL_ERROR
+                "Pinned CHOC include prologue changed; refusing to inject the Windows <string> dependency without revalidation")
+        endif()
+        string(REPLACE
+            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}"
+            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}\n#include <string>"
+            WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+            "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    endif()
+
     set(WEBVIEW_GUI_UNSAFE_WEBMESSAGE_HANDLER [=[            LPWSTR message = {};
             args->TryGetWebMessageAsString (std::addressof (message));
             ownerPimpl.owner.invokeBinding (createUTF8FromUTF16 (message));
