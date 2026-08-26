@@ -50,12 +50,34 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
     endif()
 
-    set(WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND [=[            result += L" --";
-            result += key;
-            result += L"=";
-            result += value;]=])
-    set(WEBVIEW_GUI_CHOC_WINDOWS_SAFE_ENVIRONMENT_APPEND [=[            const auto oldSize = result.size();
-            const auto appendUTF8 = [&result] (const std::string& text)
+    # Do not couple this patch to whitespace between CHOC statements: verify that
+    # each semantically unsafe append occurs exactly once, then replace only those
+    # proven literals. This stays fail-closed if the pinned helper changes while
+    # avoiding false drift failures from blank lines/comments in the source.
+    string(REGEX MATCHALL "result \\+= L\" --\";"
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    string(REGEX MATCHALL "result \\+= key;"
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_MATCHES
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    string(REGEX MATCHALL "result \\+= value;"
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_MATCHES
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_COUNT)
+    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_MATCHES
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_COUNT)
+    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_MATCHES
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_COUNT)
+    if(NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_COUNT EQUAL 1
+       OR NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_COUNT EQUAL 1
+       OR NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_COUNT EQUAL 1)
+        message(FATAL_ERROR
+            "Pinned CHOC WebView environment-option builder changed; refusing to patch UTF-8 strings into UTF-16 without revalidation")
+    endif()
+
+    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_PREFIX_PATCH [=[const auto webviewGuiEnvironmentOldSize = result.size();
+            const auto webviewGuiAppendUTF8 = [&result] (const std::string& text)
             {
                 if (text.empty())
                     return true;
@@ -84,30 +106,31 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
                 return false;
             };
 
-            result += L" --";
-            if (! appendUTF8 (key))
+            result += L" --";]=])
+    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_KEY_PATCH [=[if (! webviewGuiAppendUTF8 (key))
             {
-                result.resize (oldSize);
+                result.resize (webviewGuiEnvironmentOldSize);
                 return;
-            }
-
-            result += L"=";
-            if (! appendUTF8 (value))
+            }]=])
+    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_VALUE_PATCH [=[if (! webviewGuiAppendUTF8 (value))
             {
-                result.resize (oldSize);
+                result.resize (webviewGuiEnvironmentOldSize);
                 return;
             }]=])
 
-    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
-        "${WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND}"
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_APPEND_OFFSET)
-    if(WEBVIEW_GUI_CHOC_ENVIRONMENT_APPEND_OFFSET EQUAL -1)
-        message(FATAL_ERROR
-            "Pinned CHOC WebView environment-option builder changed; refusing to patch UTF-8 strings into UTF-16 without revalidation")
-    endif()
     string(REPLACE
-        "${WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND}"
-        "${WEBVIEW_GUI_CHOC_WINDOWS_SAFE_ENVIRONMENT_APPEND}"
+        "result += L\" --\";"
+        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_PREFIX_PATCH}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    string(REPLACE
+        "result += key;"
+        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_KEY_PATCH}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    string(REPLACE
+        "result += value;"
+        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_VALUE_PATCH}"
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
