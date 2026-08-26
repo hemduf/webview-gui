@@ -2,20 +2,39 @@ if(NOT DEFINED MODULE OR NOT EXISTS "${MODULE}")
     message(FATAL_ERROR "MODULE must name the built plug-in qualification module")
 endif()
 
+set(windows_export_tool "")
 if(PLATFORM STREQUAL "Windows")
-    # The Windows CI profile currently uses MinGW/Ninja, where dumpbin is not
-    # on PATH. CMake's configured GNU objdump can read the PE export directory
-    # directly and, unlike a full symbol-table scan, reports the ABI boundary
-    # that a DAW/other DLL can actually resolve.
-    if(NOT DEFINED OBJDUMP OR OBJDUMP STREQUAL "")
-        message(FATAL_ERROR "CMAKE_OBJDUMP is required for the Windows export scan")
+    # Prefer a configured GNU/LLVM objdump when CMake found one. MSVC/Ninja
+    # commonly leaves CMAKE_OBJDUMP unset, so fall back to dumpbin from the
+    # active Visual C++ toolchain instead of assuming a MinGW environment.
+    if(DEFINED OBJDUMP
+       AND NOT OBJDUMP STREQUAL ""
+       AND NOT OBJDUMP MATCHES "-NOTFOUND$"
+       AND EXISTS "${OBJDUMP}")
+        set(windows_export_tool "objdump")
+        execute_process(
+            COMMAND "${OBJDUMP}" -p "${MODULE}"
+            RESULT_VARIABLE result
+            OUTPUT_VARIABLE exports
+            ERROR_VARIABLE errors)
+    else()
+        find_program(DUMPBIN_EXECUTABLE
+            NAMES dumpbin dumpbin.exe
+            HINTS
+                "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+                "$ENV{VCToolsInstallDir}/bin/Hostx86/x86")
+        if(NOT DUMPBIN_EXECUTABLE)
+            message(FATAL_ERROR
+                "Windows export scan requires CMAKE_OBJDUMP or dumpbin; "
+                "CMAKE_OBJDUMP='${OBJDUMP}', VCToolsInstallDir='$ENV{VCToolsInstallDir}'")
+        endif()
+        set(windows_export_tool "dumpbin")
+        execute_process(
+            COMMAND "${DUMPBIN_EXECUTABLE}" /NOLOGO /EXPORTS "${MODULE}"
+            RESULT_VARIABLE result
+            OUTPUT_VARIABLE exports
+            ERROR_VARIABLE errors)
     endif()
-    execute_process(
-        COMMAND "${OBJDUMP}" -p "${MODULE}"
-        RESULT_VARIABLE result
-        OUTPUT_VARIABLE exports
-        ERROR_VARIABLE errors
-    )
 elseif(PLATFORM STREQUAL "Darwin")
     execute_process(
         COMMAND "${NM}" -gU "${MODULE}"
@@ -38,7 +57,7 @@ endif()
 
 set(exported_symbols)
 
-if(PLATFORM STREQUAL "Windows")
+if(PLATFORM STREQUAL "Windows" AND windows_export_tool STREQUAL "objdump")
     # objdump -p contains several PE tables. Only parse the export name-pointer
     # table; other bracketed rows describe RVAs rather than exported names.
     string(FIND "${exports}" "[Ordinal/Name Pointer] Table" export_table_offset)
@@ -60,6 +79,30 @@ if(PLATFORM STREQUAL "Windows")
             string(STRIP "${line}" stripped_line)
             if(stripped_line STREQUAL "")
                 break()
+            endif()
+        endif()
+    endforeach()
+elseif(PLATFORM STREQUAL "Windows")
+    # dumpbin /EXPORTS rows are: ordinal, hex hint, RVA, exported name. Start
+    # only after its column header so summary/import text cannot be mistaken for
+    # a plug-in ABI symbol. Forwarded exports still expose the fourth token.
+    string(REPLACE "\r\n" "\n" normalized_exports "${exports}")
+    string(REPLACE "\r" "\n" normalized_exports "${normalized_exports}")
+    string(REPLACE "\n" ";" export_lines "${normalized_exports}")
+    set(in_export_rows FALSE)
+    foreach(line IN LISTS export_lines)
+        if(line MATCHES "^[ \t]*ordinal[ \t]+hint[ \t]+RVA[ \t]+name[ \t]*$")
+            set(in_export_rows TRUE)
+        elseif(in_export_rows
+               AND line MATCHES "^[ \t]*[0-9]+[ \t]+[0-9A-Fa-f]+[ \t]+[0-9A-Fa-f]+[ \t]+([^ \t=]+)")
+            list(APPEND exported_symbols "${CMAKE_MATCH_1}")
+        elseif(in_export_rows)
+            string(STRIP "${line}" stripped_line)
+            if(stripped_line STREQUAL "")
+                # dumpbin emits a blank line after the export rows.
+                if(exported_symbols)
+                    break()
+                endif()
             endif()
         endif()
     endforeach()
