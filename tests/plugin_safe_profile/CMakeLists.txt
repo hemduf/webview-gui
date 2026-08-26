@@ -11,6 +11,30 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "Parent shared-library default" FORCE)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui EXCLUDE_FROM_ALL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/WebviewGuiPluginSafe.cmake)
 
+# The Windows plug-in-safe build consumes a generated private CHOC copy. It must
+# be self-contained instead of compiling only because another translation unit
+# happened to include a standard-library header first. The pinned backend uses
+# std::wstring, so require its direct standard-library dependency explicitly.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW
+        "${CMAKE_CURRENT_BINARY_DIR}/webview-gui/webview-gui-patched-choc/choc/gui/choc_WebView.h")
+    if(NOT EXISTS "${WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW}")
+        message(FATAL_ERROR
+            "plugin-safe Windows profile did not generate its private CHOC WebView copy")
+    endif()
+
+    file(READ "${WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW}" WEBVIEW_GUI_PRIVATE_CHOC_CONTENT)
+    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}" "std::wstring"
+        WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET)
+    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}" "#include <string>"
+        WEBVIEW_GUI_PRIVATE_CHOC_STRING_INCLUDE_OFFSET)
+    if(NOT WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET EQUAL -1
+       AND WEBVIEW_GUI_PRIVATE_CHOC_STRING_INCLUDE_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "plugin-safe private CHOC WebView uses std::wstring without directly including <string>")
+    endif()
+endif()
+
 get_target_property(WEBVIEW_GUI_LIBRARY_TYPE webview-gui TYPE)
 if(NOT WEBVIEW_GUI_LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
     message(FATAL_ERROR "plugin-safe webview-gui must remain STATIC, got ${WEBVIEW_GUI_LIBRARY_TYPE}")
