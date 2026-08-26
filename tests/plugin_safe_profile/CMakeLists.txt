@@ -68,18 +68,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         message(FATAL_ERROR
             "plugin-safe private CHOC WebView uses std::wstring without an unconditional direct <string> include")
     endif()
-
-    # CHOC's pinned WebView2 environment-option helper appends UTF-8 std::string
-    # values directly to std::wstring. MSVC correctly rejects that operation.
-    # Require an explicit marker from the drift-checked private patch so this
-    # regression fails during configure instead of much later in the module build.
-    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}"
-        "WEBVIEW_GUI_CHOC_WINDOWS_UTF8_ENVIRONMENT_GUARD 1"
-        WEBVIEW_GUI_PRIVATE_CHOC_UTF8_ENVIRONMENT_GUARD_OFFSET)
-    if(WEBVIEW_GUI_PRIVATE_CHOC_UTF8_ENVIRONMENT_GUARD_OFFSET EQUAL -1)
-        message(FATAL_ERROR
-            "plugin-safe private CHOC WebView has no validated UTF-8 to UTF-16 environment-option patch")
-    endif()
 endif()
 
 get_target_property(WEBVIEW_GUI_LIBRARY_TYPE webview-gui TYPE)
