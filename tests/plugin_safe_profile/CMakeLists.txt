@@ -14,7 +14,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/WebviewGuiPluginSafe.cmake)
 # The Windows plug-in-safe build consumes a generated private CHOC copy. It must
 # be self-contained instead of compiling only because another translation unit
 # happened to include a standard-library header first. The pinned backend uses
-# std::wstring, so require its direct standard-library dependency explicitly.
+# std::wstring, so require the unconditional direct dependency in the generated
+# include prologue rather than accepting a platform-conditional include later.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW
         "${CMAKE_CURRENT_BINARY_DIR}/webview-gui/webview-gui-patched-choc/choc/gui/choc_WebView.h")
@@ -26,12 +27,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     file(READ "${WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW}" WEBVIEW_GUI_PRIVATE_CHOC_CONTENT)
     string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}" "std::wstring"
         WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET)
-    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}" "#include <string>"
-        WEBVIEW_GUI_PRIVATE_CHOC_STRING_INCLUDE_OFFSET)
+    set(WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE
+        "#include \"../platform/choc_Platform.h\"\n#include <string>")
+    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}"
+        "${WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE}"
+        WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE_OFFSET)
     if(NOT WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET EQUAL -1
-       AND WEBVIEW_GUI_PRIVATE_CHOC_STRING_INCLUDE_OFFSET EQUAL -1)
+       AND WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE_OFFSET EQUAL -1)
         message(FATAL_ERROR
-            "plugin-safe private CHOC WebView uses std::wstring without directly including <string>")
+            "plugin-safe private CHOC WebView uses std::wstring without an unconditional direct <string> include")
     endif()
 endif()
 
