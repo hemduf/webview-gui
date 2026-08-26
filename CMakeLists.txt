@@ -52,15 +52,15 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 
     # Do not couple this patch to whitespace between CHOC statements: verify that
     # each semantically unsafe append occurs exactly once, then replace only those
-    # proven literals. This stays fail-closed if the pinned helper changes while
-    # avoiding false drift failures from blank lines/comments in the source.
-    string(REGEX MATCHALL "result \\+= L\" --\";"
+    # proven literals. Match without the trailing semicolon because CMake list
+    # semantics treat semicolons in MATCHALL results as element separators.
+    string(REGEX MATCHALL "result \\+= L\" --\""
         WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REGEX MATCHALL "result \\+= key;"
+    string(REGEX MATCHALL "result \\+= key"
         WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_MATCHES
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REGEX MATCHALL "result \\+= value;"
+    string(REGEX MATCHALL "result \\+= value"
         WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_MATCHES
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
     list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
