@@ -1,0 +1,6 @@
+{
+    global:
+        webview_gui_plugin_test_entry;
+    local:
+        *;
+};
