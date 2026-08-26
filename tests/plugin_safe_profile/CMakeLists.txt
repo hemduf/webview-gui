@@ -101,6 +101,20 @@ set_target_properties(plugin_safe_module_b PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES)
 
+# Hidden compiler visibility is not enough on ELF: libstdc++ headers can emit
+# weak definitions with their own default visibility. Qualify the actual DSO
+# boundary with an ld version script so only the plug-in entry point is global.
+# Keep the negative-control module deliberately unprotected below.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(PLUGIN_SAFE_EXPORT_MAP "${CMAKE_CURRENT_LIST_DIR}/plugin_safe_exports.map")
+    foreach(target plugin_safe_module_a plugin_safe_module_b)
+        target_link_options(${target} PRIVATE
+            "LINKER:--version-script=${PLUGIN_SAFE_EXPORT_MAP}")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+            "${PLUGIN_SAFE_EXPORT_MAP}")
+    endforeach()
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_libraries(plugin_safe_module_b PRIVATE
         "-framework WebKit"
