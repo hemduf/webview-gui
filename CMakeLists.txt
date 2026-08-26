@@ -25,9 +25,8 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     file(READ ${WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE} WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     # The pinned Windows backend uses std::wstring but relies on a transitive
-    # standard-library include. It also appends UTF-8 std::string environment
-    # options directly to std::wstring, which MSVC correctly rejects. Patch only
-    # the private build-tree copy and fail closed if the pinned source drifts.
+    # standard-library include. Patch only the private build-tree copy and fail
+    # closed if the pinned source drifts.
     string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}" "#include <string>"
         WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET)
     if(WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET EQUAL -1)
@@ -41,98 +40,14 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT)
         if(NOT WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT EQUAL 1)
             message(FATAL_ERROR
-                "Pinned CHOC include prologue changed; refusing to inject the Windows standard-library dependencies without revalidation")
+                "Pinned CHOC include prologue changed; refusing to inject the Windows standard-library dependency without revalidation")
         endif()
         string(REPLACE
             "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}"
-            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}\n#include <string>\n#include <limits>"
+            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}\n#include <string>"
             WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
             "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
     endif()
-
-    # Do not couple this patch to whitespace between CHOC statements: verify that
-    # each semantically unsafe append occurs exactly once, then replace only those
-    # proven literals. Match without the trailing semicolon because CMake list
-    # semantics treat semicolons in MATCHALL results as element separators.
-    string(REGEX MATCHALL "result \\+= L\" --\""
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REGEX MATCHALL "result \\+= key"
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_MATCHES
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REGEX MATCHALL "result \\+= value"
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_MATCHES
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_COUNT)
-    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_MATCHES
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_COUNT)
-    list(LENGTH WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_MATCHES
-        WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_COUNT)
-    if(NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_COUNT EQUAL 1
-       OR NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_KEY_COUNT EQUAL 1
-       OR NOT WEBVIEW_GUI_CHOC_ENVIRONMENT_VALUE_COUNT EQUAL 1)
-        message(FATAL_ERROR
-            "Pinned CHOC WebView environment-option builder changed; refusing to patch UTF-8 strings into UTF-16 without revalidation")
-    endif()
-
-    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_PREFIX_PATCH [=[const auto webviewGuiEnvironmentOldSize = result.size();
-            const auto webviewGuiAppendUTF8 = [&result] (const std::string& text)
-            {
-                if (text.empty())
-                    return true;
-
-                if (text.size() > static_cast<size_t> (std::numeric_limits<int>::max()))
-                    return false;
-
-                const auto inputSize = static_cast<int> (text.size());
-                const auto outputSize = MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS,
-                                                               text.data(), inputSize, nullptr, 0);
-                if (outputSize <= 0)
-                    return false;
-
-                const auto outputSizeAsSizeT = static_cast<size_t> (outputSize);
-                const auto outputOffset = result.size();
-                if (outputOffset > result.max_size() - outputSizeAsSizeT)
-                    return false;
-
-                result.resize (outputOffset + outputSizeAsSizeT);
-                if (MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS,
-                                         text.data(), inputSize,
-                                         &result[outputOffset], outputSize) == outputSize)
-                    return true;
-
-                result.resize (outputOffset);
-                return false;
-            };
-
-            result += L" --";]=])
-    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_KEY_PATCH [=[if (! webviewGuiAppendUTF8 (key))
-            {
-                result.resize (webviewGuiEnvironmentOldSize);
-                return;
-            }]=])
-    set(WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_VALUE_PATCH [=[if (! webviewGuiAppendUTF8 (value))
-            {
-                result.resize (webviewGuiEnvironmentOldSize);
-                return;
-            }]=])
-
-    string(REPLACE
-        "result += L\" --\";"
-        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_PREFIX_PATCH}"
-        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REPLACE
-        "result += key;"
-        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_KEY_PATCH}"
-        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
-    string(REPLACE
-        "result += value;"
-        "${WEBVIEW_GUI_CHOC_WINDOWS_ENVIRONMENT_VALUE_PATCH}"
-        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
-        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
     set(WEBVIEW_GUI_UNSAFE_WEBMESSAGE_HANDLER [=[            LPWSTR message = {};
             args->TryGetWebMessageAsString (std::addressof (message));
@@ -290,7 +205,7 @@ public:
     file(COPY ${WEBVIEW_GUI_CHOC_SOURCE_DIR}/choc
         DESTINATION ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
     file(WRITE ${WEBVIEW_GUI_CHOC_WEBVIEW_PATCHED}
-        "#define WEBVIEW_GUI_CHOC_WINDOWS_UTF8_ENVIRONMENT_GUARD 1\n#define WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD 1\n${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+        "#define WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD 1\n${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
     list(PREPEND WEBVIEW_GUI_CHOC_INCLUDE_DIRS ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
 endif()
