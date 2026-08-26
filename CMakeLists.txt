@@ -25,10 +25,9 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     file(READ ${WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE} WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     # The pinned Windows backend uses std::wstring but relies on a transitive
-    # standard-library include. That happens to compile in some translation
-    # units but fails in the isolated plug-in profile under MSVC. Patch only the
-    # private build-tree copy and stop patching automatically once upstream adds
-    # the direct dependency itself.
+    # standard-library include. It also appends UTF-8 std::string environment
+    # options directly to std::wstring, which MSVC correctly rejects. Patch only
+    # the private build-tree copy and fail closed if the pinned source drifts.
     string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}" "#include <string>"
         WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET)
     if(WEBVIEW_GUI_CHOC_STRING_INCLUDE_OFFSET EQUAL -1)
@@ -42,14 +41,75 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT)
         if(NOT WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE_COUNT EQUAL 1)
             message(FATAL_ERROR
-                "Pinned CHOC include prologue changed; refusing to inject the Windows <string> dependency without revalidation")
+                "Pinned CHOC include prologue changed; refusing to inject the Windows standard-library dependencies without revalidation")
         endif()
         string(REPLACE
             "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}"
-            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}\n#include <string>"
+            "${WEBVIEW_GUI_CHOC_PLATFORM_INCLUDE}\n#include <string>\n#include <limits>"
             WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
             "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
     endif()
+
+    set(WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND [=[            result += L" --";
+            result += key;
+            result += L"=";
+            result += value;]=])
+    set(WEBVIEW_GUI_CHOC_WINDOWS_SAFE_ENVIRONMENT_APPEND [=[            const auto oldSize = result.size();
+            const auto appendUTF8 = [&result] (const std::string& text)
+            {
+                if (text.empty())
+                    return true;
+
+                if (text.size() > static_cast<size_t> (std::numeric_limits<int>::max()))
+                    return false;
+
+                const auto inputSize = static_cast<int> (text.size());
+                const auto outputSize = MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS,
+                                                               text.data(), inputSize, nullptr, 0);
+                if (outputSize <= 0)
+                    return false;
+
+                const auto outputSizeAsSizeT = static_cast<size_t> (outputSize);
+                const auto outputOffset = result.size();
+                if (outputOffset > result.max_size() - outputSizeAsSizeT)
+                    return false;
+
+                result.resize (outputOffset + outputSizeAsSizeT);
+                if (MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS,
+                                         text.data(), inputSize,
+                                         &result[outputOffset], outputSize) == outputSize)
+                    return true;
+
+                result.resize (outputOffset);
+                return false;
+            };
+
+            result += L" --";
+            if (! appendUTF8 (key))
+            {
+                result.resize (oldSize);
+                return;
+            }
+
+            result += L"=";
+            if (! appendUTF8 (value))
+            {
+                result.resize (oldSize);
+                return;
+            }]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND}"
+        WEBVIEW_GUI_CHOC_ENVIRONMENT_APPEND_OFFSET)
+    if(WEBVIEW_GUI_CHOC_ENVIRONMENT_APPEND_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC WebView environment-option builder changed; refusing to patch UTF-8 strings into UTF-16 without revalidation")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_WINDOWS_UNSAFE_ENVIRONMENT_APPEND}"
+        "${WEBVIEW_GUI_CHOC_WINDOWS_SAFE_ENVIRONMENT_APPEND}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
     set(WEBVIEW_GUI_UNSAFE_WEBMESSAGE_HANDLER [=[            LPWSTR message = {};
             args->TryGetWebMessageAsString (std::addressof (message));
@@ -207,7 +267,7 @@ public:
     file(COPY ${WEBVIEW_GUI_CHOC_SOURCE_DIR}/choc
         DESTINATION ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
     file(WRITE ${WEBVIEW_GUI_CHOC_WEBVIEW_PATCHED}
-        "#define WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD 1\n${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+        "#define WEBVIEW_GUI_CHOC_WINDOWS_UTF8_ENVIRONMENT_GUARD 1\n#define WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD 1\n${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
     list(PREPEND WEBVIEW_GUI_CHOC_INCLUDE_DIRS ${WEBVIEW_GUI_PATCHED_CHOC_DIR})
 endif()
