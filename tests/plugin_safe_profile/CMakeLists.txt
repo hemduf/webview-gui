@@ -140,6 +140,18 @@ if(MODULE_B_HEADER_ONLY_INDEX EQUAL -1)
         "plugin_safe_module_b must compile webview-gui in header-only mode")
 endif()
 
+# Negative-control fixture: an unrelated exported helper must be rejected by
+# the same ABI scan used for real plug-in modules. The test is expected to fail
+# inside verify_exports.cmake; if the verifier accidentally allows the helper,
+# CTest reports this negative control as a failure.
+add_library(plugin_safe_leaky_module MODULE plugin_safe_leaky_module.cpp)
+target_compile_features(plugin_safe_leaky_module PRIVATE cxx_std_17)
+set_target_properties(plugin_safe_leaky_module PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES)
+
 foreach(target plugin_safe_module_a plugin_safe_module_b)
     add_test(
         NAME ${target}_exports_only_plugin_abi
@@ -151,6 +163,17 @@ foreach(target plugin_safe_module_a plugin_safe_module_b)
             -P ${CMAKE_CURRENT_LIST_DIR}/verify_exports.cmake
     )
 endforeach()
+
+add_test(
+    NAME plugin_safe_export_scan_rejects_unrelated_exports
+    COMMAND ${CMAKE_COMMAND}
+        -DMODULE=$<TARGET_FILE:plugin_safe_leaky_module>
+        -DNM=${CMAKE_NM}
+        -DOBJDUMP=${CMAKE_OBJDUMP}
+        -DPLATFORM=${CMAKE_SYSTEM_NAME}
+        -P ${CMAKE_CURRENT_LIST_DIR}/verify_exports.cmake)
+set_tests_properties(plugin_safe_export_scan_rejects_unrelated_exports PROPERTIES
+    WILL_FAIL TRUE)
 
 add_executable(plugin_safe_profile_host plugin_safe_profile_host.cpp)
 target_compile_features(plugin_safe_profile_host PRIVATE cxx_std_17)
