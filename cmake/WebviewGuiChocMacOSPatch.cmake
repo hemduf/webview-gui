@@ -133,10 +133,55 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
-    # A string literal is not a safe Objective-C associated-object key across
-    # independently loaded plug-in DSOs: the linker/runtime may coalesce or reuse
-    # literal storage. Keep this guard fail-closed until the private CHOC copy uses
-    # a true module-owned key address for every WebView/delegate association.
+    # Objective-C associated-object keys are pointer identities. A string literal
+    # is unsuitable for independently loaded plug-in DSOs because literal storage
+    # may be coalesced across images. Inject one internal-linkage byte into the
+    # private CHOC implementation and use its address for every association. The
+    # associations are cleared while the module is resident, before dlclose.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_APPLE_PREAMBLE [=[#elif CHOC_APPLE
+
+#include "../platform/choc_ObjectiveCHelpers.h"
+
+struct choc::ui::WebView::Pimpl]=])
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_APPLE_PREAMBLE [=[#elif CHOC_APPLE
+
+#include "../platform/choc_ObjectiveCHelpers.h"
+
+static char webviewGuiChocAssociatedObjectKey;
+
+struct choc::ui::WebView::Pimpl]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_APPLE_PREAMBLE}"
+        WEBVIEW_GUI_CHOC_MACOS_APPLE_PREAMBLE_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_APPLE_PREAMBLE_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS implementation preamble changed; refusing to inject the plug-in-local associated-object key")
+    endif()
+
+    string(REGEX MATCHALL "\"choc_webview\""
+        WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEYS
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    list(LENGTH WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEYS
+        WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEY_COUNT)
+    if(NOT WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEY_COUNT EQUAL 5)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS associated-object usage changed; expected exactly five choc_webview key references")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_APPLE_PREAMBLE}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_APPLE_PREAMBLE}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+    string(REPLACE
+        "\"choc_webview\""
+        "&webviewGuiChocAssociatedObjectKey"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    # Keep the source-generation contract fail-closed: no string-literal key may
+    # survive in the private macOS CHOC copy after patching.
     string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
         "\"choc_webview\""
         WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEY_OFFSET)
