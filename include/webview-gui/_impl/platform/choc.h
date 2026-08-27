@@ -261,8 +261,11 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 				return choc::value::Value{false};
 
 			auto *gui = impl->main;
-			if (gui && gui->receive)
-				gui->receive(bytes.data(), bytes.size());
+			if (gui) {
+				auto receive = gui->receive;
+				if (receive)
+					receive(bytes.data(), bytes.size());
+			}
 
 			return choc::value::Value{true};
 		});
