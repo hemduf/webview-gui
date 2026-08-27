@@ -19,6 +19,7 @@ jobs:
     runs-on: macos-latest
     env:
       MACOS_LIFECYCLE_REPEATS: "10"
+      MACOS_BRIDGE_REPEATS: "1"
 
     steps:
       - name: Checkout
@@ -44,6 +45,13 @@ jobs:
           set -euo pipefail
           [[ "${MACOS_LIFECYCLE_REPEATS}" =~ ^[0-9]+$ ]]
           test "${MACOS_LIFECYCLE_REPEATS}" -ge 10
+
+      - name: Require repeated bridge diagnostics gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${MACOS_BRIDGE_REPEATS}" =~ ^[0-9]+$ ]]
+          test "${MACOS_BRIDGE_REPEATS}" -ge 10
 
       - name: Install Ninja
         run: brew install ninja || true
