@@ -393,6 +393,31 @@ extern "C" __declspec(dllexport) std::uintptr_t webview_gui_test_first_windows_h
     return reinterpret_cast<std::uintptr_t>(views.front()->getViewHandle());
 }
 
+extern "C" __declspec(dllexport) bool webview_gui_test_copy_windows_class_name(
+    std::size_t index,
+    wchar_t* output,
+    std::size_t capacity)
+{
+    if (!output || capacity == 0)
+        return false;
+    output[0] = L'\0';
+
+    const auto& views = retainedViews();
+    if (index >= views.size() || !views[index] || !views[index]->getViewHandle())
+        return false;
+
+    const auto hwnd = static_cast<HWND>(views[index]->getViewHandle());
+    if (!IsWindow(hwnd))
+        return false;
+
+    wchar_t className[256] = {};
+    if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) <= 0)
+        return false;
+
+    copyWide(className, output, capacity);
+    return true;
+}
+
 extern "C" __declspec(dllexport) bool webview_gui_test_exercise_windows_host_lifecycle(
     std::uintptr_t hostHandle,
     std::size_t passes)
