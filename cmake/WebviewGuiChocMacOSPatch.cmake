@@ -133,5 +133,17 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    # A string literal is not a safe Objective-C associated-object key across
+    # independently loaded plug-in DSOs: the linker/runtime may coalesce or reuse
+    # literal storage. Keep this guard fail-closed until the private CHOC copy uses
+    # a true module-owned key address for every WebView/delegate association.
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "\"choc_webview\""
+        WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEY_OFFSET)
+    if(NOT WEBVIEW_GUI_CHOC_MACOS_STRING_ASSOCIATION_KEY_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Plug-in-safe macOS CHOC still uses the string-literal associated-object key choc_webview")
+    endif()
+
     file(WRITE "${output_file}" "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 endfunction()
