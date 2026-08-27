@@ -18,12 +18,14 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
 using RetainWebViewsFn = bool (*)(std::size_t, std::uintptr_t*, std::uintptr_t*, wchar_t*, std::size_t, bool*, bool*);
 using StressCreateDestroyFn = bool (*)(std::size_t);
 using FirstHWNDFn = std::uintptr_t (*)();
+using ClassNameAtFn = bool (*)(std::size_t, wchar_t*, std::size_t);
 using ReleaseWebViewsFn = void (*)();
 
 struct RetainedInfo {
@@ -39,6 +41,7 @@ struct Module {
     RetainWebViewsFn retainWebViews = nullptr;
     StressCreateDestroyFn stressCreateDestroy = nullptr;
     FirstHWNDFn firstHWND = nullptr;
+    ClassNameAtFn classNameAtFn = nullptr;
     ReleaseWebViewsFn releaseWebViews = nullptr;
 
     explicit Module(const char* path)
@@ -51,6 +54,8 @@ struct Module {
                 GetProcAddress(handle, "webview_gui_test_create_destroy_windows_webviews"));
             firstHWND = reinterpret_cast<FirstHWNDFn>(
                 GetProcAddress(handle, "webview_gui_test_first_windows_hwnd"));
+            classNameAtFn = reinterpret_cast<ClassNameAtFn>(
+                GetProcAddress(handle, "webview_gui_test_copy_windows_class_name"));
             releaseWebViews = reinterpret_cast<ReleaseWebViewsFn>(
                 GetProcAddress(handle, "webview_gui_test_release_windows_webviews"));
         }
@@ -79,6 +84,17 @@ struct Module {
         return result;
     }
 
+    std::wstring classNameAt(std::size_t index) const
+    {
+        if (!classNameAtFn)
+            return {};
+
+        std::array<wchar_t, 256> className{};
+        if (!classNameAtFn(index, className.data(), className.size()))
+            return {};
+        return className.data();
+    }
+
     bool stress(std::size_t count) const
     {
         return stressCreateDestroy && stressCreateDestroy(count);
@@ -103,6 +119,7 @@ struct Module {
             retainWebViews = nullptr;
             stressCreateDestroy = nullptr;
             firstHWND = nullptr;
+            classNameAtFn = nullptr;
             releaseWebViews = nullptr;
         }
     }
@@ -254,6 +271,7 @@ TEST_CASE("WebView2 bridge reads and dispatches only the exact privileged origin
 
 TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host executable")
 {
+    constexpr std::size_t retainedCount = 12;
     Module moduleA{MODULE_A_PATH};
     Module moduleB{MODULE_B_PATH};
 
@@ -261,9 +279,11 @@ TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host ex
     REQUIRE(moduleB.handle != nullptr);
     REQUIRE(moduleA.retainWebViews != nullptr);
     REQUIRE(moduleB.retainWebViews != nullptr);
+    REQUIRE(moduleA.classNameAtFn != nullptr);
+    REQUIRE(moduleB.classNameAtFn != nullptr);
 
-    const auto a = moduleA.retain(12);
-    const auto b = moduleB.retain(12);
+    const auto a = moduleA.retain(retainedCount);
+    const auto b = moduleB.retain(retainedCount);
 
     REQUIRE(a.module != 0);
     REQUIRE(b.module != 0);
@@ -283,34 +303,61 @@ TEST_CASE("CHOC Win32 window classes belong to each plug-in DLL, not the host ex
     CHECK(a.allClassNamesUnique);
     CHECK(b.allClassNamesUnique);
 
-    CHECK(windowClassIsRegistered(a.module, a.className));
-    CHECK(windowClassIsRegistered(b.module, b.className));
+    std::vector<std::wstring> aClassNames;
+    std::vector<std::wstring> bClassNames;
+    aClassNames.reserve(retainedCount);
+    bClassNames.reserve(retainedCount);
+    for (std::size_t i = 0; i < retainedCount; ++i) {
+        aClassNames.push_back(moduleA.classNameAt(i));
+        bClassNames.push_back(moduleB.classNameAt(i));
+        REQUIRE_FALSE(aClassNames.back().empty());
+        REQUIRE_FALSE(bClassNames.back().empty());
+        CHECK(windowClassIsRegistered(a.module, aClassNames.back()));
+        CHECK(windowClassIsRegistered(b.module, bClassNames.back()));
+    }
 
     moduleA.release();
-    CHECK_FALSE(windowClassIsRegistered(a.module, a.className));
-    CHECK(windowClassIsRegistered(b.module, b.className));
+    for (const auto& className : aClassNames)
+        CHECK_FALSE(windowClassIsRegistered(a.module, className));
+    for (const auto& className : bClassNames)
+        CHECK(windowClassIsRegistered(b.module, className));
 
     moduleA.close();
 
-    CHECK(windowClassIsRegistered(b.module, b.className));
+    for (const auto& className : bClassNames)
+        CHECK(windowClassIsRegistered(b.module, className));
 
     // Reload A while B is still live. A must get a fully working private copy
     // again without disturbing B's registered class or window lifetime.
+    constexpr std::size_t reloadedCount = 4;
     Module reloadedA{MODULE_A_PATH};
     REQUIRE(reloadedA.handle != nullptr);
-    const auto aReloaded = reloadedA.retain(4);
+    REQUIRE(reloadedA.classNameAtFn != nullptr);
+    const auto aReloaded = reloadedA.retain(reloadedCount);
     REQUIRE(aReloaded.module != 0);
     CHECK(aReloaded.allOwnedByModule);
     CHECK(aReloaded.allClassNamesUnique);
-    CHECK(windowClassIsRegistered(aReloaded.module, aReloaded.className));
-    CHECK(windowClassIsRegistered(b.module, b.className));
+
+    std::vector<std::wstring> reloadedClassNames;
+    reloadedClassNames.reserve(reloadedCount);
+    for (std::size_t i = 0; i < reloadedCount; ++i) {
+        reloadedClassNames.push_back(reloadedA.classNameAt(i));
+        REQUIRE_FALSE(reloadedClassNames.back().empty());
+        CHECK(windowClassIsRegistered(aReloaded.module, reloadedClassNames.back()));
+    }
+    for (const auto& className : bClassNames)
+        CHECK(windowClassIsRegistered(b.module, className));
+
     reloadedA.release();
-    CHECK_FALSE(windowClassIsRegistered(aReloaded.module, aReloaded.className));
+    for (const auto& className : reloadedClassNames)
+        CHECK_FALSE(windowClassIsRegistered(aReloaded.module, className));
     reloadedA.close();
-    CHECK(windowClassIsRegistered(b.module, b.className));
+    for (const auto& className : bClassNames)
+        CHECK(windowClassIsRegistered(b.module, className));
 
     moduleB.release();
-    CHECK_FALSE(windowClassIsRegistered(b.module, b.className));
+    for (const auto& className : bClassNames)
+        CHECK_FALSE(windowClassIsRegistered(b.module, className));
 }
 
 TEST_CASE("independent plug-in DLLs can create and destroy CHOC WebViews concurrently")
