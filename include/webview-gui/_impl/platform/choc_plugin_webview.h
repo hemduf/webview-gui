@@ -54,12 +54,6 @@ inline std::uint64_t chocPluginStableModuleToken()
     return hash;
 }
 
-inline const void* chocPluginAssociatedObjectKey()
-{
-    static const unsigned char key = 0;
-    return &key;
-}
-
 inline bool isSystemWKWebViewClass(Class cls)
 {
     return cls != nullptr && cls == (Class) objc_getClass("WKWebView");
@@ -170,16 +164,16 @@ inline void disposeCHOCWebViewClassForPlugin(Class cls)
 }
 
 inline void setCHOCWebViewAssociatedObjectForPlugin(id object,
-                                                     const void*,
+                                                     const void* key,
                                                      id value,
                                                      objc_AssociationPolicy policy)
 {
-    ::objc_setAssociatedObject(object, chocPluginAssociatedObjectKey(), value, policy);
+    ::objc_setAssociatedObject(object, key, value, policy);
 }
 
-inline id getCHOCWebViewAssociatedObjectForPlugin(id object, const void*)
+inline id getCHOCWebViewAssociatedObjectForPlugin(id object, const void* key)
 {
-    return ::objc_getAssociatedObject(object, chocPluginAssociatedObjectKey());
+    return ::objc_getAssociatedObject(object, key);
 }
 
 } // namespace webview_gui::detail
