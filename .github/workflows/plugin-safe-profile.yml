@@ -54,3 +54,18 @@ jobs:
 
       - name: Verify exported symbol surface
         run: ctest --test-dir build-plugin-safe --output-on-failure
+
+      - name: Capture Windows export scan diagnostics
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ctest --test-dir build-plugin-safe -V 2>&1 | Out-File -FilePath windows-export-scan.txt -Encoding utf8
+          exit 0
+
+      - name: Upload Windows export scan diagnostics
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-export-scan
+          path: windows-export-scan.txt
+          if-no-files-found: error
