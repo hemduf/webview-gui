@@ -80,7 +80,16 @@ if(PLATFORM STREQUAL "Windows" AND windows_export_tool STREQUAL "objdump")
 
         set(seen_export_name FALSE)
         foreach(line IN LISTS export_lines)
-            if(line MATCHES "^[ \t]*\\[[ \t]*[0-9]+\\][ \t]+([^ \t]+)[ \t]*$")
+            # GNU binutils has two PE name-table layouts in current toolchains:
+            #   [ 0] exported_symbol
+            #   [ 0] +base[ 1] 0000 exported_symbol
+            # The GitHub Windows runner currently uses the latter through
+            # CMAKE_OBJDUMP. Keep both forms explicit and scoped to the export
+            # name table so import/debug rows cannot be accepted as ABI names.
+            if(line MATCHES "^[ \t]*\\[[ \t]*[0-9]+\\][ \t]+\\+base\\[[ \t]*[0-9]+\\][ \t]+[0-9A-Fa-f]+[ \t]+([^ \t]+)[ \t]*$")
+                list(APPEND exported_symbols "${CMAKE_MATCH_1}")
+                set(seen_export_name TRUE)
+            elseif(line MATCHES "^[ \t]*\\[[ \t]*[0-9]+\\][ \t]+([^ \t]+)[ \t]*$")
                 list(APPEND exported_symbols "${CMAKE_MATCH_1}")
                 set(seen_export_name TRUE)
             elseif(seen_export_name)
