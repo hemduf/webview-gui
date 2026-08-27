@@ -4,33 +4,42 @@ endif()
 
 set(windows_export_tool "")
 if(PLATFORM STREQUAL "Windows")
-    # Prefer a configured GNU/LLVM objdump when CMake found one. MSVC/Ninja
-    # commonly leaves CMAKE_OBJDUMP unset, so fall back to dumpbin from the
-    # active Visual C++ toolchain instead of assuming a MinGW environment.
-    if(DEFINED OBJDUMP
-       AND NOT OBJDUMP STREQUAL ""
-       AND NOT OBJDUMP MATCHES "-NOTFOUND$"
-       AND EXISTS "${OBJDUMP}")
-        set(windows_export_tool "objdump")
+    # Prefer the native MSVC export scanner when it is available. CMake may
+    # expose an LLVM/GNU objdump in an MSVC/Ninja environment whose PE output
+    # differs across toolchain versions; dumpbin has the canonical MSVC
+    # /EXPORTS layout parsed below. Keep objdump as the non-MSVC fallback.
+    find_program(DUMPBIN_EXECUTABLE
+        NAMES dumpbin dumpbin.exe
+        HINTS
+            "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+            "$ENV{VCToolsInstallDir}/bin/Hostx86/x86")
+
+    if(DUMPBIN_EXECUTABLE)
+        set(windows_export_tool "dumpbin")
         execute_process(
-            COMMAND "${OBJDUMP}" -p "${MODULE}"
+            COMMAND "${DUMPBIN_EXECUTABLE}" /NOLOGO /EXPORTS "${MODULE}"
             RESULT_VARIABLE result
             OUTPUT_VARIABLE exports
             ERROR_VARIABLE errors)
     else()
-        find_program(DUMPBIN_EXECUTABLE
-            NAMES dumpbin dumpbin.exe
-            HINTS
-                "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
-                "$ENV{VCToolsInstallDir}/bin/Hostx86/x86")
-        if(NOT DUMPBIN_EXECUTABLE)
+        if(DEFINED OBJDUMP
+           AND NOT OBJDUMP STREQUAL ""
+           AND NOT OBJDUMP MATCHES "-NOTFOUND$"
+           AND EXISTS "${OBJDUMP}")
+            set(OBJDUMP_EXECUTABLE "${OBJDUMP}")
+        else()
+            find_program(OBJDUMP_EXECUTABLE NAMES llvm-objdump objdump)
+        endif()
+
+        if(NOT OBJDUMP_EXECUTABLE)
             message(FATAL_ERROR
-                "Windows export scan requires CMAKE_OBJDUMP or dumpbin; "
+                "Windows export scan requires dumpbin or llvm-objdump/objdump; "
                 "CMAKE_OBJDUMP='${OBJDUMP}', VCToolsInstallDir='$ENV{VCToolsInstallDir}'")
         endif()
-        set(windows_export_tool "dumpbin")
+
+        set(windows_export_tool "objdump")
         execute_process(
-            COMMAND "${DUMPBIN_EXECUTABLE}" /NOLOGO /EXPORTS "${MODULE}"
+            COMMAND "${OBJDUMP_EXECUTABLE}" -p "${MODULE}"
             RESULT_VARIABLE result
             OUTPUT_VARIABLE exports
             ERROR_VARIABLE errors)
