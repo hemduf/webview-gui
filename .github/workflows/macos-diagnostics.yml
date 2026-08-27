@@ -19,7 +19,7 @@ jobs:
     runs-on: macos-latest
     env:
       MACOS_LIFECYCLE_REPEATS: "10"
-      MACOS_BRIDGE_REPEATS: "1"
+      MACOS_BRIDGE_REPEATS: "10"
 
     steps:
       - name: Checkout
@@ -76,5 +76,8 @@ jobs:
             ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
               -R '^webview_gui_macos_isolation_tests$'
           done
-          ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
-            -R '^webview_gui_macos_bridge_roundtrip_tests$'
+          for iteration in $(seq 1 "${MACOS_BRIDGE_REPEATS}"); do
+            echo "macOS public bridge repetition ${iteration}/${MACOS_BRIDGE_REPEATS}"
+            ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
+              -R '^webview_gui_macos_bridge_roundtrip_tests$'
+          done
