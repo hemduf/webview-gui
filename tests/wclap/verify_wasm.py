@@ -66,18 +66,26 @@ def read_limits(reader: Reader) -> tuple[int, int, int | None]:
     return flags, minimum, maximum
 
 
-def skip_table_type(reader: Reader) -> tuple[int, int, int | None]:
-    reader.byte()  # reference type
-    return read_limits(reader)
+def read_table_type(reader: Reader) -> tuple[int, int, int, int | None]:
+    reference_type = reader.byte()
+    flags, minimum, maximum = read_limits(reader)
+    return reference_type, flags, minimum, maximum
 
 
-def parse(path: pathlib.Path) -> tuple[dict[str, int], list[tuple[str, str, int, int | None]]]:
+def parse(
+    path: pathlib.Path,
+) -> tuple[
+    dict[str, tuple[int, int]],
+    list[tuple[int, int, int, int | None]],
+    list[tuple[str, str, int, int | None]],
+]:
     data = path.read_bytes()
     if data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
         raise WasmError("not a WebAssembly v1 module")
 
     reader = Reader(data, 8)
-    exports: dict[str, int] = {}
+    exports: dict[str, tuple[int, int]] = {}
+    tables: list[tuple[int, int, int, int | None]] = []
     memory_imports: list[tuple[str, str, int, int | None]] = []
 
     while reader.pos < len(reader.data):
@@ -92,7 +100,7 @@ def parse(path: pathlib.Path) -> tuple[dict[str, int], list[tuple[str, str, int,
                 if kind == 0:  # function
                     section.uleb()
                 elif kind == 1:  # table
-                    skip_table_type(section)
+                    tables.append(read_table_type(section))
                 elif kind == 2:  # memory
                     flags, _, maximum = read_limits(section)
                     memory_imports.append((module, name, flags, maximum))
@@ -104,16 +112,19 @@ def parse(path: pathlib.Path) -> tuple[dict[str, int], list[tuple[str, str, int,
                     section.uleb()  # type index
                 else:
                     raise WasmError(f"unknown import kind {kind}")
+        elif section_id == 4:  # locally-defined tables
+            for _ in range(section.uleb()):
+                tables.append(read_table_type(section))
         elif section_id == 7:  # exports
             for _ in range(section.uleb()):
                 name = section.name()
                 kind = section.byte()
-                section.uleb()  # index
+                index = section.uleb()
                 if name in exports:
                     raise WasmError(f"duplicate export {name!r}")
-                exports[name] = kind
+                exports[name] = (kind, index)
 
-    return exports, memory_imports
+    return exports, tables, memory_imports
 
 
 def main() -> int:
@@ -122,19 +133,35 @@ def main() -> int:
         return 2
 
     path = pathlib.Path(sys.argv[1])
-    exports, memory_imports = parse(path)
+    exports, tables, memory_imports = parse(path)
 
-    if exports.get("clap_entry") != 3:
+    if exports.get("clap_entry", (-1, -1))[0] != 3:
         raise WasmError("WCLAP must export clap_entry as a WebAssembly global")
-    if exports.get("malloc") != 0:
+    if exports.get("malloc", (-1, -1))[0] != 0:
         raise WasmError("WCLAP must export malloc as a function")
 
-    table_exports = [name for name, kind in exports.items() if kind == 1]
+    table_exports = [
+        (name, index)
+        for name, (kind, index) in exports.items()
+        if kind == 1
+    ]
     if len(table_exports) != 1:
         raise WasmError(
-            f"WCLAP must export exactly one function table, found {table_exports}")
+            f"WCLAP must export exactly one function table, found {[name for name, _ in table_exports]}")
 
-    has_exported_memory = any(kind == 2 for kind in exports.values())
+    table_name, table_index = table_exports[0]
+    if table_index >= len(tables):
+        raise WasmError(f"exported table {table_name!r} references missing table index {table_index}")
+
+    reference_type, _, table_minimum, table_maximum = tables[table_index]
+    if reference_type != 0x70:  # funcref
+        raise WasmError(
+            f"exported WCLAP table {table_name!r} is not a function-reference table")
+    if table_maximum is not None and table_maximum <= table_minimum:
+        raise WasmError(
+            f"exported WCLAP table {table_name!r} is fixed-size ({table_minimum}); host callbacks require a growable table")
+
+    has_exported_memory = any(kind == 2 for kind, _ in exports.values())
     if not has_exported_memory and not memory_imports:
         raise WasmError("WCLAP must import or export linear memory")
 
@@ -148,6 +175,10 @@ def main() -> int:
 
     print(f"verified {path}")
     print("exports:", ", ".join(sorted(exports)))
+    print(
+        f"function table: {table_name} min={table_minimum} "
+        f"max={table_maximum if table_maximum is not None else 'unbounded'}"
+    )
     if memory_imports:
         print("memory imports:", ", ".join(f"{m}.{n}" for m, n, _, _ in memory_imports))
     return 0
