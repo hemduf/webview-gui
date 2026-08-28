@@ -32,3 +32,6 @@ jobs:
 
       - name: Verify bootstrap-before-navigation lifecycle
         run: cmake -P tests/choc_bootstrap_lifecycle_contract.cmake
+
+      - name: Verify native CSP response headers
+        run: cmake -P tests/native_csp_response_contract.cmake
