@@ -209,7 +209,7 @@ python3 tests/wclap/verify_wasm.py \
   build-wclap/WebviewGuiSmoke.wclap/module.wasm
 ```
 
-CI pins **WASI SDK 33.0** (including its published SHA-256) and the same CLAP SDK commit used by the native tests. The helper emits the WCLAP ABI shape expected by current WCLAP hosts: a reactor module exporting `clap_entry`, `malloc` and exactly one growable function table. Emscripten is also supported by the helper with the equivalent standalone-WASM/no-entry profile.
+CI pins **WASI SDK 33.0** (including its published SHA-256) and the same CLAP SDK commit used by the native tests. The helper emits the WCLAP ABI shape expected by current WCLAP hosts: a reactor module exporting `clap_entry`, `malloc` and exactly one growable function table. An Emscripten code path is present in the helper, but it is **experimental and not qualified** until #51 has an equivalent green smoke gate.
 
 Bundle layout:
 
@@ -222,7 +222,7 @@ WebviewGuiSmoke.wclap/
 WebviewGuiSmoke.wclap.tar.gz
 ```
 
-The CI smoke gate checks the WASM magic/version, required exports/table/memory contract, copied WebView resources, archive layout, and that Node's WebAssembly engine can parse the module. It does not pretend to validate DSP that is not yet present in this repository.
+The WCLAP CI gate verifies the WASM magic/version, required exports/table/memory contract, canonical bundle/archive layout, incremental resource edits and deletions, and multi-config output placement. It also builds pinned `clap-trap` + `wclap-bridge`/Wasmtime and loads the packaged `.wclap` through a real host lifecycle: factory discovery, create/init/activate/start/process/stop/deactivate/destroy, repeated with a fresh loader/instance. The smoke fixture is intentionally DSP-minimal; Gain/PolySynth DSP/state/polyphonic qualification follows their example tickets.
 
 The production Gain/PolySynth WCLAP host tests described by issue #30 depend on the example foundation in #28 (and the Gain/PolySynth implementation tickets). Once those targets land, they should call the same helper and add factory/create/activate/process/state/polyphonic tests to this gate rather than forking a WCLAP-specific processor.
 
@@ -242,7 +242,7 @@ Every push/PR runs a Debug build and test suite on:
 - Windows;
 - Linux.
 
-A dedicated WCLAP workflow also builds and inspects the WASI smoke bundle using the pinned WASI SDK.
+A dedicated WCLAP workflow builds, stages, ABI-checks and lifecycle-validates the WASI smoke bundle using pinned toolchain/host revisions.
 
 ASan + UBSan jobs also run on macOS and Linux. The qualification suite exercises independent plug-in modules, unload/reload and native host embedding; the macOS tests additionally validate Objective-C runtime isolation. A separate external-consumer matrix verifies on macOS, Windows and Linux that standalone `WEBVIEW_GUI_HEADER_ONLY` fails closed with the documented diagnostic without linking the repository's internal CMake target.
 
