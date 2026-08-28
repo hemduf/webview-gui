@@ -175,7 +175,7 @@ struct ClapWebviewGui {
         nativePlatform = WebviewGui::NONE;
     }
 
-    bool setScale(double) { return isOnGuiThread(); }
+    bool setScale(double) { return false; }
 
     bool getSize(uint32_t *w, uint32_t *h) {
         if (!isOnGuiThread() || !w || !h) return false;
