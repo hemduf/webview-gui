@@ -31,6 +31,21 @@ if(MACOS_CSP_HEADER_POSITION EQUAL -1)
     message(FATAL_ERROR "macOS WKURLSchemeHandler resources do not attach a native Content-Security-Policy response header")
 endif()
 
+# Exercise the Windows patch at the exact point where CMake applies it: before
+# the later wildcard-CORS narrowing. This catches anchors that only match the
+# final generated source and therefore fail during a real Windows configure.
+file(READ
+    "${REPO_ROOT}/include/webview-gui/_impl/platform/choc/choc/gui/choc_WebView.h"
+    WINDOWS_PATCH_APPLICATION)
+include("${REPO_ROOT}/cmake/WebviewGuiChocWindowsResourceLifetimePatch.cmake")
+webview_gui_apply_choc_windows_resource_lifetime_patch(WINDOWS_PATCH_APPLICATION)
+string(FIND "${WINDOWS_PATCH_APPLICATION}"
+    "Content-Security-Policy: "
+    WINDOWS_APPLIED_CSP_POSITION)
+if(WINDOWS_APPLIED_CSP_POSITION EQUAL -1)
+    message(FATAL_ERROR "Windows native CSP patch did not apply to the pinned CHOC source")
+endif()
+
 # Once native response headers carry CSP on every supported backend, resource
 # bytes must pass through unchanged. Keeping HTML rewriting would leave a second,
 # parser-dependent policy path and could still corrupt malformed or encoded HTML.
