@@ -154,8 +154,8 @@ HRESULT handleWindowsPluginNavigation(EventArgs* args, OpenExternal&& openExtern
     if (FAILED(uriResult) || !uri) {
         if (uri)
             CoTaskMemFree(uri);
-        args->put_Cancel(TRUE);
-        return S_OK;
+        const auto cancelResult = args->put_Cancel(TRUE);
+        return SUCCEEDED(cancelResult) ? S_OK : cancelResult;
     }
 
     if (isAllowedWindowsPluginNavigation(uri)) {
