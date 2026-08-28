@@ -46,11 +46,11 @@ struct PluginWebviewState {
 int32_t CLAP_ABI pluginWebviewGetUri(const clap_plugin_t*, char* uri, uint32_t uriCapacity)
 {
     static constexpr char value[] = "/index.html";
-    constexpr auto length = static_cast<int32_t>(sizeof(value) - 1);
-    if (!uri || uriCapacity <= static_cast<uint32_t>(length))
-        return length + 1;
+    constexpr auto fullLength = static_cast<int32_t>(sizeof(value));
+    if (!uri || uriCapacity < static_cast<uint32_t>(fullLength))
+        return fullLength;
     std::memcpy(uri, value, sizeof(value));
-    return length;
+    return fullLength;
 }
 
 bool CLAP_ABI pluginWebviewGetResource(const clap_plugin_t* plugin,
@@ -226,6 +226,72 @@ TEST_CASE("CLAP reinitialisation unregisters the previous plugin key")
     CHECK(height == 333);
 }
 
+TEST_CASE("CLAP WebView API is advertised only when plugin and host paths are complete")
+{
+    PluginWebviewState state;
+    auto pluginWithWebview = makePluginWithWebview(state);
+    auto pluginWithoutWebview = makePlugin();
+    auto hostWithWebview = makeHostWithWebview();
+    auto hostWithoutWebview = makeHost();
+
+    webview_gui::ClapWebviewGui noHostPath{&pluginWithWebview, &hostWithoutWebview};
+    noHostPath.init();
+    CHECK_FALSE(noHostPath.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    CHECK_FALSE(noHostPath.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, true));
+
+    webview_gui::ClapWebviewGui noPluginPath{&pluginWithoutWebview, &hostWithWebview};
+    noPluginPath.init();
+    CHECK_FALSE(noPluginPath.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+
+    webview_gui::ClapWebviewGui complete{&pluginWithWebview, &hostWithWebview};
+    complete.init();
+    CHECK(complete.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    CHECK_FALSE(complete.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, true));
+
+    const char* preferred = nullptr;
+    bool floating = true;
+    REQUIRE(complete.getPreferredApi(&preferred, &floating));
+    CHECK(std::strcmp(preferred, webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0);
+    CHECK_FALSE(floating);
+}
+
+TEST_CASE("host-provided CLAP WebView lifecycle needs no native WebView")
+{
+    PluginWebviewState state;
+    auto plugin = makePluginWithWebview(state);
+    auto host = makeHostWithWebview();
+
+    hostSendCalls.store(0, std::memory_order_relaxed);
+
+    webview_gui::ClapWebviewGui gui{&plugin, &host};
+    gui.init();
+
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    CHECK(gui.testUsesHostWebview());
+    CHECK_FALSE(gui.testHasNativeWebview());
+    CHECK_FALSE(gui.setScale(2.0));
+
+    clap_window window{};
+    window.api = webview_gui::CLAP_WINDOW_API_WEBVIEW;
+    window.ptr = nullptr;
+    CHECK(gui.setParent(&window));
+
+    window.ptr = reinterpret_cast<void*>(static_cast<std::uintptr_t>(1));
+    CHECK_FALSE(gui.setParent(&window));
+    window.ptr = nullptr;
+
+    CHECK(gui.show());
+    const unsigned char byte = 0x31;
+    CHECK(gui.send(&byte, 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
+    CHECK(gui.hide());
+
+    gui.destroy();
+    CHECK_FALSE(gui.testUsesHostWebview());
+    CHECK_FALSE(gui.send(&byte, 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
+}
+
 TEST_CASE("CLAP reinitialisation tears down an active native GUI before switching identity")
 {
     PluginWebviewState stateA;
@@ -256,6 +322,7 @@ TEST_CASE("CLAP reinitialisation tears down an active native GUI before switchin
     // B must use B's host extension rather than silently sending through A's
     // stale native WebView.
     hostSendCalls.store(0, std::memory_order_relaxed);
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
     CHECK(gui.send(&byte, 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
 
@@ -273,6 +340,7 @@ TEST_CASE("CLAP reinitialisation tears down an active native GUI before switchin
     CHECK_FALSE(gui.testHasNativeWebview());
     CHECK_FALSE(gui.testDeliverNativeMessage(&byte, 1));
     CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
     CHECK(gui.send(&byte, 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 2);
 }
@@ -362,10 +430,12 @@ TEST_CASE("reference CLAP adapter has no process entry and audio handoff never e
     static_assert(!HasProcessMember<webview_gui::ClapWebviewGui>::value,
                   "ClapWebviewGui must remain a GUI-only adapter");
 
+    PluginWebviewState state;
     auto host = makeHostWithWebview();
-    auto plugin = makePlugin();
+    auto plugin = makePluginWithWebview(state);
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
 
     hostSendCalls.store(0, std::memory_order_relaxed);
     webview_gui::RealtimeToUiQueue<std::uint32_t, 8> queue;
@@ -393,8 +463,9 @@ TEST_CASE("reference CLAP adapter has no process entry and audio handoff never e
 
 TEST_CASE("main-thread CLAP callbacks survive repeated create destroy cycles")
 {
-    auto host = makeHost();
-    auto plugin = makePlugin();
+    PluginWebviewState state;
+    auto host = makeHostWithWebview();
+    auto plugin = makePluginWithWebview(state);
 
     for (uint32_t iteration = 0; iteration < 32; ++iteration) {
         webview_gui::ClapWebviewGui gui{&plugin, &host};
@@ -417,13 +488,15 @@ TEST_CASE("main-thread CLAP callbacks survive repeated create destroy cycles")
 
 TEST_CASE("CLAP send rejects oversized payloads before calling the host extension")
 {
+    PluginWebviewState state;
     auto host = makeHostWithWebview();
-    auto plugin = makePlugin();
+    auto plugin = makePluginWithWebview(state);
 
     hostSendCalls.store(0, std::memory_order_relaxed);
 
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
 
     const unsigned char byte = 0x7f;
     CHECK(gui.send(&byte, 1));
