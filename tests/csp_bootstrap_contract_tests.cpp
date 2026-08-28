@@ -30,5 +30,16 @@ int main()
     assert(hardened.find("_WebviewGui_ready") == std::string::npos);
     assert(hardened.find("_WebviewGui_receive64(token") == std::string::npos);
 
+    // A UTF-8 BOM is an encoding signature and must remain at byte offset zero.
+    // Moving injected markup ahead of it changes how the browser can decode the page.
+    const std::string bomSource =
+        "\xEF\xBB\xBF<!doctype html><html><head><title>BOM</title></head><body></body></html>";
+    std::vector<unsigned char> bomBytes(bomSource.begin(), bomSource.end());
+    assert(detail::applyPluginHTMLHardening(bomBytes));
+    assert(bomBytes.size() >= 3);
+    assert(bomBytes[0] == 0xEFu);
+    assert(bomBytes[1] == 0xBBu);
+    assert(bomBytes[2] == 0xBFu);
+
     return 0;
 }
