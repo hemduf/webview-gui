@@ -280,17 +280,76 @@ inline bool windowsDpiHostingAllowsChild(HWND child, HWND parent) noexcept
         && getWindowHosting(parent) == DPI_HOSTING_BEHAVIOR_MIXED;
 }
 
-inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
+struct WindowsChildAttachOps {
+    bool isWindow(HWND window) const noexcept
+    {
+        return IsWindow(window) != 0;
+    }
+
+    bool dpiHostingAllowsChild(HWND child, HWND parent) const noexcept
+    {
+        return windowsDpiHostingAllowsChild(child, parent);
+    }
+
+    void setLastError(DWORD error) const noexcept
+    {
+        SetLastError(error);
+    }
+
+    DWORD getLastError() const noexcept
+    {
+        return GetLastError();
+    }
+
+    LONG_PTR getWindowLongPtr(HWND window, int index) const noexcept
+    {
+        return GetWindowLongPtrW(window, index);
+    }
+
+    LONG_PTR setWindowLongPtr(HWND window, int index, LONG_PTR value) const noexcept
+    {
+        return SetWindowLongPtrW(window, index, value);
+    }
+
+    HWND getParent(HWND window) const noexcept
+    {
+        return GetParent(window);
+    }
+
+    HWND setParent(HWND child, HWND parent) const noexcept
+    {
+        return SetParent(child, parent);
+    }
+
+    BOOL setWindowPos(HWND window,
+                      HWND insertAfter,
+                      int x,
+                      int y,
+                      int width,
+                      int height,
+                      UINT flags) const noexcept
+    {
+        return SetWindowPos(window, insertAfter, x, y, width, height, flags);
+    }
+};
+
+template <typename Ops>
+bool attachChildWindowToHostWithOps(HWND child, HWND parent, Ops& ops) noexcept
 {
-    if (!IsWindow(child) || !IsWindow(parent) || child == parent)
+    if (!ops.isWindow(child) || !ops.isWindow(parent) || child == parent)
         return false;
 
-    if (!windowsDpiHostingAllowsChild(child, parent))
+    if (!ops.dpiHostingAllowsChild(child, parent))
         return false;
 
-    SetLastError(ERROR_SUCCESS);
-    const auto oldStyle = GetWindowLongPtrW(child, GWL_STYLE);
-    if (oldStyle == 0 && GetLastError() != ERROR_SUCCESS)
+    ops.setLastError(ERROR_SUCCESS);
+    const auto oldStyle = ops.getWindowLongPtr(child, GWL_STYLE);
+    if (oldStyle == 0 && ops.getLastError() != ERROR_SUCCESS)
+        return false;
+
+    ops.setLastError(ERROR_SUCCESS);
+    const auto oldParent = ops.getParent(child);
+    if (oldParent == nullptr && ops.getLastError() != ERROR_SUCCESS)
         return false;
 
     const auto childStyle = (oldStyle & ~static_cast<LONG_PTR>(WS_POPUP))
@@ -298,19 +357,50 @@ inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
                           | static_cast<LONG_PTR>(WS_CLIPCHILDREN)
                           | static_cast<LONG_PTR>(WS_CLIPSIBLINGS);
 
-    SetLastError(ERROR_SUCCESS);
-    const auto previousStyle = SetWindowLongPtrW(child, GWL_STYLE, childStyle);
-    if (previousStyle == 0 && GetLastError() != ERROR_SUCCESS)
+    ops.setLastError(ERROR_SUCCESS);
+    const auto previousStyle = ops.setWindowLongPtr(child, GWL_STYLE, childStyle);
+    if (previousStyle == 0 && ops.getLastError() != ERROR_SUCCESS)
         return false;
 
-    SetLastError(ERROR_SUCCESS);
-    const auto previousParent = SetParent(child, parent);
-    if (previousParent == nullptr && GetLastError() != ERROR_SUCCESS)
-        return false;
+    const auto rollback = [&]() noexcept
+    {
+        // Restore parentage before the original style so there is no interval
+        // where a WS_POPUP window remains attached as a child. Each operation
+        // is best-effort: the original failure must still be reported only
+        // after every available restoration step has been attempted.
+        ops.setLastError(ERROR_SUCCESS);
+        ops.setParent(child, oldParent);
 
-    return SetWindowPos(child, nullptr, 0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
-                            | SWP_NOACTIVATE | SWP_FRAMECHANGED) != 0;
+        ops.setLastError(ERROR_SUCCESS);
+        ops.setWindowLongPtr(child, GWL_STYLE, oldStyle);
+
+        ops.setLastError(ERROR_SUCCESS);
+        ops.setWindowPos(child, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                             | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    };
+
+    ops.setLastError(ERROR_SUCCESS);
+    const auto previousParent = ops.setParent(child, parent);
+    if (previousParent == nullptr && ops.getLastError() != ERROR_SUCCESS) {
+        rollback();
+        return false;
+    }
+
+    if (ops.setWindowPos(child, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                             | SWP_NOACTIVATE | SWP_FRAMECHANGED) == 0) {
+        rollback();
+        return false;
+    }
+
+    return true;
+}
+
+inline bool attachChildWindowToHost(HWND child, HWND parent) noexcept
+{
+    WindowsChildAttachOps ops;
+    return attachChildWindowToHostWithOps(child, parent, ops);
 }
 
 inline bool resizeChildWindow(HWND child, int width, int height) noexcept
