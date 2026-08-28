@@ -468,3 +468,22 @@ TEST_CASE("CLAP native set_size does not commit dimensions rejected by the nativ
     CHECK(true);
 #endif
 }
+
+TEST_CASE("CLAP exported set_size fails outside a successful GUI lifetime")
+{
+    auto host = makeHost();
+    auto plugin = makePlugin();
+
+    webview_gui::ClapWebviewGui gui{&plugin, &host};
+    gui.init();
+    REQUIRE(gui.extPluginGui != nullptr);
+
+    CHECK_FALSE(gui.extPluginGui->set_size(&plugin, 640, 480));
+
+    REQUIRE(gui.extPluginGui->create(
+        &plugin, webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    CHECK(gui.extPluginGui->set_size(&plugin, 640, 480));
+
+    gui.extPluginGui->destroy(&plugin);
+    CHECK_FALSE(gui.extPluginGui->set_size(&plugin, 800, 600));
+}
