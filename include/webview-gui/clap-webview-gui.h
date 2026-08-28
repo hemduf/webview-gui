@@ -198,9 +198,10 @@ struct ClapWebviewGui {
 
     bool setSize(uint32_t w, uint32_t h) {
         if (!isOnGuiThread()) return false;
+        if (nativeWebview && !nativeWebview->trySetSize(w, h))
+            return false;
         width = w;
         height = h;
-        if (nativeWebview) nativeWebview->setSize(w, h);
         return true;
     }
 
