@@ -12,6 +12,12 @@ function(require_workflow_contract workflow_file expected_name)
             "Required workflow '${workflow_file}' changed its stable workflow name; expected '${expected_name}'")
     endif()
 
+    string(FIND "${workflow_content}" "  pull_request:" pull_request_offset)
+    if(pull_request_offset EQUAL -1)
+        message(FATAL_ERROR
+            "Required workflow '${workflow_file}' must run on pull_request or branch protection can wait forever for a check that never starts")
+    endif()
+
     set(push_main_contract "  push:\n    branches:\n      - main")
     string(FIND "${workflow_content}" "${push_main_contract}" push_main_offset)
     if(push_main_offset EQUAL -1)
