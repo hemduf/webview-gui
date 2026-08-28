@@ -47,14 +47,16 @@ public:
             entry = it->second;
         }
 
+        typename Entry::Visitor visitor;
         T* value = nullptr;
-        if (!entry->begin(value))
+        if (!entry->begin(visitor, value))
             return false;
 
         struct ActiveVisit {
             Entry& entry;
-            ~ActiveVisit() { entry.end(); }
-        } activeVisit{*entry};
+            typename Entry::Visitor& visitor;
+            ~ActiveVisit() { entry.end(visitor); }
+        } activeVisit{*entry, visitor};
 
         callback(*value);
         return true;
@@ -88,30 +90,41 @@ public:
 
 private:
     struct Entry {
+        struct Visitor {
+            std::thread::id thread;
+            Visitor* previous = nullptr;
+            Visitor* next = nullptr;
+        };
+
         explicit Entry(T* initialValue) noexcept : value(initialValue) {}
 
-        bool begin(T*& result)
+        bool begin(Visitor& visitor, T*& result)
         {
             std::lock_guard lock{mutex};
             if (!accepting || value == nullptr)
                 return false;
 
+            visitor.thread = std::this_thread::get_id();
+            visitor.next = visitors;
+            if (visitors != nullptr)
+                visitors->previous = &visitor;
+            visitors = &visitor;
+
             ++activeVisitors;
-            ++activeVisitorsByThread[std::this_thread::get_id()];
             result = value;
             return true;
         }
 
-        void end() noexcept
+        void end(Visitor& visitor) noexcept
         {
             std::lock_guard lock{mutex};
 
-            const auto thread = std::this_thread::get_id();
-            const auto threadIt = activeVisitorsByThread.find(thread);
-            if (threadIt != activeVisitorsByThread.end()) {
-                if (--threadIt->second == 0)
-                    activeVisitorsByThread.erase(threadIt);
-            }
+            if (visitor.previous != nullptr)
+                visitor.previous->next = visitor.next;
+            else
+                visitors = visitor.next;
+            if (visitor.next != nullptr)
+                visitor.next->previous = visitor.previous;
 
             --activeVisitors;
             if (!accepting)
@@ -123,10 +136,12 @@ private:
             std::unique_lock lock{mutex};
             accepting = false;
 
-            const auto threadIt = activeVisitorsByThread.find(std::this_thread::get_id());
-            const auto visitorsOnCallingThread = threadIt == activeVisitorsByThread.end()
-                ? std::size_t{0}
-                : threadIt->second;
+            const auto callingThread = std::this_thread::get_id();
+            std::size_t visitorsOnCallingThread = 0;
+            for (auto* visitor = visitors; visitor != nullptr; visitor = visitor->next) {
+                if (visitor->thread == callingThread)
+                    ++visitorsOnCallingThread;
+            }
 
             drained.wait(lock, [&] { return activeVisitors <= visitorsOnCallingThread; });
         }
@@ -134,8 +149,8 @@ private:
         T* const value;
         std::mutex mutex;
         std::condition_variable drained;
+        Visitor* visitors = nullptr;
         std::size_t activeVisitors = 0;
-        std::unordered_map<std::thread::id, std::size_t> activeVisitorsByThread;
         bool accepting = true;
     };
 
