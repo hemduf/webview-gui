@@ -117,20 +117,29 @@ jobs:
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
 
-          # The pinned clap-trap library has correct .wclap/.wasm auto-detection
-          # in PluginLoader::create(), but this CLI revision still bypasses it
-          # with PluginLoader::load(). Patch only the pinned CI checkout and fail
-          # closed if upstream changes, so this test actually enters Wasmtime.
+          # The pinned clap-trap library has the correct WCLAP path, but this CLI
+          # revision predates wiring it through both loader auto-detection and the
+          # native-only entry() guard. Patch only the pinned CI checkout and fail
+          # closed on upstream drift so validation really runs through Wasmtime.
           python3 - <<'PY'
           from pathlib import Path
           path = Path('.ci/clap-trap/examples/cli.cpp')
           text = path.read_text()
-          needle = 'PluginLoader::load(opts.pluginPath)'
-          count = text.count(needle)
-          if count == 0:
-              raise SystemExit('pinned clap-trap CLI load pattern changed; revalidate WCLAP host patch')
-          path.write_text(text.replace(needle, 'PluginLoader::create(opts.pluginPath)'))
-          print(f'patched {count} clap-trap CLI loader call(s) for WCLAP auto-detection')
+
+          load_needle = 'PluginLoader::load(opts.pluginPath)'
+          load_count = text.count(load_needle)
+          if load_count == 0:
+              raise SystemExit('pinned clap-trap loader pattern changed; revalidate WCLAP host patch')
+          text = text.replace(load_needle, 'PluginLoader::create(opts.pluginPath)')
+
+          entry_needle = 'if (!loader->entry()) {'
+          entry_count = text.count(entry_needle)
+          if entry_count == 0:
+              raise SystemExit('pinned clap-trap entry guard changed; revalidate WCLAP host patch')
+          text = text.replace(entry_needle, 'if (!loader->isWasm() && !loader->entry()) {')
+
+          path.write_text(text)
+          print(f'patched {load_count} loader call(s) and {entry_count} native entry guard(s)')
           PY
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
