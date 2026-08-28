@@ -5,8 +5,8 @@
 // directory before webview-gui, the SDK's canonical header is used instead.
 // These declarations intentionally mirror the CLAP 1.2.x draft ABI.
 
-#include "../../plugin.h"
-#include "../../stream.h"
+#include "clap/plugin.h"
+#include "clap/stream.h"
 
 static CLAP_CONSTEXPR const char CLAP_EXT_WEBVIEW[] = "clap.webview/3";
 
