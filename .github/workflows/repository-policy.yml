@@ -1,0 +1,21 @@
+name: Repository policy
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  required-main-gates:
+    name: required main qualification contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify stable required workflows requalify main
+        run: cmake -P tests/ci_policy_tests.cmake
