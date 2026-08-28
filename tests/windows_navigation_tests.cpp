@@ -23,11 +23,17 @@ struct FakeNavigationArgs {
     bool cancelled = false;
     int uriReads = 0;
     int cancelWrites = 0;
+    HRESULT uriResult = S_OK;
+    bool nullUri = false;
+    HRESULT cancelResult = S_OK;
 
     HRESULT get_Uri(LPWSTR* output)
     {
         ++uriReads;
         if (!output) return E_POINTER;
+        *output = nullptr;
+        if (FAILED(uriResult)) return uriResult;
+        if (nullUri) return S_OK;
         const auto bytes = (uri.size() + 1) * sizeof(wchar_t);
         auto* copy = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
         if (!copy) return E_OUTOFMEMORY;
@@ -53,8 +59,9 @@ struct FakeNavigationArgs {
     HRESULT put_Cancel(BOOL value)
     {
         ++cancelWrites;
-        cancelled = value != FALSE;
-        return S_OK;
+        if (SUCCEEDED(cancelResult))
+            cancelled = value != FALSE;
+        return cancelResult;
     }
 };
 
@@ -153,5 +160,52 @@ TEST_CASE("non-user-initiated remote navigation is cancelled without external la
               &args,
               [&](LPCWSTR) { ++externalLaunches; }) == S_OK);
     CHECK(args.cancelled);
+    CHECK(externalLaunches == 0);
+}
+
+TEST_CASE("URI read failure remains fail-closed when cancellation succeeds")
+{
+    FakeNavigationArgs args;
+    args.uriResult = E_FAIL;
+    int externalLaunches = 0;
+
+    CHECK(webview_gui::detail::handleWindowsPluginNavigation(
+              &args,
+              [&](LPCWSTR) { ++externalLaunches; }) == S_OK);
+    CHECK(args.uriReads == 1);
+    CHECK(args.cancelWrites == 1);
+    CHECK(args.cancelled);
+    CHECK(externalLaunches == 0);
+}
+
+TEST_CASE("URI read failure propagates cancellation failure")
+{
+    FakeNavigationArgs args;
+    args.uriResult = E_FAIL;
+    args.cancelResult = E_ACCESSDENIED;
+    int externalLaunches = 0;
+
+    CHECK(webview_gui::detail::handleWindowsPluginNavigation(
+              &args,
+              [&](LPCWSTR) { ++externalLaunches; }) == E_ACCESSDENIED);
+    CHECK(args.uriReads == 1);
+    CHECK(args.cancelWrites == 1);
+    CHECK_FALSE(args.cancelled);
+    CHECK(externalLaunches == 0);
+}
+
+TEST_CASE("null URI propagates cancellation failure")
+{
+    FakeNavigationArgs args;
+    args.nullUri = true;
+    args.cancelResult = E_ABORT;
+    int externalLaunches = 0;
+
+    CHECK(webview_gui::detail::handleWindowsPluginNavigation(
+              &args,
+              [&](LPCWSTR) { ++externalLaunches; }) == E_ABORT);
+    CHECK(args.uriReads == 1);
+    CHECK(args.cancelWrites == 1);
+    CHECK_FALSE(args.cancelled);
     CHECK(externalLaunches == 0);
 }
