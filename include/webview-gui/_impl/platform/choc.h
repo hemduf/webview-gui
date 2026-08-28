@@ -76,8 +76,8 @@ struct WebviewGui::Impl {
 		if (!isOnGuiThread() || !webview
 			|| !std::isfinite(width) || !std::isfinite(height)
 			|| width < 0.0 || height < 0.0
-			|| width > static_cast<double>(std::numeric_limits<CGFloat>::max())
-			|| height > static_cast<double>(std::numeric_limits<CGFloat>::max()))
+			|| width > static_cast<double>(std::numeric_limits<choc::objc::CGFloat>::max())
+			|| height > static_cast<double>(std::numeric_limits<choc::objc::CGFloat>::max()))
 			return false;
 		using namespace choc::objc;
 		CGRect rect{{0, 0}, {CGFloat(width), CGFloat(height)}};
