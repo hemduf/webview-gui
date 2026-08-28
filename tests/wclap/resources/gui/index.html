@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>webview-gui WCLAP smoke</title>
+</head>
+<body>
+  <main id="status">WCLAP WebView smoke</main>
+  <script>
+    window.addEventListener('message', (event) => {
+      if (event.data instanceof ArrayBuffer)
+        document.getElementById('status').textContent = `received ${event.data.byteLength} bytes`;
+    });
+  </script>
+</body>
+</html>
