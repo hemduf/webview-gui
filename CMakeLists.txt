@@ -298,3 +298,11 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     pkg_check_modules(webkit2 REQUIRED webkit2gtk-4.1 IMPORTED_TARGET)
     target_link_libraries(webview-gui PRIVATE PkgConfig::gtk3 PkgConfig::webkit2)
 endif()
+
+# Example dependencies and plug-in targets are strictly opt-in so normal
+# consumers keep the existing library-only configure graph unchanged.
+option(WEBVIEW_GUI_BUILD_EXAMPLES "Build the CLAP example targets" OFF)
+if(WEBVIEW_GUI_BUILD_EXAMPLES)
+    include(CTest)
+    add_subdirectory(examples EXCLUDE_FROM_ALL)
+endif()
