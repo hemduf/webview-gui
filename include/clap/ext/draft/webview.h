@@ -1,9 +1,17 @@
 #pragma once
 
 // Compatibility shim for consumers pinned to a CLAP SDK which predates the
-// draft clap.webview/3 header. If the consumer places a newer CLAP SDK include
-// directory before webview-gui, the SDK's canonical header is used instead.
-// These declarations intentionally mirror the CLAP 1.2.x draft ABI.
+// draft clap.webview/3 header. When another CLAP include root follows
+// webview-gui on the include path, GCC/Clang resolve the canonical SDK header
+// with include_next; otherwise we provide the small ABI-compatible fallback.
+#if defined(__GNUC__) || defined(__clang__)
+#  if __has_include_next("clap/ext/draft/webview.h")
+#    include_next "clap/ext/draft/webview.h"
+#    define WEBVIEW_GUI_CLAP_WEBVIEW_FROM_SDK 1
+#  endif
+#endif
+
+#ifndef WEBVIEW_GUI_CLAP_WEBVIEW_FROM_SDK
 
 #include "clap/plugin.h"
 #include "clap/stream.h"
@@ -43,3 +51,5 @@ typedef struct clap_host_webview {
 #ifdef __cplusplus
 }
 #endif
+
+#endif // WEBVIEW_GUI_CLAP_WEBVIEW_FROM_SDK
