@@ -51,6 +51,7 @@ struct ClapWebviewGui {
         if (uiThread.isBound() && !uiThread.isCurrentThread())
             return;
         clearSelf(plugin);
+        destroy();
         plugin = initPlugin;
         host = initHost;
         init();
@@ -60,6 +61,7 @@ struct ClapWebviewGui {
         if (uiThread.isBound() && !uiThread.isCurrentThread())
             return;
         clearSelf(plugin);
+        destroy();
         uiThread.bindToCurrentThread();
         pluginWebview = nullptr;
         hostWebview = nullptr;
