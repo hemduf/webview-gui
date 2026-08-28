@@ -417,6 +417,9 @@ TEST_CASE("native host dimensions reject invalid floating-point values before in
     CHECK(native == 0);
     CHECK(detail::tryConvertNativeHostDimension(640.75, native));
     CHECK(native == 640);
+    CHECK(detail::tryConvertNativeHostDimension(
+        static_cast<double>(std::numeric_limits<int>::max()), native));
+    CHECK(native == std::numeric_limits<int>::max());
 
     CHECK_FALSE(detail::tryConvertNativeHostDimension(-1.0, native));
     CHECK_FALSE(detail::tryConvertNativeHostDimension(std::numeric_limits<double>::infinity(), native));
