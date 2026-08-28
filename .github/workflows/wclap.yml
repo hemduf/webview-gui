@@ -1,0 +1,72 @@
+name: WCLAP WASI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: wclap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasi-smoke:
+    name: wasi-sdk-33 / wasm32 WCLAP
+    runs-on: ubuntu-24.04
+    env:
+      WASI_VERSION: '33'
+      WASI_VERSION_FULL: '33.0'
+      WASI_ARCHIVE: wasi-sdk-33.0-x86_64-linux.tar.gz
+      WASI_SHA256: 0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install pinned WASI SDK
+        run: |
+          curl --fail --location --retry 3 \
+            --output "${WASI_ARCHIVE}" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/${WASI_ARCHIVE}"
+          echo "${WASI_SHA256}  ${WASI_ARCHIVE}" | sha256sum --check --strict
+          tar xzf "${WASI_ARCHIVE}"
+          echo "WASI_SDK_PATH=${GITHUB_WORKSPACE}/wasi-sdk-${WASI_VERSION_FULL}-x86_64-linux" >> "${GITHUB_ENV}"
+
+      - name: Configure WCLAP smoke project
+        run: |
+          cmake -S tests/wclap -B build-wclap -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${WASI_SDK_PATH}/share/cmake/wasi-sdk-pthread.cmake"
+
+      - name: Build WCLAP bundle
+        run: cmake --build build-wclap --target webview_gui_wclap_smoke --parallel
+
+      - name: Verify WCLAP ABI and bundle
+        run: |
+          test -f build-wclap/WebviewGuiSmoke.wclap/module.wasm
+          test -f build-wclap/WebviewGuiSmoke.wclap/gui/index.html
+          test -f build-wclap/WebviewGuiSmoke.wclap.tar.gz
+          python3 tests/wclap/verify_wasm.py build-wclap/WebviewGuiSmoke.wclap/module.wasm
+          tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/module.wasm'
+          tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/gui/index.html'
+          node -e "const fs=require('fs'); const b=fs.readFileSync('build-wclap/WebviewGuiSmoke.wclap/module.wasm'); const m=new WebAssembly.Module(b); console.log(WebAssembly.Module.exports(m)); console.log(WebAssembly.Module.imports(m));"
+
+      - name: Upload WCLAP smoke artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: webview-gui-wclap-smoke
+          if-no-files-found: error
+          path: |
+            build-wclap/WebviewGuiSmoke.wclap/
+            build-wclap/WebviewGuiSmoke.wclap.tar.gz
