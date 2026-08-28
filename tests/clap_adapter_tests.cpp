@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <thread>
 #include <type_traits>
 
@@ -431,4 +432,39 @@ TEST_CASE("CLAP send rejects oversized payloads before calling the host extensio
 
     CHECK_FALSE(gui.send(&byte, webview_gui::detail::maxMessageBytes + 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
+}
+
+TEST_CASE("CLAP native set_size does not commit dimensions rejected by the native backend")
+{
+#if defined(_WIN32) || defined(__linux__)
+    PluginWebviewState state;
+    auto plugin = makePluginWithWebview(state);
+    auto host = makeHost();
+
+    webview_gui::ClapWebviewGui gui{&plugin, &host};
+    gui.init();
+
+    const auto* api = nativeClapApi();
+    REQUIRE(api != nullptr);
+    REQUIRE(gui.create(api, false));
+    REQUIRE(gui.testHasNativeWebview());
+
+    REQUIRE(gui.setSize(640, 480));
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    REQUIRE(gui.getSize(&width, &height));
+    REQUIRE(width == 640);
+    REQUIRE(height == 480);
+
+    constexpr auto nativeIntMax = static_cast<uint32_t>(std::numeric_limits<int>::max());
+    constexpr auto tooWide = nativeIntMax + 1u;
+    CHECK_FALSE(gui.extPluginGui->set_size(&plugin, tooWide, 480));
+
+    REQUIRE(gui.getSize(&width, &height));
+    CHECK(width == 640);
+    CHECK(height == 480);
+#else
+    CHECK(true);
+#endif
 }
