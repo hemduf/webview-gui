@@ -23,13 +23,15 @@ public:
         {
             std::lock_guard lock{entriesMutex};
             const auto it = entries.find(key);
-            if (it != entries.end())
+            if (it != entries.end()) {
                 previous = it->second;
+                previous->stopAccepting();
+            }
             entries.insert_or_assign(key, std::move(replacement));
         }
 
         if (previous)
-            previous->stopAndWait();
+            previous->waitForDrain();
     }
 
     template <typename Callback>
@@ -75,10 +77,11 @@ public:
                 return false;
 
             removed = it->second;
+            removed->stopAccepting();
             entries.erase(it);
         }
 
-        removed->stopAndWait();
+        removed->waitForDrain();
         return true;
     }
 
@@ -131,10 +134,15 @@ private:
                 drained.notify_all();
         }
 
-        void stopAndWait()
+        void stopAccepting()
+        {
+            std::lock_guard lock{mutex};
+            accepting = false;
+        }
+
+        void waitForDrain()
         {
             std::unique_lock lock{mutex};
-            accepting = false;
 
             const auto callingThread = std::this_thread::get_id();
             std::size_t visitorsOnCallingThread = 0;
