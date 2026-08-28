@@ -7,9 +7,12 @@
 #include "webview-gui/_impl/bounded_buffer.h"
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -158,6 +161,100 @@ TEST_CASE("CallbackRegistry keeps an owner pinned until an in-flight callback re
     CHECK(eraseFinished.load(std::memory_order_acquire));
     CHECK(registry.size() == 0);
     CHECK_FALSE(registry.visit(&key, [](int&) {}));
+}
+
+TEST_CASE("CallbackRegistry allows a callback to unregister itself without deadlocking")
+{
+    struct State {
+        detail::CallbackRegistry<int> registry;
+        int key = 0;
+        int value = 42;
+    };
+    struct Result {
+        bool visited = false;
+        bool erased = false;
+        bool visitedAfterErase = true;
+        std::size_t size = 1;
+    };
+
+    auto state = std::make_shared<State>();
+    state->registry.set(&state->key, &state->value);
+
+    std::promise<Result> completion;
+    auto resultFuture = completion.get_future();
+    std::thread worker([state, completion = std::move(completion)]() mutable {
+        Result result;
+        result.visited = state->registry.visit(&state->key, [&](int& current) {
+            result.erased = state->registry.eraseIfMatches(&state->key, &current);
+        });
+        result.visitedAfterErase = state->registry.visit(&state->key, [](int&) {});
+        result.size = state->registry.size();
+        completion.set_value(result);
+    });
+
+    if (resultFuture.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+        worker.detach();
+        FAIL_CHECK("self-unregister did not complete within the bounded timeout");
+        return;
+    }
+
+    const auto result = resultFuture.get();
+    worker.join();
+
+    CHECK(result.visited);
+    CHECK(result.erased);
+    CHECK_FALSE(result.visitedAfterErase);
+    CHECK(result.size == 0u);
+}
+
+TEST_CASE("CallbackRegistry allows a callback to replace itself without deadlocking")
+{
+    struct State {
+        detail::CallbackRegistry<int> registry;
+        int key = 0;
+        int initial = 42;
+        int replacement = 84;
+    };
+    struct Result {
+        bool visited = false;
+        bool oldValuePreserved = false;
+        bool replacementVisited = false;
+        bool replacementMatched = false;
+        std::size_t size = 0;
+    };
+
+    auto state = std::make_shared<State>();
+    state->registry.set(&state->key, &state->initial);
+
+    std::promise<Result> completion;
+    auto resultFuture = completion.get_future();
+    std::thread worker([state, completion = std::move(completion)]() mutable {
+        Result result;
+        result.visited = state->registry.visit(&state->key, [&](int& current) {
+            result.oldValuePreserved = (&current == &state->initial && current == 42);
+            state->registry.set(&state->key, &state->replacement);
+        });
+        result.replacementVisited = state->registry.visit(&state->key, [&](int& current) {
+            result.replacementMatched = (&current == &state->replacement && current == 84);
+        });
+        result.size = state->registry.size();
+        completion.set_value(result);
+    });
+
+    if (resultFuture.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+        worker.detach();
+        FAIL_CHECK("self-replace did not complete within the bounded timeout");
+        return;
+    }
+
+    const auto result = resultFuture.get();
+    worker.join();
+
+    CHECK(result.visited);
+    CHECK(result.oldValuePreserved);
+    CHECK(result.replacementVisited);
+    CHECK(result.replacementMatched);
+    CHECK(result.size == 1u);
 }
 
 TEST_CASE("CallbackRegistry tolerates concurrent visits while registrations change")
