@@ -40,6 +40,14 @@ jobs:
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev
 
+      - name: Verify CLAP WebView header compatibility
+        run: |
+          cmake -S tests/clap_compat_consumer -B build-clap-compat -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-clap-compat --parallel
+          ./build-clap-compat/webview_gui_clap_current_compile
+          ./build-clap-compat/webview_gui_clap_legacy_compile
+
       - name: Install pinned WASI SDK
         run: |
           curl --fail --location --retry 3 \
