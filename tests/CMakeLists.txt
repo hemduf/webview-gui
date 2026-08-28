@@ -181,6 +181,19 @@ if(WIN32)
     )
     add_test(NAME webview_gui_windows_isolation_tests COMMAND webview_gui_windows_isolation_tests)
 
+    add_executable(webview_gui_windows_resource_lifetime_tests resource_lifetime_tests.cpp)
+    target_include_directories(webview_gui_windows_resource_lifetime_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_windows_resource_lifetime_tests PRIVATE
+        doctest::doctest
+        webview-gui
+        Threads::Threads
+        ole32
+        user32
+    )
+    add_test(NAME webview_gui_windows_resource_lifetime_tests COMMAND webview_gui_windows_resource_lifetime_tests)
+
     add_executable(webview_gui_windows_dpi_tests windows_dpi_tests.cpp)
     target_include_directories(webview_gui_windows_dpi_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../include
@@ -247,6 +260,19 @@ if(UNIX AND NOT APPLE)
         PkgConfig::test_webkit2
     )
     add_test(NAME webview_gui_linux_embed_tests COMMAND webview_gui_linux_embed_tests)
+
+    add_executable(webview_gui_linux_resource_lifetime_tests resource_lifetime_tests.cpp)
+    target_include_directories(webview_gui_linux_resource_lifetime_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+    )
+    target_link_libraries(webview_gui_linux_resource_lifetime_tests PRIVATE
+        doctest::doctest
+        webview-gui
+        Threads::Threads
+        PkgConfig::test_gtk3
+        PkgConfig::test_webkit2
+    )
+    add_test(NAME webview_gui_linux_resource_lifetime_tests COMMAND webview_gui_linux_resource_lifetime_tests)
 
     add_library(webview_gui_linux_module_a MODULE linux_module.cpp)
     add_library(webview_gui_linux_module_b MODULE linux_module.cpp)
