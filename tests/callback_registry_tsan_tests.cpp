@@ -106,3 +106,68 @@ TEST_CASE("callback registry is race-free under concurrent visit set and erase s
         totalVisits += payload.visits.load(std::memory_order_relaxed);
     CHECK(totalVisits > 0u);
 }
+
+TEST_CASE("callback registry reentrant teardown drains foreign visitors without waiting for itself")
+{
+    webview_gui::detail::CallbackRegistry<Payload> registry;
+    int key = 0;
+    Payload initial;
+    Payload replacement;
+    registry.set(&key, &initial);
+
+    std::atomic<bool> foreignEntered{false};
+    std::atomic<bool> releaseForeign{false};
+    std::atomic<bool> foreignExited{false};
+    std::atomic<bool> foreignVisitReturned{false};
+    std::atomic<bool> reentrantEraseStarted{false};
+
+    std::thread foreignVisitor([&] {
+        const auto visited = registry.visit(&key, [&](Payload& payload) {
+            payload.visits.fetch_add(1, std::memory_order_relaxed);
+            foreignEntered.store(true, std::memory_order_release);
+            while (!releaseForeign.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            foreignExited.store(true, std::memory_order_release);
+        });
+        foreignVisitReturned.store(visited, std::memory_order_release);
+    });
+
+    while (!foreignEntered.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    std::thread releaser([&] {
+        while (!reentrantEraseStarted.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        releaseForeign.store(true, std::memory_order_release);
+    });
+
+    bool erased = false;
+    const auto selfVisited = registry.visit(&key, [&](Payload& payload) {
+        reentrantEraseStarted.store(true, std::memory_order_release);
+        erased = registry.eraseIfMatches(&key, &payload);
+        CHECK(foreignExited.load(std::memory_order_acquire));
+    });
+
+    releaser.join();
+    foreignVisitor.join();
+
+    CHECK(selfVisited);
+    CHECK(erased);
+    CHECK(foreignVisitReturned.load(std::memory_order_acquire));
+    CHECK_FALSE(registry.visit(&key, [](Payload&) {}));
+
+    registry.set(&key, &initial);
+    bool replaced = false;
+    CHECK(registry.visit(&key, [&](Payload& payload) {
+        CHECK(&payload == &initial);
+        registry.set(&key, &replacement);
+        replaced = true;
+    }));
+    CHECK(replaced);
+
+    bool sawReplacement = false;
+    CHECK(registry.visit(&key, [&](Payload& payload) {
+        sawReplacement = &payload == &replacement;
+    }));
+    CHECK(sawReplacement);
+}
