@@ -258,6 +258,23 @@ TEST_CASE("CLAP reinitialisation tears down an active native GUI before switchin
     hostSendCalls.store(0, std::memory_order_relaxed);
     CHECK(gui.send(&byte, 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
+
+    // Recreate for A and prove the new native callback belongs to A, then move
+    // back to B once more. This catches state that survives only after the first
+    // identity transition.
+    gui.init(&pluginA, &hostA);
+    REQUIRE(gui.create(api, false));
+    REQUIRE(gui.testHasNativeWebview());
+    CHECK(gui.testDeliverNativeMessage(&byte, 1));
+    CHECK(stateA.receiveCalls.load(std::memory_order_relaxed) == 1);
+    CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
+
+    gui.init(&pluginB, &hostB);
+    CHECK_FALSE(gui.testHasNativeWebview());
+    CHECK_FALSE(gui.testDeliverNativeMessage(&byte, 1));
+    CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
+    CHECK(gui.send(&byte, 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 2);
 }
 
 TEST_CASE("CLAP reinitialisation from a worker cannot steal GUI thread ownership")
