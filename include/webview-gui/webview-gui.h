@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef WEBVIEW_GUI_HEADER_ONLY
+#error WEBVIEW_GUI_HEADER_ONLY is unsupported for the plugin-safe profile; use the webview-gui CMake target so qualified private CHOC patches are applied
+#endif
+
 #include <functional>
 #include <vector>
 #include <string>
@@ -7,11 +11,7 @@
 
 namespace webview_gui {
 
-#ifdef WEBVIEW_GUI_HEADER_ONLY
-#	define WEBVIEW_GUI_IMPL inline
-#else
-#	define WEBVIEW_GUI_IMPL
-#endif
+#define WEBVIEW_GUI_IMPL
 
 struct WebviewGui {
 	enum class Platform {
@@ -88,7 +88,3 @@ private:
 } // namespace
 
 using WebviewGui = ::webview_gui::WebviewGui;
-
-#ifdef WEBVIEW_GUI_HEADER_ONLY
-#	include "./_impl/webview-gui.hxx"
-#endif

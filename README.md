@@ -21,7 +21,7 @@ The goals are:
 - serve bundled resources or resources supplied by a callback;
 - remain safe when many unrelated plug-ins and versions coexist in one DAW process;
 - keep all GUI/WebView work away from the real-time audio thread;
-- support both CMake and header-only integration.
+- provide a qualified private CMake integration for unloadable plug-in modules.
 
 ## Platform status
 
@@ -67,7 +67,7 @@ struct MyPlugin {
 };
 ```
 
-When included via CMake, the project builds the implementation source. For header-only integration, define `WEBVIEW_GUI_HEADER_ONLY` before including `webview-gui.h`.
+Production plug-in integration must use the repository CMake target. Standalone `WEBVIEW_GUI_HEADER_ONLY` integration is intentionally unsupported by the plug-in-safe profile and fails at compile time with a clear diagnostic. The native backends require generated, private CHOC hardening on macOS, Windows and Linux; compiling directly from the repository headers would otherwise either fail platform-specifically or silently bypass qualified unload/lifetime and security patches.
 
 ## Plug-in-safe build profile
 
@@ -80,7 +80,9 @@ add_subdirectory(external/webview-gui EXCLUDE_FROM_ALL)
 target_link_libraries(MyPlugin PRIVATE webview-gui)
 ```
 
-Do not install or link a shared `webview-gui`/CHOC runtime between unrelated audio plug-ins. Keep the pinned CHOC headers and all translation units which instantiate the header-only implementation inside the same plug-in target. If using `WEBVIEW_GUI_HEADER_ONLY`, define it consistently for the implementation-owning target and keep default symbol visibility hidden (`CXX_VISIBILITY_PRESET hidden`, `VISIBILITY_INLINES_HIDDEN YES`).
+For the stricter module-target helper, see [`PLUGIN_SAFE_CMAKE.md`](PLUGIN_SAFE_CMAKE.md).
+
+Do not install or link a shared `webview-gui`/CHOC runtime between unrelated audio plug-ins. Do not define `WEBVIEW_GUI_HEADER_ONLY` in a production plug-in. The supported CMake path generates the platform-specific private CHOC copy, applies drift-checked hardening, and puts that copy ahead of the immutable pinned submodule headers.
 
 For production builds, LTO/IPO and platform dead stripping are compatible with this private integration and are encouraged after the qualified Debug/sanitizer suite is green. Export only the ABI entry points required by the surrounding CLAP/VST3/AU wrapper; CHOC/webview-gui helpers are implementation details. WebKit, WebView2 and WebKitGTK remain OS/runtime dependencies rather than repository ABI exports.
 
@@ -190,6 +192,6 @@ Every push/PR runs a Debug build and test suite on:
 - Windows;
 - Linux.
 
-ASan + UBSan jobs also run on macOS and Linux. The qualification suite exercises independent plug-in modules, unload/reload and native host embedding; the macOS tests additionally validate Objective-C runtime isolation.
+ASan + UBSan jobs also run on macOS and Linux. The qualification suite exercises independent plug-in modules, unload/reload and native host embedding; the macOS tests additionally validate Objective-C runtime isolation. A separate external-consumer matrix verifies on macOS, Windows and Linux that standalone `WEBVIEW_GUI_HEADER_ONLY` fails closed with the documented diagnostic without linking the repository's internal CMake target.
 
-A CHOC revision bump is not considered qualified until this suite passes.
+A CHOC revision bump is not considered qualified until these suites pass.
