@@ -1,0 +1,55 @@
+name: Examples foundation
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'examples/**'
+      - '.github/workflows/examples-foundation.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: examples-foundation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-skeleton:
+    name: ${{ matrix.os }} example skeleton
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure example foundation
+        run: >-
+          cmake
+          -S .
+          -B build-examples
+          -DWEBVIEW_GUI_BUILD_EXAMPLES=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build skeleton CLAP
+        run: cmake --build build-examples --target webview_gui_example_skeleton --config Debug --parallel
+
+      - name: Run example tests
+        run: ctest --test-dir build-examples -C Debug --output-on-failure -R '^webview_gui_examples_'
