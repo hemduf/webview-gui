@@ -8,6 +8,7 @@ on:
       - 'fix/**'
   pull_request:
     paths:
+      - 'CMakeLists.txt'
       - 'examples/**'
       - '.github/workflows/examples-foundation.yml'
   workflow_dispatch:
@@ -37,12 +38,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Configure example foundation
+      - name: Configure top-level example integration
         run: >-
           cmake
-          -S examples
+          -S .
           -B build-examples
-          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_BUILD_EXAMPLES=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
