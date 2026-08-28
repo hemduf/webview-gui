@@ -51,7 +51,9 @@ if(LINUX_GUARD_POSITION EQUAL -1
     message(FATAL_ERROR "All CHOC platform startup paths must gate only the opted-in deferred navigation")
 endif()
 
-string(REGEX MATCHALL "navigate \\(\\{\\}\\);" AUTOMATIC_NAVIGATIONS "${CHOC_SOURCE}")
+# Match the call prefix only: a CMake list treats semicolons inside full matches
+# as separators, which would double-count otherwise-valid navigate({}) calls.
+string(REGEX MATCHALL "navigate \\(" AUTOMATIC_NAVIGATIONS "${CHOC_SOURCE}")
 list(LENGTH AUTOMATIC_NAVIGATIONS AUTOMATIC_NAVIGATION_COUNT)
 if(NOT AUTOMATIC_NAVIGATION_COUNT EQUAL 3)
     message(FATAL_ERROR "Raw CHOC startup navigation semantics must remain available on all three platforms")
