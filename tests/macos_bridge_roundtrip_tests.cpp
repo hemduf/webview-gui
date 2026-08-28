@@ -10,6 +10,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -20,6 +21,23 @@ namespace {
 void pumpMainRunLoop(double seconds = 0.01)
 {
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, true);
+}
+
+template <typename Predicate>
+bool pumpMainRunLoopUntil(Predicate&& predicate,
+                          std::chrono::steady_clock::duration timeout = std::chrono::seconds{10})
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate() && std::chrono::steady_clock::now() < deadline)
+        pumpMainRunLoop(0.01);
+    return predicate();
+}
+
+void pumpMainRunLoopFor(std::chrono::steady_clock::duration duration)
+{
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < deadline)
+        pumpMainRunLoop(0.01);
 }
 
 struct SelfDeletingReceiveState {
@@ -162,10 +180,10 @@ TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque
     // completed. The native bridge must retain this message until the hardened
     // page signals readiness; callers must not need polling/retry semantics.
     gui->send(expected.data(), expected.size());
-    for (int attempt = 0; attempt < 300 && !done.load(std::memory_order_acquire); ++attempt)
-        pumpMainRunLoop(0.01);
+    REQUIRE(pumpMainRunLoopUntil([&] {
+        return done.load(std::memory_order_acquire);
+    }));
 
-    REQUIRE(done.load(std::memory_order_acquire));
     CHECK(received == expected);
 }
 
@@ -195,10 +213,7 @@ TEST_CASE("public WebviewGui keeps receive target alive when the callback destro
     const unsigned char trigger = 0x42;
     gui->send(&trigger, 1);
 
-    for (int attempt = 0; attempt < 300 && !state->invoked; ++attempt)
-        pumpMainRunLoop(0.01);
-
-    REQUIRE(state->invoked);
+    REQUIRE(pumpMainRunLoopUntil([&] { return state->invoked; }));
     CHECK(gui == nullptr);
 
     // CHOC explicitly permits a binding callback to destroy its WebView. The
@@ -220,10 +235,7 @@ TEST_CASE("public ResourceGetter keeps its target alive when the callback destro
     REQUIRE(gui != nullptr);
     state->owner = &gui;
 
-    for (int attempt = 0; attempt < 300 && !state->destroyRequestSeen; ++attempt)
-        pumpMainRunLoop(0.01);
-
-    REQUIRE(state->destroyRequestSeen);
+    REQUIRE(pumpMainRunLoopUntil([&] { return state->destroyRequestSeen; }));
     CHECK(gui == nullptr);
     CHECK(state->liveTargetsAfterOwnerReset > 0);
 }
@@ -266,15 +278,11 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
         gui->send(&value, 1);
     }
 
-    for (int attempt = 0; attempt < 300 && received.size() < pendingLimit; ++attempt)
-        pumpMainRunLoop(0.01);
-
-    REQUIRE(received.size() >= pendingLimit);
+    REQUIRE(pumpMainRunLoopUntil([&] { return received.size() >= pendingLimit; }));
 
     // Keep pumping after the expected retained messages arrive so an unbounded
     // implementation deterministically exposes the extra queued messages.
-    for (int attempt = 0; attempt < 50; ++attempt)
-        pumpMainRunLoop(0.01);
+    pumpMainRunLoopFor(std::chrono::milliseconds{500});
 
     REQUIRE(received.size() == pendingLimit);
     for (std::size_t i = 0; i < pendingLimit; ++i)
