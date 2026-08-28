@@ -300,6 +300,10 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 			return choc::value::Value{true};
 		});
 
+		const auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
+		if (bridgeBootstrap.empty() || !wv.addInitScript(bridgeBootstrap))
+			return;
+
 		wv.navigate(startUri);
 	};
 

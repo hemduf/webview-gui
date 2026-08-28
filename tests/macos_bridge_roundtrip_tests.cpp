@@ -280,3 +280,51 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
     for (std::size_t i = 0; i < pendingLimit; ++i)
         CHECK(received[i] == static_cast<unsigned char>(i));
 }
+
+TEST_CASE("native WKWebView CSP blocks JavaScript eval while bridge remains operational")
+{
+    auto gui = WebviewGui::createUnique(
+        WebviewGui::COCOA,
+        "/index.html",
+        [](const char* path, WebviewGui::Resource& resource)
+        {
+            if (!path || std::string(path) != "/index.html")
+                return false;
+
+            static constexpr const char html[] =
+                "<!doctype html><html><head><title>csp-effective</title></head><body>"
+                "<script>setTimeout(()=>{try{eval(`window.postMessage(new Uint8Array([202]).buffer,'*')`)}catch(_){}},50)</script>"
+                "</body></html>";
+            resource.mediaType = "text/html";
+            resource.bytes.assign(html, html + sizeof(html) - 1);
+            return true;
+        });
+
+    REQUIRE(gui != nullptr);
+
+    std::atomic<bool> probeReceived{false};
+    std::atomic<bool> evalExecuted{false};
+    gui->receive = [&](const unsigned char* bytes, std::size_t size)
+    {
+        if (size != 1)
+            return;
+        if (bytes[0] == 0x42)
+            probeReceived.store(true, std::memory_order_release);
+        if (bytes[0] == 202)
+            evalExecuted.store(true, std::memory_order_release);
+    };
+
+    // Prove the document-start bootstrap and native bridge are live. The page's
+    // inline script is allowed, but its eval() would post 202 if CSP failed open.
+    const unsigned char probe = 0x42;
+    gui->send(&probe, 1);
+    for (int attempt = 0; attempt < 300 && !probeReceived.load(std::memory_order_acquire); ++attempt)
+        pumpMainRunLoop(0.01);
+
+    REQUIRE(probeReceived.load(std::memory_order_acquire));
+
+    for (int attempt = 0; attempt < 50; ++attempt)
+        pumpMainRunLoop(0.01);
+
+    CHECK_FALSE(evalExecuted.load(std::memory_order_acquire));
+}
