@@ -264,6 +264,17 @@ struct ClapWebviewGui {
         return false;
     }
 
+#ifdef WEBVIEW_GUI_TESTING
+    [[nodiscard]] bool testHasNativeWebview() const noexcept { return nativeWebview != nullptr; }
+
+    bool testDeliverNativeMessage(const void *buffer, size_t length) {
+        if (!nativeWebview || !nativeWebview->receive || (!buffer && length != 0))
+            return false;
+        nativeWebview->receive(static_cast<const unsigned char *>(buffer), length);
+        return true;
+    }
+#endif
+
 private:
     uint32_t width = 400, height = 250;
     const clap_plugin *plugin = nullptr;
