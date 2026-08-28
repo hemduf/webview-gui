@@ -1,6 +1,9 @@
 name: Header-only contract
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 

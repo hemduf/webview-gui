@@ -1,0 +1,35 @@
+name: Base64 safety
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: base64-safety-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  malformed-input:
+    name: ASan+UBSan malformed Base64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build regression test
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Iinclude tests/base64_decode_safety_tests.cpp \
+            -o base64_decode_safety_tests
+
+      - name: Run regression test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ./base64_decode_safety_tests
