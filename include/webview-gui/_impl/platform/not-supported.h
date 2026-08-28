@@ -20,7 +20,7 @@ WebviewGui * WebviewGui::create(Platform, const std::string &, ResourceGetter) {
 // None of these should ever be called, because no instances can ever be created
 WebviewGui::WebviewGui(WebviewGui::Impl *) {}
 WebviewGui::~WebviewGui() {}
-void WebviewGui::attach(void *) {}
+bool WebviewGui::attach(void *) { return false; }
 void WebviewGui::send(const unsigned char *, size_t) {}
 void WebviewGui::setSize(double, double) {}
 void WebviewGui::setVisible(bool) {}

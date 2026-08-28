@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Debug
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth
+
+      - name: Install Ninja on macOS
+        if: runner.os == 'macOS'
+        run: brew install ninja || true
+
+      - name: Install Ninja on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+
+      - name: Configure
+        run: cmake -S tests -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test Windows DPI contract
+        if: runner.os == 'Windows'
+        run: ctest --test-dir build --output-on-failure --timeout 60 -R '^webview_gui_windows_dpi_tests$'
+
+      - name: Test on Linux under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 60
+
+      - name: Test on macOS/Windows
+        if: runner.os != 'Linux'
+        run: ctest --test-dir build --output-on-failure --timeout 60
+
+      - name: Verify parent BUILD_SHARED_LIBS cannot change plug-in-safe linkage
+        run: cmake -S tests -B build-parent-shared -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON
+
+  sanitizers:
+    name: ${{ matrix.os }} / ASan+UBSan
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-linux.supp:print_suppressions=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth
+
+      - name: Install Ninja on macOS
+        if: runner.os == 'macOS'
+        run: brew install ninja || true
+
+      - name: Configure sanitizers
+        env:
+          CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+          LDFLAGS: -fsanitize=address,undefined
+        run: cmake -S tests -B build-sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build sanitizers
+        run: cmake --build build-sanitize --parallel
+
+      - name: Test Linux sanitizer core
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_core_tests$'
+
+      - name: Test Linux sanitizer realtime handoff
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_realtime_handoff_tests$'
+
+      - name: Test Linux sanitizer bridge security
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_bridge_security_tests$'
+
+      - name: Test Linux sanitizer CLAP adapter
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_clap_tests$'
+
+      - name: Test Linux sanitizer multi-module lifecycle
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ctest --test-dir build-sanitize --output-on-failure --timeout 60 -R '^webview_gui_linux_multimodule_lifecycle_tests$'
+
+      - name: Test Linux sanitizer GTK initialization baseline
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='GTK initialization baseline is sanitizer-observable' 2>&1 | tee gtk-init-sanitizer.log
+
+      - name: Test Linux sanitizer raw WebKit context baseline
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_runtime_baseline_tests --test-case='raw WebKitGTK context lifetime is sanitizer-observable' 2>&1 | tee webkit-context-sanitizer.log
+
+      - name: Test Linux sanitizer support negotiation
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='public support negotiation exposes only Linux X11 embedding'
+
+      - name: Test Linux sanitizer XEmbed smoke
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -o pipefail
+          xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC WebKitGTK view embeds into an XEmbed GtkSocket host' 2>&1 | tee webview-smoke-sanitizer.log
+
+      - name: Test Linux sanitizer XEmbed cycles
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed host survives repeated WebView attach and destroy cycles'
+
+      - name: Test Linux sanitizer invalid parents
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='XEmbed adapter rejects invalid parents and duplicate attachment'
+
+      - name: Test Linux sanitizer navigation policy
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='native WebKitGTK policy blocks remote top-level navigation before commit'
+
+      - name: Test Linux sanitizer lifetime cycles
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux lifetime releases GtkPlug and WebKit objects across cycles'
+
+      - name: Test Linux sanitizer JavaScript errors
+        if: runner.os == 'Linux' && always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: xvfb-run -a ./build-sanitize/webview_gui_linux_embed_tests --test-case='CHOC Linux JavaScript error completions release GLib errors'
+
+      - name: Upload Linux sanitizer diagnostics
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-sanitizer-diagnostics
+          if-no-files-found: error
+          path: |
+            gtk-init-sanitizer.log
+            webkit-context-sanitizer.log
+            webview-smoke-sanitizer.log
+
+      - name: Test sanitizers on macOS
+        if: runner.os == 'macOS'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-sanitize --output-on-failure --timeout 60
+
+  thread-sanitizer:
+    name: ubuntu-latest / TSan registry
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure ThreadSanitizer registry qualification
+        run: cmake -S tests -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DWEBVIEW_GUI_ENABLE_TSAN_TESTS=ON
+
+      - name: Build ThreadSanitizer registry qualification
+        run: cmake --build build-tsan --target webview_gui_callback_registry_tsan_tests --parallel
+
+      - name: Run ThreadSanitizer registry qualification
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 60 -R '^webview_gui_callback_registry_tsan_tests$'

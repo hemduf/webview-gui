@@ -1,0 +1,83 @@
+name: macOS plugin diagnostics
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zombies:
+    name: macOS Zombies lifecycle
+    runs-on: macos-latest
+    env:
+      MACOS_LIFECYCLE_REPEATS: "10"
+      MACOS_BRIDGE_REPEATS: "10"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Require Objective-C lifecycle diagnostics
+        shell: bash
+        env:
+          NSZombieEnabled: "YES"
+          NSDeallocateZombies: "NO"
+          MallocStackLogging: "1"
+        run: |
+          set -euo pipefail
+          test "${NSZombieEnabled:-}" = "YES"
+          test "${NSDeallocateZombies:-}" = "NO"
+          test "${MallocStackLogging:-}" = "1"
+
+      - name: Require hundreds-of-cycles lifecycle gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${MACOS_LIFECYCLE_REPEATS}" =~ ^[0-9]+$ ]]
+          test "${MACOS_LIFECYCLE_REPEATS}" -ge 10
+
+      - name: Require repeated bridge diagnostics gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${MACOS_BRIDGE_REPEATS}" =~ ^[0-9]+$ ]]
+          test "${MACOS_BRIDGE_REPEATS}" -ge 10
+
+      - name: Install Ninja
+        run: brew install ninja || true
+
+      - name: Configure diagnostics build
+        run: cmake -S tests -B build-macos-diagnostics -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build macOS lifecycle targets
+        run: |
+          cmake --build build-macos-diagnostics --target webview_gui_macos_isolation_tests --parallel
+          cmake --build build-macos-diagnostics --target webview_gui_macos_bridge_roundtrip_tests --parallel
+
+      - name: Run Objective-C Zombies lifecycle qualification
+        env:
+          NSZombieEnabled: "YES"
+          NSDeallocateZombies: "NO"
+          MallocStackLogging: "1"
+        run: |
+          set -euo pipefail
+          for iteration in $(seq 1 "${MACOS_LIFECYCLE_REPEATS}"); do
+            echo "macOS multi-module lifecycle repetition ${iteration}/${MACOS_LIFECYCLE_REPEATS}"
+            ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
+              -R '^webview_gui_macos_isolation_tests$'
+          done
+          for iteration in $(seq 1 "${MACOS_BRIDGE_REPEATS}"); do
+            echo "macOS public bridge repetition ${iteration}/${MACOS_BRIDGE_REPEATS}"
+            ctest --test-dir build-macos-diagnostics --output-on-failure --no-tests=error --timeout 180 \
+              -R '^webview_gui_macos_bridge_roundtrip_tests$'
+          done

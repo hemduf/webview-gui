@@ -1,0 +1,24 @@
+# Linux GTK/WebKit integration tests intentionally initialise system GUI runtimes
+# that retain process-lifetime caches on the GitHub Ubuntu runner. Keep these
+# suppressions narrow: LeakSanitizer remains enabled and all project-owned
+# WebKit/GObject lifetimes are asserted explicitly by linux_embed_tests.cpp.
+
+# AT-SPI accessibility bridge: gtk_init_check() alone leaves 56 bytes behind.
+leak:atk_bridge_adaptor_init
+
+# Fontconfig caches created when GTK/WebKit first resolves fonts.
+leak:libfontconfig.so.1
+
+# X11 GDK bookkeeping retained across GTK process teardown under Xvfb.
+leak:gdk_window_destroy
+leak:gdk_window_ensure_native
+
+# JavaScriptCore creates intrinsic atom/string state when WebKit first creates
+# a JS global object for a native bridge call. The multi-module bridge test
+# exercises independent A/B endpoints, unloads/reloads A, and drains all CHOC
+# callbacks before dlclose; its unsuppressed LSan run still ended with exactly
+# 264 bytes in 11 allocations whose common construction frame is
+# JSC::JSGlobalObject::finishCreation. Suppress only that construction frame,
+# rather than the JavaScriptCore library, so plug-in-owned callback/GObject
+# leaks and unrelated JSC allocations remain visible.
+leak:JSC::JSGlobalObject::finishCreation
