@@ -36,6 +36,11 @@ public:
         outputBuffer_.constant_mask = 0;
     }
 
+    StereoFloatBlock(const StereoFloatBlock &) = delete;
+    StereoFloatBlock &operator=(const StereoFloatBlock &) = delete;
+    StereoFloatBlock(StereoFloatBlock &&) = delete;
+    StereoFloatBlock &operator=(StereoFloatBlock &&) = delete;
+
     [[nodiscard]] uint32_t frames() const noexcept { return frameCount_; }
 
     void fillInput(float left, float right) noexcept {
@@ -79,6 +84,11 @@ public:
         interface_.size = sizeCallback;
         interface_.get = getCallback;
     }
+
+    InputEvents(const InputEvents &) = delete;
+    InputEvents &operator=(const InputEvents &) = delete;
+    InputEvents(InputEvents &&) = delete;
+    InputEvents &operator=(InputEvents &&) = delete;
 
     bool pushParamValue(uint32_t time,
                         clap_id paramId,
@@ -220,6 +230,11 @@ public:
         interface_.ctx = this;
         interface_.try_push = tryPushCallback;
     }
+
+    CapturedOutputEvents(const CapturedOutputEvents &) = delete;
+    CapturedOutputEvents &operator=(const CapturedOutputEvents &) = delete;
+    CapturedOutputEvents(CapturedOutputEvents &&) = delete;
+    CapturedOutputEvents &operator=(CapturedOutputEvents &&) = delete;
 
     [[nodiscard]] clap_output_events_t *clapOutputEvents() noexcept {
         return &interface_;
