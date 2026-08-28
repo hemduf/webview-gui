@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 namespace webview_gui::detail {
@@ -96,6 +97,7 @@ private:
                 return false;
 
             ++activeVisitors;
+            ++activeVisitorsByThread[std::this_thread::get_id()];
             result = value;
             return true;
         }
@@ -103,8 +105,16 @@ private:
         void end() noexcept
         {
             std::lock_guard lock{mutex};
+
+            const auto thread = std::this_thread::get_id();
+            const auto threadIt = activeVisitorsByThread.find(thread);
+            if (threadIt != activeVisitorsByThread.end()) {
+                if (--threadIt->second == 0)
+                    activeVisitorsByThread.erase(threadIt);
+            }
+
             --activeVisitors;
-            if (activeVisitors == 0)
+            if (!accepting)
                 drained.notify_all();
         }
 
@@ -112,13 +122,20 @@ private:
         {
             std::unique_lock lock{mutex};
             accepting = false;
-            drained.wait(lock, [&] { return activeVisitors == 0; });
+
+            const auto threadIt = activeVisitorsByThread.find(std::this_thread::get_id());
+            const auto visitorsOnCallingThread = threadIt == activeVisitorsByThread.end()
+                ? std::size_t{0}
+                : threadIt->second;
+
+            drained.wait(lock, [&] { return activeVisitors <= visitorsOnCallingThread; });
         }
 
         T* const value;
         std::mutex mutex;
         std::condition_variable drained;
         std::size_t activeVisitors = 0;
+        std::unordered_map<std::thread::id, std::size_t> activeVisitorsByThread;
         bool accepting = true;
     };
 
