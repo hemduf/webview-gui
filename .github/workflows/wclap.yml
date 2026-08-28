@@ -116,6 +116,23 @@ jobs:
           git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git .ci/clap-trap/wclap-bridge
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+
+          # The pinned clap-trap library has correct .wclap/.wasm auto-detection
+          # in PluginLoader::create(), but this CLI revision still bypasses it
+          # with PluginLoader::load(). Patch only the pinned CI checkout and fail
+          # closed if upstream changes, so this test actually enters Wasmtime.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.ci/clap-trap/examples/cli.cpp')
+          text = path.read_text()
+          needle = 'PluginLoader::load(opts.pluginPath)'
+          count = text.count(needle)
+          if count == 0:
+              raise SystemExit('pinned clap-trap CLI load pattern changed; revalidate WCLAP host patch')
+          path.write_text(text.replace(needle, 'PluginLoader::create(opts.pluginPath)'))
+          print(f'patched {count} clap-trap CLI loader call(s) for WCLAP auto-detection')
+          PY
+
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_TRAP_BUILD_TESTS=OFF
