@@ -82,3 +82,64 @@ foreach(PATCH_SOURCE IN ITEMS ROOT_CMAKE LINUX_PATCH MACOS_PATCH)
         message(FATAL_ERROR "${PATCH_SOURCE} does not wire the bootstrap lifecycle patch")
     endif()
 endforeach()
+
+# WebView2 registers document-start scripts asynchronously. In the opted-in
+# webview-gui profile, Navigate must remain deferred until every registration's
+# completion handler has reported success. Raw CHOC keeps its upstream behavior.
+set(WINDOWS_ASYNC_SOURCE [=[
+MIDL_INTERFACE("49511172-cc67-4bca-9923-137112f4c4cc")
+ICoreWebView2ExecuteScriptCompletedHandler : public IUnknown
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE Invoke (HRESULT, LPCWSTR) = 0;
+};
+
+    std::shared_ptr<DeletionChecker> deletionChecker { std::make_shared<DeletionChecker>() };
+
+    bool navigate (const std::string& url)
+    {
+        if (! coreWebView)
+            return false;
+
+        if (url.empty())
+            return navigate (defaultURI);
+
+        return coreWebView->Navigate (createUTF16StringFromUTF8 (url).c_str()) == S_OK;
+    }
+
+    bool addInitScript (const std::string& script)
+    {
+        if (! coreWebView)
+            return false;
+
+        return coreWebView->AddScriptToExecuteOnDocumentCreated (createUTF16StringFromUTF8 (script).c_str(), nullptr) == S_OK;
+    }
+]=])
+
+webview_gui_await_choc_windows_init_script_registration(WINDOWS_ASYNC_SOURCE)
+
+string(FIND "${WINDOWS_ASYNC_SOURCE}"
+    "ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler"
+    WINDOWS_COMPLETION_HANDLER_POSITION)
+string(FIND "${WINDOWS_ASYNC_SOURCE}"
+    "pendingInitScriptRegistrations"
+    WINDOWS_PENDING_POSITION)
+string(FIND "${WINDOWS_ASYNC_SOURCE}"
+    "deferredNavigation"
+    WINDOWS_DEFERRED_POSITION)
+string(FIND "${WINDOWS_ASYNC_SOURCE}"
+    "options.webviewGuiDeferInitialResourceNavigation"
+    WINDOWS_OPT_IN_POSITION)
+if(WINDOWS_COMPLETION_HANDLER_POSITION EQUAL -1
+   OR WINDOWS_PENDING_POSITION EQUAL -1
+   OR WINDOWS_DEFERRED_POSITION EQUAL -1
+   OR WINDOWS_OPT_IN_POSITION EQUAL -1)
+    message(FATAL_ERROR "Windows WebView2 navigation must await successful init-script registration")
+endif()
+
+string(FIND "${ROOT_CMAKE}"
+    "webview_gui_await_choc_windows_init_script_registration"
+    WINDOWS_ASYNC_PATCH_WIRED_POSITION)
+if(WINDOWS_ASYNC_PATCH_WIRED_POSITION EQUAL -1)
+    message(FATAL_ERROR "Windows private CHOC profile does not wire async init-script registration gating")
+endif()
