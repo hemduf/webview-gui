@@ -80,10 +80,11 @@ function(webview_gui_apply_choc_windows_resource_lifetime_patch content_var)
         content
         "${content}")
 
-    # WebView2 custom resources are normal HTTP-like responses, so enforce CSP
-    # in the native response headers instead of relying on HTML mutation.
-    set(WEBVIEW_GUI_RESOURCE_CSP_OLD [=[                headers.emplace_back ("Access-Control-Allow-Origin: https://choc.localhost");]=])
-    set(WEBVIEW_GUI_RESOURCE_CSP_NEW [=[                headers.emplace_back ("Access-Control-Allow-Origin: https://choc.localhost");
+    # This patch runs before the later repository-wide CORS narrowing, so anchor
+    # on CHOC's pinned wildcard response and leave that line intact for the next
+    # transformation. CSP is added here because this is the native response path.
+    set(WEBVIEW_GUI_RESOURCE_CSP_OLD [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");]=])
+    set(WEBVIEW_GUI_RESOURCE_CSP_NEW [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");
                 headers.emplace_back ("Content-Security-Policy: " + std::string (webview_gui::detail::pluginContentSecurityPolicy));]=])
 
     string(FIND "${content}"
