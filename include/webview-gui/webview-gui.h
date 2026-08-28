@@ -72,7 +72,10 @@ struct WebviewGui {
 	// UI thread only. Off-thread calls are ignored and never enter CHOC.
 	WEBVIEW_GUI_IMPL void send(const unsigned char *, size_t);
 	
-	// UI thread only. Off-thread calls are ignored and never enter the native GUI.
+	// UI thread only. trySetSize() reports whether the backend accepted/applied
+	// the request. setSize() remains as the source-compatible legacy convenience
+	// wrapper and intentionally discards that result.
+	WEBVIEW_GUI_IMPL bool trySetSize(double width, double height);
 	WEBVIEW_GUI_IMPL void setSize(double width, double height);
 	WEBVIEW_GUI_IMPL void setVisible(bool visible);
 private:
