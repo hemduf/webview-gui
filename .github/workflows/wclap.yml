@@ -22,6 +22,8 @@ jobs:
       WASI_VERSION_FULL: '33.0'
       WASI_ARCHIVE: wasi-sdk-33.0-x86_64-linux.tar.gz
       WASI_SHA256: 0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+      CLAP_TRAP_REV: c75d353dc57140cfceebf96dcbea9c491bef4f10
+      WCLAP_BRIDGE_REV: cd11d22afbe2af350f24cd56e6e0536e5ca86452
 
     steps:
       - name: Checkout
@@ -61,6 +63,58 @@ jobs:
           tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/module.wasm'
           tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/gui/index.html'
           node -e "const fs=require('fs'); const b=fs.readFileSync('build-wclap/WebviewGuiSmoke.wclap/module.wasm'); const m=new WebAssembly.Module(b); console.log(WebAssembly.Module.exports(m)); console.log(WebAssembly.Module.imports(m));"
+
+      - name: Verify incremental resource packaging
+        run: |
+          set -euo pipefail
+          marker="incremental-resource-$GITHUB_RUN_ID"
+          printf '\n<!-- %s -->\n' "${marker}" >> tests/wclap/resources/gui/index.html
+          cmake --build build-wclap --target webview_gui_wclap_smoke --parallel
+          grep -F "${marker}" build-wclap/WebviewGuiSmoke.wclap/gui/index.html
+          tar xOf build-wclap/WebviewGuiSmoke.wclap.tar.gz WebviewGuiSmoke.wclap/gui/index.html | grep -F "${marker}"
+
+          printf 'stale-resource\n' > tests/wclap/resources/gui/obsolete.txt
+          cmake --build build-wclap --target webview_gui_wclap_smoke --parallel
+          test -f build-wclap/WebviewGuiSmoke.wclap/gui/obsolete.txt
+          tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/gui/obsolete.txt'
+
+          rm tests/wclap/resources/gui/obsolete.txt
+          cmake --build build-wclap --target webview_gui_wclap_smoke --parallel
+          test ! -e build-wclap/WebviewGuiSmoke.wclap/gui/obsolete.txt
+          if tar tzf build-wclap/WebviewGuiSmoke.wclap.tar.gz | grep -F 'WebviewGuiSmoke.wclap/gui/obsolete.txt'; then
+            echo 'deleted resource survived in WCLAP archive' >&2
+            exit 1
+          fi
+          git checkout -- tests/wclap/resources/gui/index.html
+
+      - name: Verify multi-config bundle layout
+        run: |
+          cmake -S tests/wclap -B build-wclap-multi -G "Ninja Multi-Config" \
+            -DCMAKE_TOOLCHAIN_FILE="${WASI_SDK_PATH}/share/cmake/wasi-sdk-pthread.cmake"
+          cmake --build build-wclap-multi --config Debug --target webview_gui_wclap_smoke --parallel
+          test -f build-wclap-multi/WebviewGuiSmoke.wclap/module.wasm
+          test ! -e build-wclap-multi/WebviewGuiSmoke.wclap/Debug/module.wasm
+          test -f build-wclap-multi/WebviewGuiSmoke.wclap/gui/index.html
+          test -f build-wclap-multi/WebviewGuiSmoke.wclap.tar.gz
+
+      - name: Build pinned WCLAP lifecycle host
+        run: |
+          git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
+          git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
+          git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git .ci/clap-trap/wclap-bridge
+          git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
+          git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+          cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCLAP_TRAP_BUILD_TESTS=OFF
+          cmake --build build-clap-trap --target clap-trap-cli --parallel
+
+      - name: Execute real WCLAP CLAP lifecycle
+        run: |
+          ./build-clap-trap/clap-trap validate build-wclap/WebviewGuiSmoke.wclap --blocks 4
+          # A second fresh loader/instance catches unload/reload and repeated
+          # create/destroy regressions rather than testing only one lifetime.
+          ./build-clap-trap/clap-trap validate build-wclap/WebviewGuiSmoke.wclap --blocks 4
 
       - name: Upload WCLAP smoke artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
