@@ -54,7 +54,7 @@ struct ClapWebviewGui {
         destroy();
         plugin = initPlugin;
         host = initHost;
-        init();
+        initialiseCurrentIdentity();
     }
 
     void init() {
@@ -62,18 +62,7 @@ struct ClapWebviewGui {
             return;
         clearSelf(plugin);
         destroy();
-        uiThread.bindToCurrentThread();
-        pluginWebview = nullptr;
-        hostWebview = nullptr;
-        extHostWebview = nullptr;
-
-        if (plugin && plugin->get_extension)
-            pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
-        if (host && host->get_extension)
-            hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
-
-        extHostWebview = hostWebview;
-        setSelf(plugin);
+        initialiseCurrentIdentity();
     }
 
     [[nodiscard]] bool isOnGuiThread() const noexcept { return uiThread.isCurrentThread(); }
@@ -278,6 +267,21 @@ struct ClapWebviewGui {
 #endif
 
 private:
+    void initialiseCurrentIdentity() {
+        uiThread.bindToCurrentThread();
+        pluginWebview = nullptr;
+        hostWebview = nullptr;
+        extHostWebview = nullptr;
+
+        if (plugin && plugin->get_extension)
+            pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
+        if (host && host->get_extension)
+            hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
+
+        extHostWebview = hostWebview;
+        setSelf(plugin);
+    }
+
     uint32_t width = 400, height = 250;
     const clap_plugin *plugin = nullptr;
     const clap_host *host = nullptr;
