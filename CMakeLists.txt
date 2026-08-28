@@ -27,6 +27,8 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WebviewGuiChocBootstrapLifecyclePatch.cmake)
     webview_gui_disable_choc_automatic_resource_navigation(
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_await_choc_windows_init_script_registration(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WebviewGuiChocWindowsResourceLifetimePatch.cmake)
     webview_gui_apply_choc_windows_resource_lifetime_patch(
