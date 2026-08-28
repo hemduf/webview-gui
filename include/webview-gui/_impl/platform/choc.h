@@ -219,14 +219,15 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		std::optional<ChocResource> chocResource;
 		if (!impl->isOnGuiThread()) return chocResource;
 
-		// Pin the user callable independently of the CHOC Options/Pimpl that owns
-		// this wrapper. ResourceGetter is allowed to destroy its WebviewGui; after
-		// that point this callback must only touch stack-local state.
+		// Pin both inputs independently of the CHOC Options/Pimpl that owns this
+		// wrapper. ResourceGetter is allowed to destroy its WebviewGui; after the
+		// user callback begins this wrapper must touch only stack-local state.
 		auto resourceGetter = getter;
+		const auto resourcePath = path;
 		Resource resource;
-		if (!resourceGetter || !resourceGetter(path.c_str(), resource)) return chocResource;
+		if (!resourceGetter || !resourceGetter(resourcePath.c_str(), resource)) return chocResource;
 		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
-		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(path.c_str());
+		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(resourcePath.c_str());
 
 		if (detail::startsWithASCIIInsensitive(resource.mediaType, "text/html")) {
 			if (!detail::applyPluginHTMLHardening(resource.bytes))
