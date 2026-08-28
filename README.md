@@ -28,6 +28,7 @@ The goals are:
 - **macOS / Cocoa:** CHOC-backed embedding is implemented and tested. The plug-in-safe adapter uses the system `WKWebView` class instead of CHOC's persistent dynamic `WKWebView` subclass, so an unloadable plug-in does not leave Objective-C methods pointing into its Mach-O image.
 - **Windows / HWND:** CHOC/WebView2 child-window embedding is implemented. The plug-in-safe profile isolates CHOC window classes per plug-in DLL, balances COM ownership, and guards navigation/native messages by origin.
 - **Linux / X11:** CHOC/WebKitGTK embedding into a host-owned XEmbed `GtkSocket` is implemented, including resize, visibility and keyboard-focus qualification.
+- **WASI / WebAssembly (WCLAP):** explicit WebView-only mode is implemented. No Cocoa/HWND/X11/CHOC view is created in the WASM module; `ClapWebviewGui` negotiates the host-owned `clap.webview/3` path instead.
 - **Wayland:** not advertised as embedded CLAP GUI support.
 
 The CHOC revision used for qualification is pinned in the submodule and documented in `CHOC_PIN.md`.
@@ -176,6 +177,55 @@ struct MyClapPlugin {
 };
 ```
 
+## WCLAP / WASI / WebAssembly
+
+WCLAP uses the same C++ CLAP implementation as the native plug-in. Only the GUI transport changes: the WASM module cannot construct `WKWebView`, WebView2 or WebKitGTK, so `webview-gui` selects an explicit `webview-only` backend and `ClapWebviewGui` operates through the host-provided `clap.webview/3` extension.
+
+`CLAP_WINDOW_API_WEBVIEW` is advertised only when both directions are usable: the plug-in exposes complete WebView callbacks and the host exposes `clap_host_webview.send`. It is embedded/non-floating, uses logical dimensions, rejects `set_scale()`, accepts the spec-defined null `clap_window.ptr`, and keeps `create`/`show`/`hide`/`destroy` state instance-local. Cocoa, HWND and X11 APIs remain unavailable in a WASM build.
+
+The WCLAP helper is [`cmake/WebviewGuiWclap.cmake`](cmake/WebviewGuiWclap.cmake). A CLAP-first target can be projected to WCLAP without duplicating its DSP/state implementation:
+
+```cmake
+add_subdirectory(external/webview-gui EXCLUDE_FROM_ALL)
+
+add_executable(MyPlugin_wclap clap_entry.cpp)
+target_link_libraries(MyPlugin_wclap PRIVATE MyPluginImplementation webview-gui)
+
+include(external/webview-gui/cmake/WebviewGuiWclap.cmake)
+webview_gui_configure_wclap_target(MyPlugin_wclap
+    OUTPUT_NAME MyPlugin
+    RESOURCE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/resources
+)
+```
+
+For WASI SDK, configure with its pthread toolchain because the CLAP GUI adapter's main-thread lifetime registry uses standard C++ mutex/thread primitives outside the audio callback:
+
+```bash
+cmake -S tests/wclap -B build-wclap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK_PATH/share/cmake/wasi-sdk-pthread.cmake"
+cmake --build build-wclap --target webview_gui_wclap_smoke --parallel
+python3 tests/wclap/verify_wasm.py \
+  build-wclap/WebviewGuiSmoke.wclap/module.wasm
+```
+
+CI pins **WASI SDK 33.0** (including its published SHA-256) and the same CLAP SDK commit used by the native tests. The helper emits the WCLAP ABI shape expected by current WCLAP hosts: a reactor module exporting `clap_entry`, `malloc` and exactly one growable function table. Emscripten is also supported by the helper with the equivalent standalone-WASM/no-entry profile.
+
+Bundle layout:
+
+```text
+WebviewGuiSmoke.wclap/
+├── module.wasm
+└── gui/
+    └── index.html
+
+WebviewGuiSmoke.wclap.tar.gz
+```
+
+The CI smoke gate checks the WASM magic/version, required exports/table/memory contract, copied WebView resources, archive layout, and that Node's WebAssembly engine can parse the module. It does not pretend to validate DSP that is not yet present in this repository.
+
+The production Gain/PolySynth WCLAP host tests described by issue #30 depend on the example foundation in #28 (and the Gain/PolySynth implementation tickets). Once those targets land, they should call the same helper and add factory/create/activate/process/state/polyphonic tests to this gate rather than forking a WCLAP-specific processor.
+
 ## TDD and CI
 
 Tests use **doctest 2.5.3** and are run through CTest.
@@ -191,6 +241,8 @@ Every push/PR runs a Debug build and test suite on:
 - macOS;
 - Windows;
 - Linux.
+
+A dedicated WCLAP workflow also builds and inspects the WASI smoke bundle using the pinned WASI SDK.
 
 ASan + UBSan jobs also run on macOS and Linux. The qualification suite exercises independent plug-in modules, unload/reload and native host embedding; the macOS tests additionally validate Objective-C runtime isolation. A separate external-consumer matrix verifies on macOS, Windows and Linux that standalone `WEBVIEW_GUI_HEADER_ONLY` fails closed with the documented diagnostic without linking the repository's internal CMake target.
 
