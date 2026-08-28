@@ -11,6 +11,13 @@ function(webview_gui_apply_choc_windows_resource_lifetime_patch content_var)
     set(WEBVIEW_GUI_RESOURCE_CALLBACK_PROLOGUE_NEW [=[        try
         {
             // Resource callbacks are allowed to destroy the owning WebViewGui.
+            // Keep an independent STA reference alive for the complete native
+            // callback: owner destruction releases the wrapper's apartment, but
+            // WebView2 still needs COM to build and attach the response below.
+            webview_gui::detail::ScopedCOMApartment resourceCallbackApartment;
+            if (! resourceCallbackApartment.ok())
+                return E_FAIL;
+
             // Snapshot every Pimpl-owned value needed after user code runs so
             // the remainder of this callback never dereferences a destroyed
             // CHOC Pimpl. The COM environment is AddRef'd by the local COMPtr.
