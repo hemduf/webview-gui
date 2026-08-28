@@ -49,11 +49,11 @@ public:
     }
 
     [[nodiscard]] float *inputChannel(std::size_t channel) noexcept {
-        return inputChannels_.at(channel);
+        return channel < inputChannels_.size() ? inputChannels_[channel] : nullptr;
     }
 
     [[nodiscard]] float *outputChannel(std::size_t channel) noexcept {
-        return outputChannels_.at(channel);
+        return channel < outputChannels_.size() ? outputChannels_[channel] : nullptr;
     }
 
     [[nodiscard]] clap_audio_buffer_t *input() noexcept { return &inputBuffer_; }
@@ -73,7 +73,8 @@ private:
 
 class InputEvents {
 public:
-    InputEvents() noexcept {
+    explicit InputEvents(std::size_t reserveCount = 32) {
+        events_.reserve(reserveCount);
         interface_.ctx = this;
         interface_.size = sizeCallback;
         interface_.get = getCallback;
@@ -125,7 +126,7 @@ public:
                   int16_t key,
                   double velocity) {
         if (type != CLAP_EVENT_NOTE_ON && type != CLAP_EVENT_NOTE_OFF &&
-            type != CLAP_EVENT_NOTE_CHOKE && type != CLAP_EVENT_NOTE_END)
+            type != CLAP_EVENT_NOTE_CHOKE)
             return false;
 
         clap_event_note_t event{};
@@ -139,7 +140,7 @@ public:
     }
 
     bool pushNoteExpression(uint32_t time,
-                            int32_t expressionId,
+                            clap_note_expression expressionId,
                             int32_t noteId,
                             int16_t portIndex,
                             int16_t channel,
@@ -212,6 +213,9 @@ private:
 
 class CapturedOutputEvents {
 public:
+    static constexpr std::size_t kMaxEvents = 64;
+    static constexpr std::size_t kMaxEventBytes = 256;
+
     CapturedOutputEvents() noexcept {
         interface_.ctx = this;
         interface_.try_push = tryPushCallback;
@@ -221,46 +225,48 @@ public:
         return &interface_;
     }
 
-    [[nodiscard]] std::size_t size() const noexcept { return events_.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return eventCount_; }
 
     [[nodiscard]] const clap_event_header_t *header(std::size_t index) const noexcept {
-        return index < events_.size() ? &events_[index].header : nullptr;
+        return index < eventCount_ ? &events_[index].header : nullptr;
     }
 
-    [[nodiscard]] const std::vector<std::byte> *bytes(std::size_t index) const noexcept {
-        return index < events_.size() ? &events_[index].bytes : nullptr;
+    [[nodiscard]] const std::byte *bytes(std::size_t index) const noexcept {
+        return index < eventCount_ ? events_[index].bytes.data() : nullptr;
     }
 
-    void clear() noexcept { events_.clear(); }
+    [[nodiscard]] std::size_t byteSize(std::size_t index) const noexcept {
+        return index < eventCount_ ? events_[index].size : 0;
+    }
+
+    void clear() noexcept { eventCount_ = 0; }
 
 private:
     struct CapturedEvent {
         clap_event_header_t header{};
-        std::vector<std::byte> bytes;
+        std::array<std::byte, kMaxEventBytes> bytes{};
+        std::size_t size = 0;
     };
-
-    static constexpr uint32_t kMaxCapturedEventBytes = 4096;
 
     static bool CLAP_ABI tryPushCallback(const clap_output_events_t *list,
                                          const clap_event_header_t *event) noexcept {
         if (!event || event->size < sizeof(clap_event_header_t) ||
-            event->size > kMaxCapturedEventBytes)
+            event->size > kMaxEventBytes)
             return false;
 
         auto *self = static_cast<CapturedOutputEvents *>(list->ctx);
-        try {
-            CapturedEvent captured;
-            captured.header = *event;
-            captured.bytes.resize(event->size);
-            std::memcpy(captured.bytes.data(), event, event->size);
-            self->events_.push_back(std::move(captured));
-            return true;
-        } catch (...) {
+        if (self->eventCount_ >= kMaxEvents)
             return false;
-        }
+
+        auto &captured = self->events_[self->eventCount_++];
+        captured.header = *event;
+        captured.size = event->size;
+        std::memcpy(captured.bytes.data(), event, event->size);
+        return true;
     }
 
-    std::vector<CapturedEvent> events_;
+    std::array<CapturedEvent, kMaxEvents> events_{};
+    std::size_t eventCount_ = 0;
     clap_output_events_t interface_{};
 };
 
