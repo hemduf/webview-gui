@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -63,6 +64,69 @@ struct SelfDeletingReceive {
     std::shared_ptr<SelfDeletingReceiveState> state;
 };
 
+struct SelfDeletingResourceState {
+    WebviewGui::UniquePtr* owner = nullptr;
+    std::size_t liveTargets = 0;
+    std::size_t liveTargetsAfterOwnerReset = 0;
+    bool destroyRequestSeen = false;
+};
+
+struct SelfDeletingResource {
+    explicit SelfDeletingResource(std::shared_ptr<SelfDeletingResourceState> stateIn)
+        : state(std::move(stateIn))
+    {
+        ++state->liveTargets;
+    }
+
+    SelfDeletingResource(const SelfDeletingResource& other)
+        : state(other.state)
+    {
+        ++state->liveTargets;
+    }
+
+    SelfDeletingResource(SelfDeletingResource&& other) noexcept
+        : state(std::move(other.state))
+    {
+    }
+
+    ~SelfDeletingResource()
+    {
+        if (state)
+            --state->liveTargets;
+    }
+
+    bool operator()(const char* path, WebviewGui::Resource& resource) const
+    {
+        auto keepStateAlive = state;
+        if (!path)
+            return false;
+
+        const std::string requested{path};
+        if (requested == "/index.html") {
+            static constexpr char html[] =
+                "<!doctype html><html><head><title>resource-self-delete</title></head>"
+                "<body><img src=\"/destroy.bin\"></body></html>";
+            resource.mediaType = "text/html";
+            resource.bytes.assign(html, html + sizeof(html) - 1);
+            return true;
+        }
+
+        if (requested != "/destroy.bin")
+            return false;
+
+        keepStateAlive->destroyRequestSeen = true;
+        if (keepStateAlive->owner)
+            keepStateAlive->owner->reset();
+
+        keepStateAlive->liveTargetsAfterOwnerReset = keepStateAlive->liveTargets;
+        resource.mediaType = "application/octet-stream";
+        resource.bytes = {0x42};
+        return true;
+    }
+
+    std::shared_ptr<SelfDeletingResourceState> state;
+};
+
 } // namespace
 
 TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque bytes through WKWebView")
@@ -94,9 +158,6 @@ TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque
         done.store(true, std::memory_order_release);
     };
 
-    // Deliberately send exactly once before the asynchronous document load has
-    // completed. The native bridge must retain this message until the hardened
-    // page signals readiness; callers must not need polling/retry semantics.
     gui->send(expected.data(), expected.size());
     for (int attempt = 0; attempt < 300 && !done.load(std::memory_order_acquire); ++attempt)
         pumpMainRunLoop(0.01);
@@ -136,11 +197,26 @@ TEST_CASE("public WebviewGui keeps receive target alive when the callback destro
 
     REQUIRE(state->invoked);
     CHECK(gui == nullptr);
+    CHECK(state->liveTargetsAfterOwnerReset > 0);
+}
 
-    // CHOC explicitly permits a binding callback to destroy its WebView. The
-    // public wrapper must therefore keep its receive callable alive until that
-    // invocation returns, rather than destroying the currently-executing target
-    // as a side effect of WebviewGui destruction.
+TEST_CASE("public ResourceGetter keeps its target alive when the callback destroys the GUI")
+{
+    auto state = std::make_shared<SelfDeletingResourceState>();
+
+    auto gui = WebviewGui::createUnique(
+        WebviewGui::COCOA,
+        "/index.html",
+        WebviewGui::ResourceGetter{SelfDeletingResource{state}});
+
+    REQUIRE(gui != nullptr);
+    state->owner = &gui;
+
+    for (int attempt = 0; attempt < 300 && !state->destroyRequestSeen; ++attempt)
+        pumpMainRunLoop(0.01);
+
+    REQUIRE(state->destroyRequestSeen);
+    CHECK(gui == nullptr);
     CHECK(state->liveTargetsAfterOwnerReset > 0);
 }
 
@@ -173,10 +249,6 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
             received.push_back(bytes[0]);
     };
 
-    // No run-loop pumping occurs before these sends, so the page cannot have
-    // signalled bridge readiness yet. A plug-in host must not be able to grow
-    // native memory without bound by repeatedly publishing UI state during this
-    // asynchronous startup window.
     for (std::size_t i = 0; i < sentCount; ++i) {
         const auto value = static_cast<unsigned char>(i);
         gui->send(&value, 1);
@@ -187,8 +259,6 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
 
     REQUIRE(received.size() >= pendingLimit);
 
-    // Keep pumping after the expected retained messages arrive so an unbounded
-    // implementation deterministically exposes the extra queued messages.
     for (int attempt = 0; attempt < 50; ++attempt)
         pumpMainRunLoop(0.01);
 
