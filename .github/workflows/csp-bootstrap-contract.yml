@@ -29,3 +29,6 @@ jobs:
 
       - name: Run contract test
         run: ./csp_bootstrap_contract_tests
+
+      - name: Verify bootstrap-before-navigation lifecycle
+        run: cmake -P tests/choc_bootstrap_lifecycle_contract.cmake
