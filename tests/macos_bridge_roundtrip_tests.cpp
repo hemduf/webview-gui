@@ -158,6 +158,9 @@ TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque
         done.store(true, std::memory_order_release);
     };
 
+    // Deliberately send exactly once before the asynchronous document load has
+    // completed. The native bridge must retain this message until the hardened
+    // page signals readiness; callers must not need polling/retry semantics.
     gui->send(expected.data(), expected.size());
     for (int attempt = 0; attempt < 300 && !done.load(std::memory_order_acquire); ++attempt)
         pumpMainRunLoop(0.01);
@@ -197,6 +200,11 @@ TEST_CASE("public WebviewGui keeps receive target alive when the callback destro
 
     REQUIRE(state->invoked);
     CHECK(gui == nullptr);
+
+    // CHOC explicitly permits a binding callback to destroy its WebView. The
+    // public wrapper must therefore keep its receive callable alive until that
+    // invocation returns, rather than destroying the currently-executing target
+    // as a side effect of WebviewGui destruction.
     CHECK(state->liveTargetsAfterOwnerReset > 0);
 }
 
@@ -249,6 +257,10 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
             received.push_back(bytes[0]);
     };
 
+    // No run-loop pumping occurs before these sends, so the page cannot have
+    // signalled bridge readiness yet. A plug-in host must not be able to grow
+    // native memory without bound by repeatedly publishing UI state during this
+    // asynchronous startup window.
     for (std::size_t i = 0; i < sentCount; ++i) {
         const auto value = static_cast<unsigned char>(i);
         gui->send(&value, 1);
@@ -259,6 +271,8 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
 
     REQUIRE(received.size() >= pendingLimit);
 
+    // Keep pumping after the expected retained messages arrive so an unbounded
+    // implementation deterministically exposes the extra queued messages.
     for (int attempt = 0; attempt < 50; ++attempt)
         pumpMainRunLoop(0.01);
 
