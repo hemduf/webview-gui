@@ -1,0 +1,50 @@
+name: Header-only contract
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  standalone-header-only-fails-closed:
+    name: ${{ matrix.os }} standalone header-only diagnostic
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure standalone consumer
+        shell: bash
+        run: >-
+          cmake
+          -S tests/header_only_consumer
+          -B build/header-only-consumer
+          -DWEBVIEW_GUI_SOURCE_DIR="$GITHUB_WORKSPACE"
+
+      - name: Build standalone header-only consumer (expected to fail closed)
+        id: header_only_build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build/header-only-consumer --config Debug 2>&1 | tee header-only-build.log
+
+      - name: Verify fail-closed contract and diagnostic
+        shell: bash
+        run: |
+          if [[ "${{ steps.header_only_build.outcome }}" != "failure" ]]; then
+            echo "Standalone WEBVIEW_GUI_HEADER_ONLY unexpectedly compiled; plugin-safe qualification was bypassed."
+            exit 1
+          fi
+          grep -F "WEBVIEW_GUI_HEADER_ONLY is unsupported for the plugin-safe profile" header-only-build.log
