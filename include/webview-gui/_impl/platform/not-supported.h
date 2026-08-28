@@ -22,7 +22,8 @@ WebviewGui::WebviewGui(WebviewGui::Impl *) {}
 WebviewGui::~WebviewGui() {}
 bool WebviewGui::attach(void *) { return false; }
 void WebviewGui::send(const unsigned char *, size_t) {}
-void WebviewGui::setSize(double, double) {}
+bool WebviewGui::trySetSize(double, double) { return false; }
+void WebviewGui::setSize(double width, double height) { (void) trySetSize(width, height); }
 void WebviewGui::setVisible(bool) {}
 
 } // namespace
