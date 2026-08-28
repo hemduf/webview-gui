@@ -38,10 +38,81 @@ const void* CLAP_ABI hostExtensionWithWebview(const clap_host_t*, const char* id
     return nullptr;
 }
 
+struct PluginWebviewState {
+    std::atomic<int> receiveCalls{0};
+    std::atomic<int> resourceCalls{0};
+};
+
+int32_t CLAP_ABI pluginWebviewGetUri(const clap_plugin_t*, char* uri, uint32_t uriCapacity)
+{
+    static constexpr char value[] = "/index.html";
+    constexpr auto length = static_cast<int32_t>(sizeof(value) - 1);
+    if (!uri || uriCapacity <= static_cast<uint32_t>(length))
+        return length + 1;
+    std::memcpy(uri, value, sizeof(value));
+    return length;
+}
+
+bool CLAP_ABI pluginWebviewGetResource(const clap_plugin_t* plugin,
+                                       const char*,
+                                       char* mime,
+                                       uint32_t mimeCapacity,
+                                       const clap_ostream_t* stream)
+{
+    if (!plugin || !stream || !stream->write)
+        return false;
+
+    auto* state = static_cast<PluginWebviewState*>(plugin->plugin_data);
+    if (state)
+        state->resourceCalls.fetch_add(1, std::memory_order_relaxed);
+
+    static constexpr char mimeType[] = "text/html";
+    if (!mime || mimeCapacity < sizeof(mimeType))
+        return false;
+    std::memcpy(mime, mimeType, sizeof(mimeType));
+
+    static constexpr char html[] =
+        "<!doctype html><html><head><title>clap reinit</title></head><body></body></html>";
+    constexpr auto htmlSize = static_cast<uint64_t>(sizeof(html) - 1);
+    return stream->write(stream, html, htmlSize) == static_cast<int64_t>(htmlSize);
+}
+
+bool CLAP_ABI pluginWebviewReceive(const clap_plugin_t* plugin, const void*, uint32_t)
+{
+    if (!plugin)
+        return false;
+    auto* state = static_cast<PluginWebviewState*>(plugin->plugin_data);
+    if (!state)
+        return false;
+    state->receiveCalls.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+webview_gui::clap_plugin_webview pluginWebviewExtension{
+    pluginWebviewGetUri,
+    pluginWebviewGetResource,
+    pluginWebviewReceive,
+};
+
+const void* CLAP_ABI pluginExtensionWithWebview(const clap_plugin_t*, const char* id)
+{
+    if (id && std::strcmp(id, webview_gui::CLAP_EXT_WEBVIEW) == 0)
+        return &pluginWebviewExtension;
+    return nullptr;
+}
+
 clap_plugin_t makePlugin()
 {
     clap_plugin_t plugin{};
     plugin.get_extension = noPluginExtension;
+    return plugin;
+}
+
+clap_plugin_t makePluginWithWebview(PluginWebviewState& state)
+{
+    clap_plugin_t plugin{};
+    plugin.plugin_data = &state;
+    plugin.get_extension = pluginExtensionWithWebview;
     return plugin;
 }
 
@@ -57,6 +128,19 @@ clap_host_t makeHostWithWebview()
     clap_host_t host{};
     host.get_extension = hostExtensionWithWebview;
     return host;
+}
+
+const char* nativeClapApi()
+{
+#if defined(__APPLE__)
+    return CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    return CLAP_WINDOW_API_WIN32;
+#elif defined(__linux__)
+    return CLAP_WINDOW_API_X11;
+#else
+    return nullptr;
+#endif
 }
 
 template <typename T, typename = void>
@@ -140,6 +224,40 @@ TEST_CASE("CLAP reinitialisation unregisters the previous plugin key")
     CHECK(probeGui.extPluginGui->get_size(&pluginB, &width, &height));
     CHECK(width == 777);
     CHECK(height == 333);
+}
+
+TEST_CASE("CLAP reinitialisation tears down an active native GUI before switching identity")
+{
+    PluginWebviewState stateA;
+    PluginWebviewState stateB;
+    auto hostA = makeHost();
+    auto hostB = makeHostWithWebview();
+    auto pluginA = makePluginWithWebview(stateA);
+    auto pluginB = makePluginWithWebview(stateB);
+
+    webview_gui::ClapWebviewGui gui{&pluginA, &hostA};
+    gui.init();
+
+    const auto* api = nativeClapApi();
+    REQUIRE(api != nullptr);
+    REQUIRE(gui.create(api, false));
+    REQUIRE(gui.testHasNativeWebview());
+
+    gui.init(&pluginB, &hostB);
+
+    // Once identity changes to B, no WebView created for A may remain reachable.
+    CHECK_FALSE(gui.testHasNativeWebview());
+
+    const unsigned char byte = 0x5a;
+    CHECK_FALSE(gui.testDeliverNativeMessage(&byte, 1));
+    CHECK(stateA.receiveCalls.load(std::memory_order_relaxed) == 0);
+    CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
+
+    // B must use B's host extension rather than silently sending through A's
+    // stale native WebView.
+    hostSendCalls.store(0, std::memory_order_relaxed);
+    CHECK(gui.send(&byte, 1));
+    CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
 }
 
 TEST_CASE("CLAP reinitialisation from a worker cannot steal GUI thread ownership")
