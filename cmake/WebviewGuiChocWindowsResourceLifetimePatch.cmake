@@ -21,7 +21,7 @@ function(webview_gui_apply_choc_windows_resource_lifetime_patch content_var)
             // Snapshot every Pimpl-owned value needed after user code runs so
             // the remainder of this callback never dereferences a destroyed
             // CHOC Pimpl. The COM environment is AddRef'd by the local COMPtr.
-            COMPtr<ICoreWebView2Environment> resourceEnvironment (coreWebViewEnvironment);
+            COMPtr<ICoreWebView2Environment> resourceEnvironment (coreWebViewEnvironment.object);
             if (! resourceEnvironment)
                 return E_FAIL;
 
