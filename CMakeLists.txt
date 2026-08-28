@@ -304,5 +304,8 @@ endif()
 option(WEBVIEW_GUI_BUILD_EXAMPLES "Build the CLAP example targets" OFF)
 if(WEBVIEW_GUI_BUILD_EXAMPLES)
     include(CTest)
-    add_subdirectory(examples EXCLUDE_FROM_ALL)
+    # Enabling examples is explicit, so keep their targets in the parent IDE
+    # project as well. EXCLUDE_FROM_ALL would remove them from Visual Studio's
+    # generated solution and make `cmake --build --target` fail on Windows.
+    add_subdirectory(examples)
 endif()
