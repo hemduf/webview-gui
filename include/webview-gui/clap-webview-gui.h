@@ -82,9 +82,10 @@ struct ClapWebviewGui {
     }
 
     bool create(const char *api, bool is_floating) {
-        if (!isOnGuiThread() || !api) return false;
+        if (!isOnGuiThread() || !api || guiCreated) return false;
         if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) {
             nativePlatform = WebviewGui::NONE;
+            guiCreated = true;
             return true;
         }
         if (is_floating) return false;
@@ -164,6 +165,7 @@ struct ClapWebviewGui {
                 && pluginWebview && pluginWebview->receive && plugin)
                 pluginWebview->receive(plugin, (const void *)bytes, uint32_t(length));
         };
+        guiCreated = true;
         return true;
     }
 
@@ -173,6 +175,7 @@ struct ClapWebviewGui {
             nativeWebview->receive = {};
         nativeWebview.reset();
         nativePlatform = WebviewGui::NONE;
+        guiCreated = false;
     }
 
     bool setScale(double) { return isOnGuiThread(); }
@@ -289,6 +292,7 @@ private:
     detail::ThreadAffinity uiThread;
     std::unique_ptr<WebviewGui> nativeWebview;
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
+    bool guiCreated = false;
 
     inline static detail::CallbackRegistry<ClapWebviewGui> pluginRegistry;
 
@@ -406,7 +410,9 @@ private:
         return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.adjustSize(w, h); });
     }
     static bool gui_set_size(const clap_plugin *plugin, uint32_t w, uint32_t h) {
-        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setSize(w, h); });
+        return visitSelf(plugin, [&](ClapWebviewGui& self) {
+            return self.guiCreated && self.setSize(w, h);
+        });
     }
     static bool gui_set_parent(const clap_plugin *plugin, const clap_window *window) {
         return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setParent(window); });
