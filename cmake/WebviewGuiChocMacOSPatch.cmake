@@ -137,6 +137,44 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    # In CHOC the WKWebView class holder is a function-local static. In an
+    # unloadable header-only plug-in DSO, ASan can observe that inline static
+    # storage being coalesced/reused across dlclose/reload and report a write
+    # into stale global storage when the holder is reconstructed. The plug-in
+    # profile disables both features implemented by CHOC's WKWebView subclass,
+    # so no dynamic subclass is needed in that configuration. Keep upstream
+    # behavior whenever either subclass feature is requested, but allocate the
+    # process-resident system WKWebView directly when both are disabled.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW [=[    id allocateWebview()
+    {
+        static WebviewClass c;
+        return objc::call<id> ((id) c.webviewClass, "alloc");
+    }]=])
+
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_ALLOCATE_WEBVIEW [=[    id allocateWebview()
+    {
+        if (! options->acceptsFirstMouseClick
+            && ! options->enableDefaultClipboardKeyShortcutsInSafari)
+            return objc::call<id> ((id) objc_getClass ("WKWebView"), "alloc");
+
+        static WebviewClass c;
+        return objc::call<id> ((id) c.webviewClass, "alloc");
+    }]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW}"
+        WEBVIEW_GUI_CHOC_MACOS_ALLOCATE_WEBVIEW_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_ALLOCATE_WEBVIEW_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS WebView allocator changed; refusing to bypass plug-in-local static class storage without revalidation")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_ALLOCATE_WEBVIEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     # Objective-C associated-object keys are pointer identities. A string literal
     # is unsuitable for independently loaded plug-in DSOs because literal storage
     # may be coalesced across images. Inject one internal-linkage byte into the
