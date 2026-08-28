@@ -115,5 +115,41 @@ function(webview_gui_apply_choc_windows_resource_lifetime_patch content_var)
             "${content}")
     endforeach()
 
+    set(WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_OLD [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) override
+        {
+            if (deletionCheckerRef->deleted)
+                return E_FAIL;
+
+            return ownerPimpl.onResourceRequested (args);
+        }]=])
+
+    set(WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_NEW [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) override
+        {
+            if (deletionCheckerRef->deleted)
+                return E_FAIL;
+
+            // The resource callback may synchronously destroy ownerPimpl and
+            // release its eventHandler COMPtr. Hold one explicit reference until
+            // Invoke() is ready to return so this handler cannot disappear from
+            // underneath the active COM callback.
+            AddRef();
+            const auto result = ownerPimpl.onResourceRequested (args);
+            Release();
+            return result;
+        }]=])
+
+    string(FIND "${content}"
+        "${WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_OLD}"
+        WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_OFFSET)
+    if(WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC Windows resource event handler changed; refusing to build without revalidating the self-destruction lifetime patch")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_OLD}"
+        "${WEBVIEW_GUI_RESOURCE_EVENT_INVOKE_NEW}"
+        content
+        "${content}")
+
     set(${content_var} "${content}" PARENT_SCOPE)
 endfunction()
