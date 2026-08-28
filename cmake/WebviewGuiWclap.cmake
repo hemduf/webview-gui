@@ -20,6 +20,12 @@ function(webview_gui_configure_wclap_target target)
         message(FATAL_ERROR "webview_gui_configure_wclap_target: '${target}' is not a target")
     endif()
 
+    get_target_property(_target_type ${target} TYPE)
+    if(NOT _target_type STREQUAL "EXECUTABLE")
+        message(FATAL_ERROR
+            "webview_gui_configure_wclap_target: WCLAP modules are WebAssembly executables/reactors; '${target}' is ${_target_type}")
+    endif()
+
     set(_webview_gui_is_wasm FALSE)
     if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "WASI")
         set(_webview_gui_is_wasm TRUE)
@@ -41,6 +47,9 @@ function(webview_gui_configure_wclap_target target)
     set(_archive "${CMAKE_CURRENT_BINARY_DIR}/${_bundle_name}.tar.gz")
 
     target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
+    if(TARGET webview-gui)
+        target_compile_definitions(webview-gui PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
+    endif()
 
     # Match the WCLAP ABI shape used by clap-wrapper: reactor (no main), SIMD,
     # exported CLAP entry/allocation symbols and a growable exported function
