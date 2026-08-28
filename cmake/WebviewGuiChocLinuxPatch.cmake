@@ -1,5 +1,7 @@
 include_guard(GLOBAL)
 
+include("${CMAKE_CURRENT_LIST_DIR}/WebviewGuiChocBootstrapLifecyclePatch.cmake")
+
 # Apply ownership/lifetime fixes to the pinned CHOC WebKitGTK backend without
 # modifying the submodule. Every replacement is exact and drift-checked so a
 # future CHOC update fails configuration until the patch is revalidated.
@@ -9,6 +11,8 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
     endif()
 
     file(READ "${input_file}" WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_disable_choc_automatic_resource_navigation(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     # WebKitWebContext is a normal GObject returned with transfer-full ownership,
     # not a GInitiallyUnowned object. ref_sink() therefore adds an unmatched ref.

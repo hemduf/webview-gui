@@ -1,5 +1,9 @@
+include("${CMAKE_CURRENT_LIST_DIR}/WebviewGuiChocBootstrapLifecyclePatch.cmake")
+
 function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
     file(READ "${source_file}" WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_disable_choc_automatic_resource_navigation(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     set(WEBVIEW_GUI_CHOC_MACOS_OLD_TEARDOWN [=[    ~Pimpl()
     {
