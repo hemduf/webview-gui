@@ -175,6 +175,27 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    # WKURLSchemeHandler builds an NSHTTPURLResponse for each local resource.
+    # Add CSP there so policy enforcement is independent of HTML parsing.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS [=[                id headerKeys[]    = { getNSString ("Content-Length"), getNSString ("Content-Type"), getNSString ("Cache-Control"), getNSString ("Access-Control-Allow-Origin") };
+                id headerObjects[] = { getNSString (contentLength),    getNSString (mimeType),       getNSString ("no-store") ,     getNSString ("*") };]=])
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_RESOURCE_HEADERS [=[                id headerKeys[]    = { getNSString ("Content-Length"), getNSString ("Content-Type"), getNSString ("Cache-Control"), getNSString ("Access-Control-Allow-Origin"), getNSString ("Content-Security-Policy") };
+                id headerObjects[] = { getNSString (contentLength),    getNSString (mimeType),       getNSString ("no-store") ,     getNSString ("*"),                           getNSString (webview_gui::detail::pluginContentSecurityPolicy.data()) };]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS}"
+        WEBVIEW_GUI_CHOC_MACOS_RESOURCE_HEADERS_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_RESOURCE_HEADERS_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS resource response headers changed; refusing to build without native CSP enforcement")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_RESOURCE_HEADERS}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     # Objective-C associated-object keys are pointer identities. A string literal
     # is unsuitable for independently loaded plug-in DSOs because literal storage
     # may be coalesced across images. Inject one internal-linkage byte into the

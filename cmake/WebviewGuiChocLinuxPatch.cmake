@@ -173,6 +173,28 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    # WebKitGTK custom-scheme responses support real HTTP response headers.
+    # Attach the policy there so malformed/inert HTML cannot redirect it.
+    set(WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD [=[                        soup_message_headers_append (headers, "Cache-Control", "no-store");
+                        soup_message_headers_append (headers, "Access-Control-Allow-Origin", "*");]=])
+    set(WEBVIEW_GUI_CHOC_CSP_HEADERS_NEW [=[                        soup_message_headers_append (headers, "Cache-Control", "no-store");
+                        soup_message_headers_append (headers, "Access-Control-Allow-Origin", "*");
+                        soup_message_headers_append (headers, "Content-Security-Policy",
+                                                     webview_gui::detail::pluginContentSecurityPolicy.data());]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD}"
+        WEBVIEW_GUI_CHOC_CSP_HEADERS_OFFSET)
+    if(WEBVIEW_GUI_CHOC_CSP_HEADERS_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC Linux resource response headers changed; refusing to build without native CSP enforcement")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD}"
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_NEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     get_filename_component(WEBVIEW_GUI_CHOC_PATCH_OUTPUT_DIR "${output_file}" DIRECTORY)
     file(MAKE_DIRECTORY "${WEBVIEW_GUI_CHOC_PATCH_OUTPUT_DIR}")
     file(WRITE "${output_file}"
