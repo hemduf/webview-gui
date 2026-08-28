@@ -21,6 +21,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <objbase.h>
 #elif defined(__linux__)
 #include <gtk/gtk.h>
 #endif
@@ -70,6 +71,9 @@ struct SelfDeletingResourceState {
     std::size_t liveTargets = 0;
     std::size_t liveTargetsAfterOwnerReset = 0;
     bool destroyRequestSeen = false;
+#if defined(_WIN32)
+    bool comApartmentStayedSta = false;
+#endif
 };
 
 struct SelfDeletingResource {
@@ -119,6 +123,16 @@ struct SelfDeletingResource {
         if (keepStateAlive->owner)
             keepStateAlive->owner->reset();
 
+#if defined(_WIN32)
+        // WebView2 still needs COM after ResourceGetter returns to construct and
+        // attach the response. Destroying the public owner must therefore not
+        // drop the last STA reference while this native callback is in flight.
+        const auto mtaProbe = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        keepStateAlive->comApartmentStayedSta = mtaProbe == RPC_E_CHANGED_MODE;
+        if (mtaProbe == S_OK || mtaProbe == S_FALSE)
+            CoUninitialize();
+#endif
+
         keepStateAlive->liveTargetsAfterOwnerReset = keepStateAlive->liveTargets;
         resource.mediaType = "application/octet-stream";
         resource.bytes = {0x42};
@@ -148,6 +162,9 @@ TEST_CASE("native ResourceGetter survives destroying its owning WebviewGui")
     REQUIRE(pumpUntil([&] { return state->destroyRequestSeen; }, std::chrono::seconds(20)));
     CHECK(gui == nullptr);
     CHECK(state->liveTargetsAfterOwnerReset > 0);
+#if defined(_WIN32)
+    CHECK(state->comApartmentStayedSta);
+#endif
 
     // Drain native teardown work while all test/module code remains loaded.
     for (int i = 0; i < 16; ++i) {
