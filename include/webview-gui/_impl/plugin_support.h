@@ -437,7 +437,11 @@ inline bool findHTMLHardeningInsertionPoint(std::string_view html,
                                             std::size_t& insertion,
                                             bool& createHead) noexcept
 {
-    std::size_t cursor = 0;
+    const bool hasUTF8BOM = html.size() >= 3
+        && static_cast<unsigned char>(html[0]) == 0xEFu
+        && static_cast<unsigned char>(html[1]) == 0xBBu
+        && static_cast<unsigned char>(html[2]) == 0xBFu;
+    std::size_t cursor = hasUTF8BOM ? 3u : 0u;
 
     // Only emulate the browser states which can exist before the document head
     // has been created. Once any other token is seen, HTML creates an implicit
