@@ -4,8 +4,20 @@
 #include <clap/clap.h>
 
 #include <cstring>
+#include <type_traits>
 
 namespace {
+
+using webview_gui::examples::test_support::CapturedOutputEvents;
+using webview_gui::examples::test_support::InputEvents;
+using webview_gui::examples::test_support::StereoFloatBlock;
+
+static_assert(!std::is_copy_constructible_v<StereoFloatBlock>);
+static_assert(!std::is_move_constructible_v<StereoFloatBlock>);
+static_assert(!std::is_copy_constructible_v<InputEvents>);
+static_assert(!std::is_move_constructible_v<InputEvents>);
+static_assert(!std::is_copy_constructible_v<CapturedOutputEvents>);
+static_assert(!std::is_move_constructible_v<CapturedOutputEvents>);
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) {
     return nullptr;
@@ -29,12 +41,12 @@ const clap_host_t kHost{
 };
 
 bool testReusableEventAndAudioHelpers() {
-    using namespace webview_gui::examples::test_support;
-
     StereoFloatBlock block{8};
     block.fillInput(0.25f, -0.5f);
     if (block.frames() != 8 || block.input()->channel_count != 2 ||
         block.output()->channel_count != 2)
+        return false;
+    if (!block.inputChannel(0) || !block.inputChannel(1) || block.inputChannel(2) != nullptr)
         return false;
     if (block.inputChannel(0)[3] != 0.25f || block.inputChannel(1)[3] != -0.5f)
         return false;
@@ -51,6 +63,8 @@ bool testReusableEventAndAudioHelpers() {
         return false;
     if (events.pushParamValue(2, 7, 1.0))
         return false; // timestamps must remain monotonic
+    if (events.pushNote(CLAP_EVENT_NOTE_END, 7, 42, 0, 1, 60, 0.0))
+        return false; // NOTE_END is plugin -> host only
 
     const auto *inputEvents = events.clapInputEvents();
     if (inputEvents->size(inputEvents) != 4)
@@ -58,7 +72,8 @@ bool testReusableEventAndAudioHelpers() {
     if (inputEvents->get(inputEvents, 0)->time != 3 ||
         inputEvents->get(inputEvents, 1)->type != CLAP_EVENT_PARAM_MOD ||
         inputEvents->get(inputEvents, 2)->type != CLAP_EVENT_NOTE_ON ||
-        inputEvents->get(inputEvents, 3)->type != CLAP_EVENT_NOTE_EXPRESSION)
+        inputEvents->get(inputEvents, 3)->type != CLAP_EVENT_NOTE_EXPRESSION ||
+        inputEvents->get(inputEvents, 4) != nullptr)
         return false;
 
     CapturedOutputEvents captured;
@@ -76,7 +91,19 @@ bool testReusableEventAndAudioHelpers() {
     if (!outputEvents->try_push(outputEvents, &noteEnd.header))
         return false;
     if (captured.size() != 1 || captured.header(0)->type != CLAP_EVENT_NOTE_END ||
-        captured.header(0)->time != 7)
+        captured.header(0)->time != 7 || captured.byteSize(0) != sizeof(noteEnd) ||
+        captured.bytes(0) == nullptr)
+        return false;
+
+    for (std::size_t i = 1; i < CapturedOutputEvents::kMaxEvents; ++i) {
+        if (!outputEvents->try_push(outputEvents, &noteEnd.header))
+            return false;
+    }
+    if (outputEvents->try_push(outputEvents, &noteEnd.header))
+        return false; // fixed capacity keeps process-time capture allocation-free
+
+    captured.clear();
+    if (captured.size() != 0)
         return false;
 
     return true;
