@@ -2,47 +2,93 @@
 
 #include <vector>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <cstring>
 
 namespace webview_gui { namespace helpers {
 
-inline void decodeBase64(const char *base64, std::vector<unsigned char> &binary) {
-	auto done = [](char c) -> bool {
-		return !c || c == '=';
+inline bool decodeBase64(std::string_view base64, std::vector<unsigned char> &binary) {
+	auto unmap = [](char c, unsigned char &value) -> bool {
+		if (c >= 'A' && c <= 'Z') {
+			value = static_cast<unsigned char>(c - 'A');
+			return true;
+		}
+		if (c >= 'a' && c <= 'z') {
+			value = static_cast<unsigned char>(c - 'a' + 26);
+			return true;
+		}
+		if (c >= '0' && c <= '9') {
+			value = static_cast<unsigned char>(c - '0' + 52);
+			return true;
+		}
+		if (c == '+') {
+			value = 62;
+			return true;
+		}
+		if (c == '/') {
+			value = 63;
+			return true;
+		}
+		return false;
 	};
-	auto unmap = [](char c) -> unsigned char {
-		if (c >= 'a') return c - char('a' - 26);
-		if (c >= 'A') return c - 'A';
-		if (c >= '0') return c + char(52 - '0');
-		return (c == '+') ? 62 : 63;
-	};
-	while (1) {
-		char c = *(base64++);
-		if (done(c)) break;
-		auto v0 = unmap(c);
 
-		c = *(base64++);
-		auto v1 = unmap(c);
-		// All 6 bits of v0, top 2 bits of v1
-		binary.push_back((v0<<2)|(v1>>4));
+	if (base64.empty()) return true;
+	if ((base64.size() % 4u) != 0u) return false;
 
-		c = *(base64++);
-		if (done(c)) break;
-		auto v2 = unmap(c);
-		// Bottom 4 bits of v1, top 4 bits of v2
-		binary.push_back(((v1&0x0F)<<4)|(v2>>2));
+	std::vector<unsigned char> decoded;
+	decoded.reserve((base64.size() / 4u) * 3u);
 
-		c = *(base64++);
-		if (done(c)) break;
-		auto v3 = unmap(c);
-		// Bottom 2 bits of v2, all 6 bits of v3
-		binary.push_back(((v2&0x03)<<6)|v3);
+	for (size_t offset = 0; offset < base64.size(); offset += 4u) {
+		const auto c0 = base64[offset];
+		const auto c1 = base64[offset + 1u];
+		const auto c2 = base64[offset + 2u];
+		const auto c3 = base64[offset + 3u];
+		const bool isLastQuantum = offset + 4u == base64.size();
+		const bool pad2 = c2 == '=';
+		const bool pad3 = c3 == '=';
+
+		if (c0 == '=' || c1 == '=') return false;
+		if ((pad2 || pad3) && !isLastQuantum) return false;
+		if (pad2 && !pad3) return false;
+
+		unsigned char v0 = 0;
+		unsigned char v1 = 0;
+		if (!unmap(c0, v0) || !unmap(c1, v1)) return false;
+
+		if (pad2) {
+			if ((v1 & 0x0Fu) != 0u) return false;
+			decoded.push_back(static_cast<unsigned char>((v0 << 2u) | (v1 >> 4u)));
+			continue;
+		}
+
+		unsigned char v2 = 0;
+		if (!unmap(c2, v2)) return false;
+		decoded.push_back(static_cast<unsigned char>((v0 << 2u) | (v1 >> 4u)));
+
+		if (pad3) {
+			if ((v2 & 0x03u) != 0u) return false;
+			decoded.push_back(static_cast<unsigned char>(((v1 & 0x0Fu) << 4u) | (v2 >> 2u)));
+			continue;
+		}
+
+		unsigned char v3 = 0;
+		if (!unmap(c3, v3)) return false;
+		decoded.push_back(static_cast<unsigned char>(((v1 & 0x0Fu) << 4u) | (v2 >> 2u)));
+		decoded.push_back(static_cast<unsigned char>(((v2 & 0x03u) << 6u) | v3));
 	}
+
+	binary.insert(binary.end(), decoded.begin(), decoded.end());
+	return true;
+}
+
+inline bool decodeBase64(const char *base64, std::vector<unsigned char> &binary) {
+	if (!base64) return false;
+	return decodeBase64(std::string_view{base64}, binary);
 }
 inline std::vector<unsigned char> decodeBase64(const char *base64) {
 	std::vector<unsigned char> binary;
-	decodeBase64(base64, binary);
+	(void)decodeBase64(base64, binary);
 	return binary;
 }
 
@@ -548,4 +594,3 @@ inline std::string guessMediaType(const char *path) {
 }
 
 }} // namespace
-
