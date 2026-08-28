@@ -219,8 +219,12 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		std::optional<ChocResource> chocResource;
 		if (!impl->isOnGuiThread()) return chocResource;
 
+		// Pin the user callable independently of the CHOC Options/Pimpl that owns
+		// this wrapper. ResourceGetter is allowed to destroy its WebviewGui; after
+		// that point this callback must only touch stack-local state.
+		auto resourceGetter = getter;
 		Resource resource;
-		if (!getter || !getter(path.c_str(), resource)) return chocResource;
+		if (!resourceGetter || !resourceGetter(path.c_str(), resource)) return chocResource;
 		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
 		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(path.c_str());
 
