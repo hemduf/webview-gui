@@ -35,6 +35,11 @@ int main()
     expectSuccess("Zm9v", {'f', 'o', 'o'});
     expectSuccess("AAEC/w==", {0x00, 0x01, 0x02, 0xff});
 
+    // Preserve the helper's historical append semantics for valid data.
+    std::vector<unsigned char> appended{0x7f};
+    assert(decode("Zg==", appended));
+    assert((appended == std::vector<unsigned char>{0x7f, 'f'}));
+
     // Lengths 1, 2 and 3 are incomplete Base64 quanta and must never read
     // beyond the supplied view.
     expectFailure("A");
@@ -56,9 +61,14 @@ int main()
     expectFailure("Zm8=\n");
     expectFailure("Zm8*");
 
-    // The C-string compatibility overload must share the same validation.
+    // The C-string compatibility overload must share the same validation and
+    // reject null pointers without touching the caller's existing output.
     std::vector<unsigned char> cStringOutput{0x33};
     assert(!webview_gui::helpers::decodeBase64("A", cStringOutput));
+    assert((cStringOutput == std::vector<unsigned char>{0x33}));
+
+    const char* nullInput = nullptr;
+    assert(!webview_gui::helpers::decodeBase64(nullInput, cStringOutput));
     assert((cStringOutput == std::vector<unsigned char>{0x33}));
 
     return 0;
