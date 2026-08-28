@@ -246,11 +246,6 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
 		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(resourcePath.c_str());
 
-		if (detail::startsWithASCIIInsensitive(resource.mediaType, "text/html")) {
-			if (!detail::applyPluginHTMLHardening(resource.bytes))
-				return chocResource;
-		}
-
 		chocResource.emplace();
 		chocResource->data = std::move(resource.bytes);
 		chocResource->mimeType = std::move(resource.mediaType);
