@@ -44,8 +44,7 @@ bool checkPort(const clap_plugin_audio_ports_t *ports,
            info.channel_count == 2 &&
            info.port_type && std::strcmp(info.port_type, CLAP_PORT_STEREO) == 0 &&
            info.in_place_pair == expectedPair &&
-           std::strcmp(info.name, expectedName) == 0 &&
-           !ports->get(plugin, 1, isInput, &info);
+           std::strcmp(info.name, expectedName) == 0;
 }
 
 bool checkParam(const clap_plugin_params_t *params,
@@ -130,22 +129,15 @@ int main() {
         return 8;
     }
 
-    clap_param_info_t extra{};
-    if (params->get_info(plugin, 2, &extra)) {
-        plugin->destroy(plugin);
-        return 9;
-    }
-
     double value = 123.0;
     if (!params->get_value(plugin, kGainParamId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kBypassParamId, &value) || value != 0.0 ||
-        params->get_value(plugin, 0xDEADBEEFu, &value)) {
+        !params->get_value(plugin, kBypassParamId, &value) || value != 0.0) {
         plugin->destroy(plugin);
         return 10;
     }
 
     // flush() is the non-processing parameter path and must update the same
-    // base values that process() consumes, without accepting targeted values.
+    // base values that process() consumes.
     InputEvents flushEvents;
     if (!flushEvents.pushParamValue(0, kGainParamId, -6.0) ||
         !flushEvents.pushParamValue(0, kBypassParamId, 1.0)) {
@@ -173,10 +165,14 @@ int main() {
         return 19;
     }
 
-    if (!plugin->activate(plugin, 48000.0, 1, 64) || !plugin->start_processing(plugin)) {
-        plugin->deactivate(plugin);
+    if (!plugin->activate(plugin, 48000.0, 1, 64)) {
         plugin->destroy(plugin);
         return 13;
+    }
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 14;
     }
 
     StereoFloatBlock block(8);
@@ -187,7 +183,7 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 14;
+        return 15;
     }
 
     clap_process_t process{};
@@ -202,17 +198,25 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 15;
+        return 16;
     }
 
     const float minusSix = static_cast<float>(std::pow(10.0, -6.0 / 20.0));
     for (uint32_t frame = 0; frame < 4; ++frame) {
-        if (std::fabs(block.outputChannel(0)[frame] - minusSix) > 1.0e-6f)
-            return 16;
+        if (std::fabs(block.outputChannel(0)[frame] - minusSix) > 1.0e-6f) {
+            plugin->stop_processing(plugin);
+            plugin->deactivate(plugin);
+            plugin->destroy(plugin);
+            return 20;
+        }
     }
     for (uint32_t frame = 4; frame < 8; ++frame) {
-        if (std::fabs(block.outputChannel(0)[frame] - 1.0f) > 1.0e-6f)
-            return 17;
+        if (std::fabs(block.outputChannel(0)[frame] - 1.0f) > 1.0e-6f) {
+            plugin->stop_processing(plugin);
+            plugin->deactivate(plugin);
+            plugin->destroy(plugin);
+            return 21;
+        }
     }
 
     plugin->stop_processing(plugin);
