@@ -187,6 +187,21 @@ bool matchesOneOfTwoRetuned(const RenderResult &audio,
     }
     return true;
 }
+
+bool matchesRestart(const RenderResult &audio,
+                    std::uint32_t restartFrame,
+                    double key) noexcept {
+    const double increment = incrementForKey(key);
+    for (std::uint32_t frame = restartFrame; frame < audio.left.size(); ++frame) {
+        const double phase = 0.25 +
+                             static_cast<double>(frame - restartFrame) * increment;
+        const float expected = sineAt(phase);
+        if (std::fabs(audio.left[frame] - expected) > 1.0e-5f ||
+            std::fabs(audio.right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
 }
 
 int main() {
@@ -286,6 +301,25 @@ int main() {
     if (render(invalidAddress, invalidAddressEvents, invalidAddressAudio)) {
         std::cerr << "invalid NOTE_EXPRESSION channel was accepted\n";
         return 12;
+    }
+
+    // Hosts without note IDs legitimately reuse the exact same identity. With a
+    // one-voice allocator, the second NOTE_ON replaces the prior generation in
+    // the same slot. Expression state from the old generation must not survive
+    // merely because the identity tuple compares equal.
+    ParameterVoiceEngine sameIdentityReuse;
+    if (!sameIdentityReuse.configure(1, kSampleRate, 16) ||
+        !sameIdentityReuse.setAmpEnvelope(0, 0, 1.0f, 16))
+        return 13;
+    InputEvents sameIdentityReuseEvents;
+    sameIdentityReuseEvents.pushNote(0, -1, 60);
+    sameIdentityReuseEvents.pushTuning(4, 1.0, -1);
+    sameIdentityReuseEvents.pushNote(8, -1, 60);
+    RenderResult sameIdentityReuseAudio;
+    if (!render(sameIdentityReuse, sameIdentityReuseEvents, sameIdentityReuseAudio) ||
+        !matchesRestart(sameIdentityReuseAudio, 8, 60.0)) {
+        std::cerr << "same-identity voice reuse retained the previous generation expression\n";
+        return 14;
     }
 
     return 0;
