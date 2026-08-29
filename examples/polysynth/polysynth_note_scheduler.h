@@ -91,7 +91,10 @@ public:
             const auto *header = events->get(events, eventIndex);
             if (!header || header->size < sizeof(clap_event_header_t))
                 return false;
-            if (header->time > framesCount ||
+            // CLAP process event offsets address actual samples in this block.
+            // `framesCount` is the first offset outside the block, not a valid
+            // event timestamp.
+            if (header->time >= framesCount ||
                 (havePreviousTime && header->time < previousTime))
                 return false;
 
