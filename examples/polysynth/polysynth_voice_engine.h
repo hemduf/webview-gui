@@ -274,6 +274,18 @@ public:
         return true;
     }
 
+    // CLAP VOLUME note expression is a per-voice linear gain in (0, 4]. Keep it
+    // independent from velocity/envelope state so expression changes are
+    // sample-accurate without rewriting ADSR levels or lifecycle state.
+    bool setVoiceVolumeExpression(VoiceAllocator::VoiceIndex index,
+                                  float gain) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(gain) || gain <= 0.0f || gain > 4.0f)
+            return false;
+        voices_[index].noteExpressionGain = gain;
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
@@ -374,6 +386,7 @@ private:
         float sustainTarget = 0.0f;
         float level = 0.0f;
         float stageStep = 0.0f;
+        float noteExpressionGain = 1.0f;
         float panLeftGain = 1.0f;
         float panRightGain = 1.0f;
         std::uint32_t stageRemaining = 0;
@@ -748,8 +761,9 @@ private:
                 if (!voice.active || voice.deferredReleaseCompletion)
                     continue;
 
-                const double oscillator =
-                    oscillatorSample(voice) * static_cast<double>(voice.level);
+                const double oscillator = oscillatorSample(voice) *
+                                          static_cast<double>(voice.level) *
+                                          static_cast<double>(voice.noteExpressionGain);
                 const auto filteredSample = static_cast<float>(processFilter(voice, oscillator));
                 leftMix += filteredSample * voice.panLeftGain;
                 rightMix += filteredSample * voice.panRightGain;
