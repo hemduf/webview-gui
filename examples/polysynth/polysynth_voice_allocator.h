@@ -100,14 +100,19 @@ public:
         return allocateDetailed(identity).voiceIndex;
     }
 
-    bool releaseExact(const VoiceIdentity &identity) noexcept {
-        const auto index = findExact(identity);
-        if (index == kInvalidVoice)
+    bool releaseAt(VoiceIndex index, const VoiceIdentity &expectedIdentity) noexcept {
+        if (index >= capacity_ || !slots_[index].active ||
+            slots_[index].identity != expectedIdentity)
             return false;
 
         slots_[index] = {};
         --activeCount_;
         return true;
+    }
+
+    bool releaseExact(const VoiceIdentity &identity) noexcept {
+        const auto index = findExact(identity);
+        return index != kInvalidVoice && releaseAt(index, identity);
     }
 
 private:
