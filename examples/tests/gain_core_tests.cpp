@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 
 namespace {
 
@@ -19,6 +20,17 @@ bool expectSample(float actual, float expected, const char *label, std::size_t f
 
     std::cerr << label << " frame " << frame << ": expected " << expected
               << ", got " << actual << '\n';
+    return false;
+}
+
+bool expectGain(const webview_gui::examples::gain::GainProcessor &processor,
+                double expected,
+                const char *label) {
+    if (processor.gainDb() == expected)
+        return true;
+
+    std::cerr << label << ": expected gain " << expected
+              << " dB, got " << processor.gainDb() << " dB\n";
     return false;
 }
 
@@ -64,6 +76,10 @@ int main() {
     }
 
     processor.setBypassed(true);
+    if (!processor.bypassed()) {
+        std::cerr << "bypass state was not retained\n";
+        return 1;
+    }
     if (!processor.process(inputs, outputs, static_cast<uint32_t>(leftIn.size())))
         return 1;
 
@@ -74,6 +90,10 @@ int main() {
     }
 
     processor.setBypassed(false);
+    if (processor.bypassed()) {
+        std::cerr << "bypass state did not clear\n";
+        return 1;
+    }
     if (!processor.setGainDb(6.0)) {
         std::cerr << "+6 dB was rejected\n";
         return 1;
@@ -99,6 +119,57 @@ int main() {
             !expectSample(inPlaceRight[i], originalRight[i] * plusSix,
                           "in-place right", i))
             return 1;
+    }
+
+    if (!processor.setGainDb(GainProcessor::kMinimumGainDb)
+        || !expectGain(processor, GainProcessor::kMinimumGainDb, "minimum boundary")) {
+        std::cerr << "minimum gain boundary was rejected\n";
+        return 1;
+    }
+    if (!processor.setGainDb(GainProcessor::kMaximumGainDb)
+        || !expectGain(processor, GainProcessor::kMaximumGainDb, "maximum boundary")) {
+        std::cerr << "maximum gain boundary was rejected\n";
+        return 1;
+    }
+
+    constexpr double preservedGain = 3.0;
+    if (!processor.setGainDb(preservedGain))
+        return 1;
+
+    const std::array<double, 5> invalidGains{
+        GainProcessor::kMinimumGainDb - 0.0001,
+        GainProcessor::kMaximumGainDb + 0.0001,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+
+    for (const auto invalid : invalidGains) {
+        if (processor.setGainDb(invalid)) {
+            std::cerr << "invalid gain was accepted\n";
+            return 1;
+        }
+        if (!expectGain(processor, preservedGain, "invalid gain atomicity"))
+            return 1;
+    }
+
+    if (!processor.process(inputs, outputs, 0)) {
+        std::cerr << "zero-frame processing rejected valid channel pointers\n";
+        return 1;
+    }
+
+    if (processor.process(nullptr, outputs, 1)
+        || processor.process(inputs, nullptr, 1)) {
+        std::cerr << "null outer buffer table was accepted\n";
+        return 1;
+    }
+
+    const float *invalidInputs[2]{leftIn.data(), nullptr};
+    float *invalidOutputs[2]{leftOut.data(), nullptr};
+    if (processor.process(invalidInputs, outputs, 1)
+        || processor.process(inputs, invalidOutputs, 1)) {
+        std::cerr << "null channel pointer was accepted\n";
+        return 1;
     }
 
     return 0;
