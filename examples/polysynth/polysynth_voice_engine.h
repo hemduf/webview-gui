@@ -30,6 +30,11 @@ public:
         filterA1_ = 0.0;
         filterA2_ = 0.0;
         filterA3_ = 0.0;
+        pan_ = 0.0f;
+        masterGainCurrent_ = 1.0f;
+        masterGainTarget_ = 1.0f;
+        masterGainStep_ = 0.0f;
+        masterGainRemaining_ = 0;
         configured_ = true;
         clearVoices();
         return true;
@@ -89,9 +94,47 @@ public:
         return true;
     }
 
+    // Pan is a NOTE_ON default rather than shared mutable voice state. The
+    // center-preserving linear law keeps the existing mono-at-center reference
+    // level unchanged while providing deterministic hard-left/right endpoints.
+    bool setPan(float pan) noexcept {
+        if (!configured_ || !std::isfinite(pan) || pan < -1.0f || pan > 1.0f)
+            return false;
+        pan_ = pan;
+        return true;
+    }
+
+    // Master gain is global and can transition while voices are active. The
+    // target conversion and ramp step are prepared outside process(); process()
+    // performs one bounded add per sample. Future CLAP parameter integration must
+    // call this from its audio-thread event handoff rather than concurrently from
+    // another thread.
+    bool setMasterGainDb(float gainDb, std::uint32_t rampSamples) noexcept {
+        if (!configured_ || !std::isfinite(gainDb) ||
+            gainDb < kMinimumMasterGainDb || gainDb > kMaximumMasterGainDb ||
+            rampSamples == 0)
+            return false;
+
+        const double target = std::pow(10.0, static_cast<double>(gainDb) / 20.0);
+        if (!std::isfinite(target))
+            return false;
+
+        masterGainTarget_ = static_cast<float>(target);
+        masterGainStep_ =
+            (masterGainTarget_ - masterGainCurrent_) / static_cast<float>(rampSamples);
+        masterGainRemaining_ = rampSamples;
+        return true;
+    }
+
     void reset() noexcept {
         lifecycle_.reset();
         clearVoices();
+        // Reset removes process-history state but retains control values. A
+        // partially completed gain ramp is therefore collapsed to its target so
+        // the next activation does not inherit an old block-partition history.
+        masterGainCurrent_ = masterGainTarget_;
+        masterGainStep_ = 0.0f;
+        masterGainRemaining_ = 0;
     }
 
     [[nodiscard]] VoiceAllocator::VoiceIndex capacity() const noexcept {
@@ -185,6 +228,8 @@ private:
         float sustainTarget = 0.0f;
         float level = 0.0f;
         float stageStep = 0.0f;
+        float panLeftGain = 1.0f;
+        float panRightGain = 1.0f;
         std::uint32_t stageRemaining = 0;
         std::uint32_t decaySamples = 0;
         std::uint32_t releaseSamples = 0;
@@ -203,6 +248,8 @@ private:
     static constexpr float kMinimumFilterCutoffHz = 20.0f;
     static constexpr double kMaximumFilterCutoffFraction = 0.45;
     static constexpr float kMaximumFilterResonance = 0.99f;
+    static constexpr float kMinimumMasterGainDb = -60.0f;
+    static constexpr float kMaximumMasterGainDb = 12.0f;
 
     static float flushEnvelopeDenormal(float value) noexcept {
         return std::fabs(value) < kEnvelopeDenormalFloor ? 0.0f : value;
@@ -251,6 +298,13 @@ private:
         voice.filterA1 = filterA1_;
         voice.filterA2 = filterA2_;
         voice.filterA3 = filterA3_;
+        if (pan_ <= 0.0f) {
+            voice.panLeftGain = 1.0f;
+            voice.panRightGain = 1.0f + pan_;
+        } else {
+            voice.panLeftGain = 1.0f - pan_;
+            voice.panRightGain = 1.0f;
+        }
         voice.peakLevel = flushEnvelopeDenormal(static_cast<float>(event.note.velocity));
         voice.sustainTarget = flushEnvelopeDenormal(voice.peakLevel * sustainLevel_);
         voice.decaySamples = decaySamples_;
@@ -290,6 +344,19 @@ private:
         voice.filterIc1Eq = flushFilterDenormal(2.0 * v1 - voice.filterIc1Eq);
         voice.filterIc2Eq = flushFilterDenormal(2.0 * v2 - voice.filterIc2Eq);
         return flushFilterDenormal(v2);
+    }
+
+    float advanceMasterGain() noexcept {
+        if (masterGainRemaining_ == 0)
+            return masterGainCurrent_;
+
+        masterGainCurrent_ += masterGainStep_;
+        --masterGainRemaining_;
+        if (masterGainRemaining_ == 0) {
+            masterGainCurrent_ = masterGainTarget_;
+            masterGainStep_ = 0.0f;
+        }
+        return masterGainCurrent_;
     }
 
     void applyVoiceEvent(const VoiceLifecycleEvent &event) noexcept {
@@ -420,7 +487,8 @@ private:
 
         bool ok = true;
         for (std::uint32_t frame = begin; frame < end; ++frame) {
-            float mix = 0.0f;
+            float leftMix = 0.0f;
+            float rightMix = 0.0f;
 
             for (VoiceAllocator::VoiceIndex index = 0;
                  index < lifecycle_.capacity(); ++index) {
@@ -430,8 +498,9 @@ private:
 
                 const double oscillatorSample =
                     std::sin(voice.phase * kTwoPi) * static_cast<double>(voice.level);
-                const auto filteredSample = processFilter(voice, oscillatorSample);
-                mix += static_cast<float>(filteredSample);
+                const auto filteredSample = static_cast<float>(processFilter(voice, oscillatorSample));
+                leftMix += filteredSample * voice.panLeftGain;
+                rightMix += filteredSample * voice.panRightGain;
 
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
@@ -440,8 +509,9 @@ private:
                 advanceEnvelope(index, voice, frame, blockFrames, noteEndSink, ok);
             }
 
-            left[frame] = mix;
-            right[frame] = mix;
+            const float masterGain = advanceMasterGain();
+            left[frame] = leftMix * masterGain;
+            right[frame] = rightMix * masterGain;
         }
 
         return ok;
@@ -457,6 +527,11 @@ private:
     double filterA1_ = 0.0;
     double filterA2_ = 0.0;
     double filterA3_ = 0.0;
+    float pan_ = 0.0f;
+    float masterGainCurrent_ = 1.0f;
+    float masterGainTarget_ = 1.0f;
+    float masterGainStep_ = 0.0f;
+    std::uint32_t masterGainRemaining_ = 0;
     bool filterEnabled_ = false;
     bool configured_ = false;
 };
