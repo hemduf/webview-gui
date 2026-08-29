@@ -261,19 +261,24 @@ protected:
     bool implementsGui() const noexcept override { return true; }
 
     bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
-        if (isFloating && api &&
-            std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
-            return false;
+        if (api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
+            return !isFloating && gui_.extHostWebview != nullptr;
         return gui_.isApiSupported(api, isFloating);
     }
 
     bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
+        if (!gui_.extHostWebview)
+            return false;
         return gui_.getPreferredApi(api, isFloating);
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
-        if (isFloating && api &&
-            std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
+        if (guiCreated_)
+            return false;
+
+        const bool hostOwnedWebview =
+            api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0;
+        if (hostOwnedWebview && (isFloating || !gui_.extHostWebview))
             return false;
         if (!gui_.create(api, isFloating))
             return false;
@@ -281,10 +286,17 @@ protected:
             gui_.destroy();
             return false;
         }
+
+        guiCreated_ = true;
+        hostOwnedWebviewGui_ = hostOwnedWebview;
         return true;
     }
 
-    void guiDestroy() noexcept override { gui_.destroy(); }
+    void guiDestroy() noexcept override {
+        gui_.destroy();
+        guiCreated_ = false;
+        hostOwnedWebviewGui_ = false;
+    }
 
     bool guiSetScale(double) noexcept override {
         // The CLAP WebView API uses logical pixels and explicitly forbids
@@ -292,26 +304,57 @@ protected:
         return false;
     }
 
-    bool guiShow() noexcept override { return gui_.show(); }
-    bool guiHide() noexcept override { return gui_.hide(); }
+    bool guiShow() noexcept override {
+        if (!guiCreated_)
+            return false;
+        return hostOwnedWebviewGui_ ? true : gui_.show();
+    }
+
+    bool guiHide() noexcept override {
+        if (!guiCreated_)
+            return false;
+        return hostOwnedWebviewGui_ ? true : gui_.hide();
+    }
+
     bool guiGetSize(uint32_t *width, uint32_t *height) noexcept override {
-        return gui_.getSize(width, height);
+        return guiCreated_ && gui_.getSize(width, height);
     }
-    bool guiCanResize() const noexcept override { return gui_.canResize(); }
+
+    bool guiCanResize() const noexcept override {
+        return guiCreated_ && gui_.canResize();
+    }
+
     bool guiGetResizeHints(clap_gui_resize_hints_t *hints) noexcept override {
-        return gui_.getResizeHints(hints);
+        return guiCreated_ && gui_.getResizeHints(hints);
     }
+
     bool guiAdjustSize(uint32_t *width, uint32_t *height) noexcept override {
-        return gui_.adjustSize(width, height);
+        return guiCreated_ && gui_.adjustSize(width, height);
     }
+
     bool guiSetSize(uint32_t width, uint32_t height) noexcept override {
-        return gui_.setSize(width, height);
+        return guiCreated_ && gui_.setSize(width, height);
     }
-    void guiSuggestTitle(const char *title) noexcept override { gui_.suggestTitle(title); }
+
+    void guiSuggestTitle(const char *title) noexcept override {
+        if (guiCreated_ && !hostOwnedWebviewGui_)
+            gui_.suggestTitle(title);
+    }
+
     bool guiSetParent(const clap_window *window) noexcept override {
+        if (!guiCreated_)
+            return false;
+        if (hostOwnedWebviewGui_) {
+            return window && window->api &&
+                   std::strcmp(window->api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0 &&
+                   window->ptr == nullptr;
+        }
         return gui_.setParent(window);
     }
+
     bool guiSetTransient(const clap_window *window) noexcept override {
+        if (!guiCreated_ || hostOwnedWebviewGui_)
+            return false;
         return gui_.setTransient(window);
     }
 
@@ -515,7 +558,7 @@ private:
     void restoreSnapshotsFromPendingState() noexcept {
         gainDbSnapshot_.store(pendingLoadedGainDb_.load(std::memory_order_relaxed),
                               std::memory_order_relaxed);
-        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_relaxed),
+        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_order_relaxed),
                               std::memory_order_relaxed);
     }
 
@@ -538,6 +581,8 @@ private:
 
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
+    bool guiCreated_ = false;
+    bool hostOwnedWebviewGui_ = false;
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
 
