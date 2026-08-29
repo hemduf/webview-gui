@@ -17,6 +17,11 @@ enum class VoiceStage : std::uint8_t {
     Releasing,
 };
 
+struct VoiceLifecycleEvent {
+    ScheduledNoteEvent note{};
+    std::uint64_t generation = 0;
+};
+
 class VoiceLifecycle {
 public:
     bool configure(std::size_t requestedVoices) noexcept {
@@ -43,6 +48,12 @@ public:
         return index < scheduler_.capacity() ? slots_[index].stage : VoiceStage::Inactive;
     }
 
+    [[nodiscard]] std::uint64_t generation(VoiceAllocator::VoiceIndex index) const noexcept {
+        if (index >= scheduler_.capacity() || slots_[index].stage == VoiceStage::Inactive)
+            return 0;
+        return slots_[index].generation;
+    }
+
     [[nodiscard]] bool voiceIdentity(VoiceAllocator::VoiceIndex index,
                                      VoiceIdentity &identity) const noexcept {
         return scheduler_.voiceIdentity(index, identity);
@@ -53,8 +64,8 @@ public:
                  std::uint32_t framesCount,
                  VoiceSink &voiceSink,
                  NoteEndSink &noteEndSink) noexcept {
-        static_assert(std::is_nothrow_invocable_v<VoiceSink &, const ScheduledNoteEvent &>,
-                      "PolySynth voice sink must be noexcept");
+        static_assert(std::is_nothrow_invocable_v<VoiceSink &, const VoiceLifecycleEvent &>,
+                      "PolySynth voice lifecycle sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth NOTE_END sink must be noexcept");
 
@@ -67,12 +78,14 @@ public:
 
     template <typename NoteEndSink>
     bool completeRelease(VoiceAllocator::VoiceIndex index,
+                         std::uint64_t expectedGeneration,
                          std::uint32_t time,
                          NoteEndSink &noteEndSink) noexcept {
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth NOTE_END sink must be noexcept");
 
-        if (index >= scheduler_.capacity() || slots_[index].stage != VoiceStage::Releasing)
+        if (index >= scheduler_.capacity() || slots_[index].stage != VoiceStage::Releasing ||
+            expectedGeneration == 0 || slots_[index].generation != expectedGeneration)
             return false;
 
         const auto identity = slots_[index].identity;
@@ -87,12 +100,27 @@ public:
 private:
     struct Slot {
         VoiceIdentity identity{};
+        std::uint64_t generation = 0;
         VoiceStage stage = VoiceStage::Inactive;
     };
 
     void clearStages() noexcept {
         for (auto &slot : slots_)
             slot = {};
+    }
+
+    [[nodiscard]] std::uint64_t nextGeneration() noexcept {
+        ++generationSerial_;
+        if (generationSerial_ == 0)
+            ++generationSerial_;
+        return generationSerial_;
+    }
+
+    template <typename VoiceSink>
+    static void dispatchVoice(const ScheduledNoteEvent &event,
+                              std::uint64_t generation,
+                              VoiceSink &voiceSink) noexcept {
+        voiceSink(VoiceLifecycleEvent{event, generation});
     }
 
     template <typename VoiceSink, typename NoteEndSink>
@@ -108,21 +136,22 @@ private:
                 if (event.replacedVoice)
                     emitNoteEnd(event.replacedIdentity, event.time, noteEndSink);
                 slot.identity = event.identity;
+                slot.generation = nextGeneration();
                 slot.stage = VoiceStage::Held;
-                voiceSink(event);
+                dispatchVoice(event, slot.generation, voiceSink);
                 return;
 
             case ScheduledNoteKind::NoteOff:
                 if (slot.stage == VoiceStage::Inactive || slot.identity != event.identity)
                     return;
                 slot.stage = VoiceStage::Releasing;
-                voiceSink(event);
+                dispatchVoice(event, slot.generation, voiceSink);
                 return;
 
             case ScheduledNoteKind::NoteChoke:
                 if (slot.stage == VoiceStage::Inactive || slot.identity != event.identity)
                     return;
-                voiceSink(event);
+                dispatchVoice(event, slot.generation, voiceSink);
                 if (!scheduler_.retireVoice(event.voiceIndex, event.identity))
                     return;
                 slot = {};
@@ -151,6 +180,7 @@ private:
 
     NoteEventScheduler scheduler_{};
     std::array<Slot, VoiceAllocator::kMaximumVoices> slots_{};
+    std::uint64_t generationSerial_ = 0;
 };
 
 } // namespace webview_gui::examples::polysynth
