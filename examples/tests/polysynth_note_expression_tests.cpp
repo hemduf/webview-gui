@@ -67,6 +67,30 @@ struct InputEvents {
         return true;
     }
 
+    bool pushVolume(std::uint32_t time,
+                    double gain,
+                    std::int32_t noteId,
+                    std::int16_t key = 60,
+                    std::int16_t portIndex = 0,
+                    std::int16_t channel = 0) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = expressions[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+        event.expression_id = CLAP_NOTE_EXPRESSION_VOLUME;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
+        event.value = gain;
+        headers[count++] = &event.header;
+        return true;
+    }
+
     bool pushFineMod(std::uint32_t time, double cents) noexcept {
         if (count >= headers.size())
             return false;
@@ -202,6 +226,22 @@ bool matchesRestart(const RenderResult &audio,
     }
     return true;
 }
+
+bool matchesOneOfTwoVolumeExpression(const RenderResult &audio,
+                                     std::uint32_t expressionFrame,
+                                     double key,
+                                     double targetGain) noexcept {
+    const double increment = incrementForKey(key);
+    for (std::uint32_t frame = 0; frame < audio.left.size(); ++frame) {
+        const float sample = sineAt(0.25 + static_cast<double>(frame) * increment);
+        const float expected = sample * static_cast<float>(
+            frame < expressionFrame ? 2.0 : 1.0 + targetGain);
+        if (std::fabs(audio.left[frame] - expected) > 1.0e-5f ||
+            std::fabs(audio.right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
 }
 
 int main() {
@@ -261,10 +301,6 @@ int main() {
         return 8;
     }
 
-    // A wildcard expression can already match a sounding voice and still needs
-    // to affect a later NOTE_ON at the same sample. Same-sample semantics must
-    // therefore not depend on whether the expression happened to match an
-    // existing generation when it was first received.
     ParameterVoiceEngine wildcardBeforeNote;
     ParameterVoiceEngine wildcardAfterNote;
     if (!configure(wildcardBeforeNote) || !configure(wildcardAfterNote))
@@ -289,9 +325,6 @@ int main() {
         return 10;
     }
 
-    // Note-expression addressing uses the same wildcard tuple constraints as
-    // note/voice addressing. Malformed channel values must fail closed rather
-    // than being retained as unreachable pending state.
     ParameterVoiceEngine invalidAddress;
     if (!configure(invalidAddress))
         return 11;
@@ -303,10 +336,6 @@ int main() {
         return 12;
     }
 
-    // Hosts without note IDs legitimately reuse the exact same identity. With a
-    // one-voice allocator, the second NOTE_ON replaces the prior generation in
-    // the same slot. Expression state from the old generation must not survive
-    // merely because the identity tuple compares equal.
     ParameterVoiceEngine sameIdentityReuse;
     if (!sameIdentityReuse.configure(1, kSampleRate, 16) ||
         !sameIdentityReuse.setAmpEnvelope(0, 0, 1.0f, 16))
@@ -322,10 +351,6 @@ int main() {
         return 14;
     }
 
-    // CLAP TUNING note expressions are specified in semitones over the full
-    // [-120, +120] range. The Fine Tune parameter remains a +/-100-cent base,
-    // but the expression layer must not inherit that parameter range. A +12
-    // semitone expression is exactly one octave and must remain sample-accurate.
     ParameterVoiceEngine octaveExpression;
     if (!configure(octaveExpression))
         return 15;
@@ -337,6 +362,20 @@ int main() {
         !matchesRetune(octaveAudio, 8, 60.0, 72.0)) {
         std::cerr << "NOTE_EXPRESSION_TUNING was incorrectly clipped to the Fine Tune parameter range\n";
         return 16;
+    }
+
+    ParameterVoiceEngine volumeExpression;
+    if (!configure(volumeExpression))
+        return 17;
+    InputEvents volumeEvents;
+    volumeEvents.pushNote(0, 91, 60);
+    volumeEvents.pushNote(0, 92, 60);
+    volumeEvents.pushVolume(8, 0.5, 91);
+    RenderResult volumeAudio;
+    if (!render(volumeExpression, volumeEvents, volumeAudio) ||
+        !matchesOneOfTwoVolumeExpression(volumeAudio, 8, 60.0, 0.5)) {
+        std::cerr << "targeted VOLUME note expression was not sample-accurate or leaked across voices\n";
+        return 18;
     }
 
     return 0;
