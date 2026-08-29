@@ -98,6 +98,19 @@ target_compile_features(webview_gui_example_skeleton_tests PRIVATE cxx_std_17)
 add_test(NAME webview_gui_examples_skeleton_factory
     COMMAND webview_gui_example_skeleton_tests)
 
+if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
+    add_executable(webview_gui_example_polysynth_voice_allocator_tests
+        tests/polysynth_voice_allocator_tests.cpp
+    )
+    target_include_directories(webview_gui_example_polysynth_voice_allocator_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/polysynth
+    )
+    target_compile_features(webview_gui_example_polysynth_voice_allocator_tests PRIVATE cxx_std_17)
+
+    add_test(NAME webview_gui_examples_polysynth_voice_allocator
+        COMMAND webview_gui_example_polysynth_voice_allocator_tests)
+endif()
+
 # #28 only prepares the pinned native wrapper integration point. Concrete VST3,
 # AU and standalone products are owned by #34, and WCLAP remains on the
 # repository-owned #30 packaging path rather than clap-wrapper's WCLAP helper.
