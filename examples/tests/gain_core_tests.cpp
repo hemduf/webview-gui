@@ -286,5 +286,35 @@ int main() {
         }
     }
 
+    // Gain and bypass are global parameters. A host event carrying note/port/
+    // channel/key addressing must not be flattened into a global change.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(4);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(0, kGainParamId, -6.0,
+                                   42, 0, 1, 60))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (!eventProcessor.process(process))
+            return 1;
+
+        if (!expectConstantRange(block.outputChannel(0), 0, 4, 1.0f,
+                                 "targeted global-param event") ||
+            eventProcessor.processor().gainDb() != 0.0) {
+            std::cerr << "targeted automation leaked into a global parameter\n";
+            return 1;
+        }
+    }
+
     return 0;
 }
