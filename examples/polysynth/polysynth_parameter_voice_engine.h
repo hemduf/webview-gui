@@ -15,10 +15,10 @@
 namespace webview_gui::examples::polysynth {
 
 // Host-facing parameter adapter for the #31 reference voice engine. Persistent
-// CLAP base values, global modulation and voice-addressed modulation remain
-// separate from the DSP state. The adapter consumes the same ordered core-event
-// stream that drives NOTE events, so parameter changes are applied at the exact
-// sample boundary without resetting oscillator phase or voice lifecycle state.
+// CLAP base values, global modulation, voice-addressed modulation and note
+// expressions remain separate from the DSP state. The adapter consumes the same
+// ordered core-event stream that drives NOTE events, so changes are applied at
+// the exact sample boundary without resetting oscillator phase or lifecycle state.
 class ParameterVoiceEngine : public VoiceEngine {
 public:
     bool configure(std::size_t requestedVoices,
@@ -32,6 +32,8 @@ public:
         fineTuneGlobalModulationCents_ = 0.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceTuningExpressionSemitones_.fill(0.0);
+        clearTransientExpressionState();
         const auto slot = fineTuneSlot();
         return polyphonicState_.setGlobalBase(slot, fineTuneBaseCents_) &&
                polyphonicState_.setGlobalModulation(slot, 0.0) &&
@@ -61,6 +63,8 @@ public:
         polyphonicState_.reset();
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceTuningExpressionSemitones_.fill(0.0);
+        clearTransientExpressionState();
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
@@ -72,6 +76,7 @@ public:
                  float *left,
                  float *right,
                  NoteEndSink &noteEndSink) noexcept {
+        clearTransientExpressionState();
         auto coreEventSink = [this](const clap_event_header_t &header) noexcept -> bool {
             return applyCoreEvent(header);
         };
@@ -82,12 +87,26 @@ public:
                                                        right,
                                                        coreEventSink,
                                                        noteEndSink);
-        if (!syncVoices())
-            return false;
-        return ok;
+        const bool synced = syncVoices();
+        const bool restored = restoreGlobalFineTuningDefault();
+        clearTransientExpressionState();
+        return ok && synced && restored;
     }
 
 private:
+    struct PendingTuningExpression {
+        VoiceIdentity address{};
+        std::uint32_t time = 0;
+        double semitones = 0.0;
+        bool active = false;
+    };
+
+    struct PreparedVoiceStart {
+        VoiceIdentity identity{};
+        double tuningSemitones = 0.0;
+        bool active = false;
+    };
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -97,6 +116,107 @@ private:
                                 std::int16_t channel,
                                 std::int16_t key) noexcept {
         return noteId == -1 && portIndex == -1 && channel == -1 && key == -1;
+    }
+
+    static bool addressMatches(const VoiceIdentity &identity,
+                               const VoiceIdentity &address) noexcept {
+        return (address.noteId == -1 || address.noteId == identity.noteId) &&
+               (address.portIndex == -1 || address.portIndex == identity.portIndex) &&
+               (address.channel == -1 || address.channel == identity.channel) &&
+               (address.key == -1 || address.key == identity.key);
+    }
+
+    static VoiceIdentity identityFrom(const clap_event_note_t &event) noexcept {
+        return {event.note_id, event.port_index, event.channel, event.key};
+    }
+
+    static VoiceIdentity addressFrom(const clap_event_note_expression_t &event) noexcept {
+        return {event.note_id, event.port_index, event.channel, event.key};
+    }
+
+    void clearTransientExpressionState() noexcept {
+        for (auto &entry : pendingTuningExpressions_)
+            entry = {};
+        for (auto &entry : preparedVoiceStarts_)
+            entry = {};
+    }
+
+    bool storePendingTuning(const clap_event_note_expression_t &event) noexcept {
+        for (auto &entry : pendingTuningExpressions_) {
+            if (entry.active)
+                continue;
+            entry.address = addressFrom(event);
+            entry.time = event.header.time;
+            entry.semitones = event.value;
+            entry.active = true;
+            return true;
+        }
+        return false;
+    }
+
+    bool pendingTuningFor(const VoiceIdentity &identity,
+                          std::uint32_t time,
+                          double &semitones) const noexcept {
+        bool found = false;
+        semitones = 0.0;
+        for (const auto &entry : pendingTuningExpressions_) {
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
+                continue;
+            semitones = entry.semitones;
+            found = true;
+        }
+        return found;
+    }
+
+    bool rememberPreparedVoiceStart(const VoiceIdentity &identity,
+                                    double tuningSemitones) noexcept {
+        for (auto &entry : preparedVoiceStarts_) {
+            if (entry.active)
+                continue;
+            entry.identity = identity;
+            entry.tuningSemitones = tuningSemitones;
+            entry.active = true;
+            return true;
+        }
+        return false;
+    }
+
+    bool consumePreparedVoiceStart(const VoiceIdentity &identity,
+                                   double &tuningSemitones) noexcept {
+        for (auto &entry : preparedVoiceStarts_) {
+            if (!entry.active || entry.identity != identity)
+                continue;
+            tuningSemitones = entry.tuningSemitones;
+            entry = {};
+            return true;
+        }
+        return false;
+    }
+
+    double globalFineTuningCents() const noexcept {
+        return std::clamp(fineTuneBaseCents_ + fineTuneGlobalModulationCents_,
+                          -100.0,
+                          100.0);
+    }
+
+    bool restoreGlobalFineTuningDefault() noexcept {
+        return VoiceEngine::setFineTuningCents(
+            static_cast<float>(globalFineTuningCents()));
+    }
+
+    bool prepareNoteOn(const clap_event_note_t &event) noexcept {
+        const auto identity = identityFrom(event);
+        double expressionSemitones = 0.0;
+        (void)pendingTuningFor(identity, event.header.time, expressionSemitones);
+
+        const auto cents = std::clamp(globalFineTuningCents() +
+                                          expressionSemitones * 100.0,
+                                      -100.0,
+                                      100.0);
+        if (!VoiceEngine::setFineTuningCents(static_cast<float>(cents)))
+            return false;
+        return rememberPreparedVoiceStart(identity, expressionSemitones);
     }
 
     bool syncVoices() noexcept {
@@ -109,6 +229,7 @@ private:
                         return false;
                     trackedVoices_[index] = false;
                     trackedIdentities_[index] = {};
+                    voiceTuningExpressionSemitones_[index] = 0.0;
                 }
                 continue;
             }
@@ -118,20 +239,17 @@ private:
                     return false;
                 trackedVoices_[index] = true;
                 trackedIdentities_[index] = identity;
+                voiceTuningExpressionSemitones_[index] = 0.0;
+                double preparedTuning = 0.0;
+                if (consumePreparedVoiceStart(identity, preparedTuning))
+                    voiceTuningExpressionSemitones_[index] = preparedTuning;
             }
         }
         return true;
     }
 
     bool applyFineTuningState() noexcept {
-        if (!syncVoices())
-            return false;
-
-        const auto globalEffective = std::clamp(fineTuneBaseCents_ +
-                                                    fineTuneGlobalModulationCents_,
-                                                -100.0,
-                                                100.0);
-        if (!VoiceEngine::setFineTuningCents(static_cast<float>(globalEffective)))
+        if (!syncVoices() || !restoreGlobalFineTuningDefault())
             return false;
 
         const auto slot = fineTuneSlot();
@@ -145,7 +263,10 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
-            const auto effective = std::clamp(base + modulation, -100.0, 100.0);
+            const auto effective = std::clamp(
+                base + modulation + voiceTuningExpressionSemitones_[index] * 100.0,
+                -100.0,
+                100.0);
             if (!VoiceEngine::setVoiceFineTuningCents(
                     index, static_cast<float>(effective)))
                 return false;
@@ -153,11 +274,49 @@ private:
         return true;
     }
 
+    bool applyTuningExpression(const clap_event_note_expression_t &event) noexcept {
+        if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0)
+            return false;
+        if (!syncVoices())
+            return false;
+
+        const auto address = addressFrom(event);
+        bool matched = false;
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
+                continue;
+            voiceTuningExpressionSemitones_[index] = event.value;
+            matched = true;
+        }
+
+        if (!matched && !storePendingTuning(event))
+            return false;
+        return matched ? applyFineTuningState() : true;
+    }
+
     bool applyCoreEvent(const clap_event_header_t &header) noexcept {
         if (header.space_id != CLAP_CORE_EVENT_SPACE_ID)
             return true;
         if (header.size < sizeof(clap_event_header_t))
             return false;
+
+        if (header.type == CLAP_EVENT_NOTE_ON) {
+            if (header.size < sizeof(clap_event_note_t))
+                return false;
+            const auto &event = *reinterpret_cast<const clap_event_note_t *>(&header);
+            return prepareNoteOn(event);
+        }
+
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION) {
+            if (header.size < sizeof(clap_event_note_expression_t))
+                return false;
+            const auto &event =
+                *reinterpret_cast<const clap_event_note_expression_t *>(&header);
+            if (event.expression_id != CLAP_NOTE_EXPRESSION_TUNING)
+                return true;
+            return applyTuningExpression(event);
+        }
 
         if (header.type == CLAP_EVENT_PARAM_VALUE) {
             if (header.size < sizeof(clap_event_param_value_t))
@@ -213,6 +372,10 @@ private:
     PolyphonicParameterState polyphonicState_{};
     std::array<VoiceIdentity, VoiceAllocator::kMaximumVoices> trackedIdentities_{};
     std::array<bool, VoiceAllocator::kMaximumVoices> trackedVoices_{};
+    std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
+    std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
+        pendingTuningExpressions_{};
+    std::array<PreparedVoiceStart, VoiceAllocator::kMaximumVoices> preparedVoiceStarts_{};
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
