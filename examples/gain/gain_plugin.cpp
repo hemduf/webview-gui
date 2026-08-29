@@ -262,12 +262,13 @@ protected:
 
     bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
         if (api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
-            return !isFloating && gui_.extHostWebview != nullptr;
+            return !isFloating && gui_.extHostWebview != nullptr &&
+                   gui_.extHostWebview->send != nullptr;
         return gui_.isApiSupported(api, isFloating);
     }
 
     bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
-        if (!gui_.extHostWebview)
+        if (!gui_.extHostWebview || !gui_.extHostWebview->send)
             return false;
         return gui_.getPreferredApi(api, isFloating);
     }
@@ -278,7 +279,8 @@ protected:
 
         const bool hostOwnedWebview =
             api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0;
-        if (hostOwnedWebview && (isFloating || !gui_.extHostWebview))
+        if (hostOwnedWebview &&
+            (isFloating || !gui_.extHostWebview || !gui_.extHostWebview->send))
             return false;
         if (!gui_.create(api, isFloating))
             return false;
