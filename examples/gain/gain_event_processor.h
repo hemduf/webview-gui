@@ -81,8 +81,13 @@ private:
         return true;
     }
 
+    static bool hasGlobalAddress(const clap_event_param_value_t &event) noexcept {
+        return event.note_id == -1 && event.port_index == -1 &&
+               event.channel == -1 && event.key == -1;
+    }
+
     static bool isSupportedValue(const clap_event_param_value_t &event) noexcept {
-        if (!std::isfinite(event.value))
+        if (!hasGlobalAddress(event) || !std::isfinite(event.value))
             return false;
 
         if (event.param_id == kGainParamId)
