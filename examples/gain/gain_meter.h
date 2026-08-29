@@ -23,16 +23,18 @@ public:
     // Single audio-thread producer. The odd sequence marks an update in
     // progress; an even sequence is a complete snapshot. Starting odd also
     // makes reads fail closed before the first publication without reserving an
-    // otherwise-valid wrapped sequence value.
+    // otherwise-valid wrapped sequence value. Sequential consistency keeps the
+    // two peak atomics inside the sequence transaction with a simple, portable
+    // ordering proof across native and WebAssembly-capable C++ toolchains.
     void publish(float leftPeak, float rightPeak) noexcept {
-        auto writingSequence = sequence_.load(std::memory_order_relaxed);
+        auto writingSequence = sequence_.load();
         if ((writingSequence & 1u) == 0u)
             ++writingSequence;
 
-        sequence_.store(writingSequence, std::memory_order_release);
-        leftPeak_.store(leftPeak, std::memory_order_relaxed);
-        rightPeak_.store(rightPeak, std::memory_order_relaxed);
-        sequence_.store(writingSequence + 1u, std::memory_order_release);
+        sequence_.store(writingSequence);
+        leftPeak_.store(leftPeak);
+        rightPeak_.store(rightPeak);
+        sequence_.store(writingSequence + 1u);
     }
 
     // UI/main-thread consumer. Retry count is deliberately bounded: a busy
@@ -42,13 +44,13 @@ public:
         constexpr unsigned kMaximumAttempts = 3;
 
         for (unsigned attempt = 0; attempt < kMaximumAttempts; ++attempt) {
-            const auto before = sequence_.load(std::memory_order_acquire);
+            const auto before = sequence_.load();
             if ((before & 1u) != 0u)
                 continue;
 
-            const auto leftPeak = leftPeak_.load(std::memory_order_relaxed);
-            const auto rightPeak = rightPeak_.load(std::memory_order_relaxed);
-            const auto after = sequence_.load(std::memory_order_acquire);
+            const auto leftPeak = leftPeak_.load();
+            const auto rightPeak = rightPeak_.load();
+            const auto after = sequence_.load();
 
             if (before == after && (after & 1u) == 0u) {
                 snapshot.leftPeak = leftPeak;
