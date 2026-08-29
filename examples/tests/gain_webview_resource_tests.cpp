@@ -154,8 +154,8 @@ int main() {
     char tinyMime[4] = {};
     if (webview->get_resource(plugin, expectedUri, tinyMime, sizeof(tinyMime),
                               &tinyMimeOutput.stream) ||
-        !tinyMimeOutput.bytes.empty()) {
-        std::cerr << "resource streamed data when MIME output capacity was insufficient\n";
+        !tinyMimeOutput.bytes.empty() || tinyMime[0] != '\0') {
+        std::cerr << "insufficient MIME capacity must fail before mutating outputs or streaming data\n";
         plugin->destroy(plugin);
         return 12;
     }
