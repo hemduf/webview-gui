@@ -4,6 +4,7 @@
 #include <clap/ext/draft/webview.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -196,6 +197,7 @@ bool matchesUiParameterMessage(const std::vector<uint8_t> &message,
 int main() {
     using namespace webview_gui::examples::gain;
 
+    constexpr std::array<uint8_t, 4> kSyncRequest{{0x57, 0x56, 0x51, 0x31}};
     gHostCapture.reset();
     const auto *factory = gainFactory();
     if (!factory)
@@ -218,7 +220,7 @@ int main() {
     }
 
     constexpr const char *expectedUri = "/index.html";
-    constexpr int32_t expectedUriSize = 12; // strlen + trailing NUL
+    constexpr int32_t expectedUriSize = 12;
 
     if (webview->get_uri(plugin, nullptr, 0) != expectedUriSize) {
         std::cerr << "get_uri capacity query did not return the full NUL-inclusive length\n";
@@ -299,14 +301,13 @@ int main() {
         return 92;
     }
 
-    // RED for processor/host -> editor reconciliation. The WebView must consume
-    // the fixed-size WVU1 snapshots emitted by the plug-in on the main thread.
     if (!contains(script, "window.addEventListener(\"message\"") ||
         !contains(script, "getFloat64(8, true)") ||
         !contains(script, "gain.value =") ||
         !contains(script, "bypass.checked =") ||
-        !contains(script, "0x55")) {
-        std::cerr << "Gain editor script does not consume the WVU1 parameter sync protocol\n";
+        !contains(script, "bytes.set([0x57, 0x56, 0x51, 0x31])") ||
+        !contains(script, "setInterval(requestSync, 33)")) {
+        std::cerr << "Gain editor script does not poll and consume the parameter sync protocol\n";
         plugin->destroy(plugin);
         return 94;
     }
@@ -396,18 +397,18 @@ int main() {
         return 19;
     }
 
-    if (gHostCapture.callbackRequests != 1 || !gHostCapture.messages.empty()) {
-        std::cerr << "Gain must schedule initial editor sync without sending from gui.show()\n";
+    if (gHostCapture.callbackRequests != 0 || !gHostCapture.messages.empty()) {
+        std::cerr << "Gain editor synchronization must not use host main-thread callbacks\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 95;
     }
 
-    plugin->on_main_thread(plugin);
-    if (gHostCapture.messages.size() != 2 ||
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 2 ||
         !matchesUiParameterMessage(gHostCapture.messages[0], 1, 0.0) ||
         !matchesUiParameterMessage(gHostCapture.messages[1], 2, 0.0)) {
-        std::cerr << "Gain did not publish the initial parameter snapshot on the main thread\n";
+        std::cerr << "Gain did not publish the initial parameter snapshot on a WebView sync request\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 96;
@@ -417,15 +418,15 @@ int main() {
     SingleParamInput bypassChange{kBypassParamId, 1.0};
     params->flush(plugin, &gainChange.input, nullptr);
     params->flush(plugin, &bypassChange.input, nullptr);
-    if (gHostCapture.callbackRequests != 2 || gHostCapture.messages.size() != 2) {
-        std::cerr << "Gain host parameter changes were not coalesced onto the main thread\n";
+    if (gHostCapture.callbackRequests != 0 || gHostCapture.messages.size() != 2) {
+        std::cerr << "Gain parameter changes performed host/UI work outside WebView polling\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 97;
     }
 
-    plugin->on_main_thread(plugin);
-    if (gHostCapture.messages.size() != 4 ||
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 4 ||
         !matchesUiParameterMessage(gHostCapture.messages[2], 1, -12.0) ||
         !matchesUiParameterMessage(gHostCapture.messages[3], 2, 1.0)) {
         std::cerr << "Gain did not reconcile host parameter changes into the WebView\n";
@@ -438,14 +439,14 @@ int main() {
     SingleParamInput gainLatest{kGainParamId, -3.0};
     params->flush(plugin, &gainIntermediate.input, nullptr);
     params->flush(plugin, &gainLatest.input, nullptr);
-    if (gHostCapture.callbackRequests != 3) {
-        std::cerr << "Gain editor synchronization did not coalesce repeated parameter changes\n";
+    if (gHostCapture.callbackRequests != 0 || gHostCapture.messages.size() != 4) {
+        std::cerr << "Gain repeated parameter changes were not coalesced before WebView polling\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 99;
     }
-    plugin->on_main_thread(plugin);
-    if (gHostCapture.messages.size() != 6 ||
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 6 ||
         !matchesUiParameterMessage(gHostCapture.messages[4], 1, -3.0) ||
         !matchesUiParameterMessage(gHostCapture.messages[5], 2, 1.0)) {
         std::cerr << "Gain editor synchronization did not publish the latest coalesced snapshot\n";
@@ -463,21 +464,21 @@ int main() {
 
     SingleParamInput hiddenGainChange{kGainParamId, -9.0};
     params->flush(plugin, &hiddenGainChange.input, nullptr);
-    if (gHostCapture.callbackRequests != 3) {
+    if (gHostCapture.callbackRequests != 0 || gHostCapture.messages.size() != 6) {
         std::cerr << "Gain scheduled WebView synchronization while the editor was hidden\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 101;
     }
 
-    if (!gui->show(plugin) || gHostCapture.callbackRequests != 4) {
-        std::cerr << "Gain did not schedule the latest parameter snapshot when the editor reopened\n";
+    if (!gui->show(plugin) || gHostCapture.callbackRequests != 0) {
+        std::cerr << "Gain host-owned WebView could not reopen without a host callback side channel\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 102;
     }
-    plugin->on_main_thread(plugin);
-    if (gHostCapture.messages.size() != 8 ||
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 8 ||
         !matchesUiParameterMessage(gHostCapture.messages[6], 1, -9.0) ||
         !matchesUiParameterMessage(gHostCapture.messages[7], 2, 1.0)) {
         std::cerr << "Gain did not reconcile hidden parameter changes when the editor reopened\n";
