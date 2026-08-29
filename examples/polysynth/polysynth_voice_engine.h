@@ -22,9 +22,27 @@ public:
             return false;
 
         sampleRate_ = sampleRate;
+        attackSamples_ = 0;
+        decaySamples_ = 0;
+        sustainLevel_ = 1.0f;
         releaseSamples_ = releaseSamples;
         configured_ = true;
         clearVoices();
+        return true;
+    }
+
+    bool setAmpEnvelope(std::uint32_t attackSamples,
+                        std::uint32_t decaySamples,
+                        float sustainLevel,
+                        std::uint32_t releaseSamples) noexcept {
+        if (!configured_ || !std::isfinite(sustainLevel) || sustainLevel < 0.0f ||
+            sustainLevel > 1.0f || releaseSamples == 0)
+            return false;
+
+        attackSamples_ = attackSamples;
+        decaySamples_ = decaySamples;
+        sustainLevel_ = sustainLevel;
+        releaseSamples_ = releaseSamples;
         return true;
     }
 
@@ -44,6 +62,14 @@ public:
     [[nodiscard]] bool voiceIdentity(VoiceAllocator::VoiceIndex index,
                                      VoiceIdentity &identity) const noexcept {
         return lifecycle_.voiceIdentity(index, identity);
+    }
+
+    [[nodiscard]] bool voiceEnvelopeLevel(VoiceAllocator::VoiceIndex index,
+                                          float &level) const noexcept {
+        if (index >= lifecycle_.capacity() || !voices_[index].active)
+            return false;
+        level = voices_[index].level;
+        return true;
     }
 
     template <typename NoteEndSink>
@@ -95,22 +121,36 @@ public:
     }
 
 private:
+    enum class AmpStage : std::uint8_t {
+        Attack,
+        Decay,
+        Sustain,
+        Release,
+    };
+
     struct Voice {
         VoiceIdentity identity{};
         std::uint64_t generation = 0;
         double phase = 0.0;
         double phaseIncrement = 0.0;
+        float peakLevel = 0.0f;
+        float sustainTarget = 0.0f;
         float level = 0.0f;
-        float releaseStep = 0.0f;
-        std::uint32_t releaseRemaining = 0;
+        float stageStep = 0.0f;
+        std::uint32_t stageRemaining = 0;
+        AmpStage ampStage = AmpStage::Sustain;
         bool active = false;
-        bool releasing = false;
         bool deferredReleaseCompletion = false;
     };
 
     static constexpr double kReferenceFrequency = 440.0;
     static constexpr double kTwoPi = 6.283185307179586476925286766559;
     static constexpr double kMaximumPhaseIncrement = 0.49;
+    static constexpr float kEnvelopeDenormalFloor = 1.0e-20f;
+
+    static float flushEnvelopeDenormal(float value) noexcept {
+        return std::fabs(value) < kEnvelopeDenormalFloor ? 0.0f : value;
+    }
 
     void clearVoices() noexcept {
         for (auto &voice : voices_)
@@ -123,6 +163,55 @@ private:
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
     }
 
+    void enterDecayOrSustain(Voice &voice) const noexcept {
+        if (decaySamples_ == 0) {
+            voice.level = voice.sustainTarget;
+            voice.stageStep = 0.0f;
+            voice.stageRemaining = 0;
+            voice.ampStage = AmpStage::Sustain;
+            return;
+        }
+
+        voice.ampStage = AmpStage::Decay;
+        voice.stageRemaining = decaySamples_;
+        voice.stageStep = flushEnvelopeDenormal(
+            (voice.peakLevel - voice.sustainTarget) / static_cast<float>(decaySamples_));
+    }
+
+    void startVoice(Voice &voice, const VoiceLifecycleEvent &event) const noexcept {
+        voice = {};
+        voice.identity = event.note.identity;
+        voice.generation = event.generation;
+        // Starting at a quarter cycle gives the sample-boundary tests a
+        // deterministic non-zero first sample when attack is instantaneous.
+        voice.phase = 0.25;
+        voice.phaseIncrement = phaseIncrementForKey(event.note.identity.key);
+        voice.peakLevel = flushEnvelopeDenormal(static_cast<float>(event.note.velocity));
+        voice.sustainTarget = flushEnvelopeDenormal(voice.peakLevel * sustainLevel_);
+        voice.active = true;
+
+        if (attackSamples_ == 0) {
+            voice.level = voice.peakLevel;
+            enterDecayOrSustain(voice);
+            return;
+        }
+
+        voice.level = 0.0f;
+        voice.ampStage = AmpStage::Attack;
+        voice.stageRemaining = attackSamples_;
+        voice.stageStep = flushEnvelopeDenormal(
+            voice.peakLevel / static_cast<float>(attackSamples_));
+    }
+
+    void beginRelease(Voice &voice) const noexcept {
+        if (voice.ampStage == AmpStage::Release)
+            return;
+        voice.ampStage = AmpStage::Release;
+        voice.stageRemaining = releaseSamples_;
+        voice.stageStep = flushEnvelopeDenormal(
+            voice.level / static_cast<float>(releaseSamples_));
+    }
+
     void applyVoiceEvent(const VoiceLifecycleEvent &event) noexcept {
         const auto index = event.note.voiceIndex;
         if (index >= lifecycle_.capacity())
@@ -131,24 +220,14 @@ private:
         auto &voice = voices_[index];
         switch (event.note.kind) {
             case ScheduledNoteKind::NoteOn:
-                voice = {};
-                voice.identity = event.note.identity;
-                voice.generation = event.generation;
-                // Starting at a quarter cycle gives the sample-boundary tests a
-                // deterministic non-zero first sample without special casing the
-                // oscillator itself.
-                voice.phase = 0.25;
-                voice.phaseIncrement = phaseIncrementForKey(event.note.identity.key);
-                voice.level = static_cast<float>(event.note.velocity);
-                voice.active = true;
+                startVoice(voice, event);
                 return;
 
             case ScheduledNoteKind::NoteOff:
-                if (!voice.active || voice.generation != event.generation || voice.releasing)
+                if (!voice.active || voice.generation != event.generation ||
+                    voice.ampStage == AmpStage::Release)
                     return;
-                voice.releasing = true;
-                voice.releaseRemaining = releaseSamples_;
-                voice.releaseStep = voice.level / static_cast<float>(releaseSamples_);
+                beginRelease(voice);
                 return;
 
             case ScheduledNoteKind::NoteChoke:
@@ -173,6 +252,80 @@ private:
             voice = {};
         }
         return ok;
+    }
+
+    template <typename NoteEndSink>
+    void advanceEnvelope(VoiceAllocator::VoiceIndex index,
+                         Voice &voice,
+                         std::uint32_t frame,
+                         std::uint32_t blockFrames,
+                         NoteEndSink &noteEndSink,
+                         bool &ok) noexcept {
+        switch (voice.ampStage) {
+            case AmpStage::Attack:
+                if (voice.stageRemaining == 0) {
+                    ok = false;
+                    return;
+                }
+                --voice.stageRemaining;
+                if (voice.stageRemaining == 0) {
+                    voice.level = voice.peakLevel;
+                    enterDecayOrSustain(voice);
+                } else {
+                    voice.level = flushEnvelopeDenormal(
+                        std::min(voice.peakLevel, voice.level + voice.stageStep));
+                }
+                return;
+
+            case AmpStage::Decay:
+                if (voice.stageRemaining == 0) {
+                    ok = false;
+                    return;
+                }
+                --voice.stageRemaining;
+                if (voice.stageRemaining == 0) {
+                    voice.level = voice.sustainTarget;
+                    voice.stageStep = 0.0f;
+                    voice.ampStage = AmpStage::Sustain;
+                } else {
+                    voice.level = flushEnvelopeDenormal(
+                        std::max(voice.sustainTarget, voice.level - voice.stageStep));
+                }
+                return;
+
+            case AmpStage::Sustain:
+                return;
+
+            case AmpStage::Release:
+                if (voice.stageRemaining == 0) {
+                    ok = false;
+                    voice = {};
+                    return;
+                }
+
+                --voice.stageRemaining;
+                if (voice.stageRemaining == 0) {
+                    const auto completionTime = frame + 1u;
+                    if (completionTime < blockFrames) {
+                        const auto generation = voice.generation;
+                        if (!lifecycle_.completeRelease(
+                                index, generation, completionTime, noteEndSink))
+                            ok = false;
+                        voice = {};
+                    } else {
+                        // Keep the lifecycle slot and generation alive across the
+                        // block boundary. The next process call will emit NOTE_END
+                        // at offset 0 before scheduling its input events.
+                        voice.level = 0.0f;
+                        voice.stageStep = 0.0f;
+                        voice.deferredReleaseCompletion = true;
+                    }
+                } else {
+                    voice.level = flushEnvelopeDenormal(
+                        std::max(0.0f, voice.level - voice.stageStep));
+                }
+                return;
+        }
     }
 
     template <typename NoteEndSink>
@@ -203,35 +356,7 @@ private:
                 if (voice.phase >= 1.0)
                     voice.phase -= 1.0;
 
-                if (!voice.releasing)
-                    continue;
-
-                if (voice.releaseRemaining == 0) {
-                    ok = false;
-                    voice = {};
-                    continue;
-                }
-
-                --voice.releaseRemaining;
-                if (voice.releaseRemaining == 0) {
-                    const auto completionTime = frame + 1u;
-                    if (completionTime < blockFrames) {
-                        const auto generation = voice.generation;
-                        if (!lifecycle_.completeRelease(
-                                index, generation, completionTime, noteEndSink))
-                            ok = false;
-                        voice = {};
-                    } else {
-                        // Keep the lifecycle slot and generation alive across the
-                        // block boundary. The next process call will emit NOTE_END
-                        // at offset 0 before scheduling its input events.
-                        voice.level = 0.0f;
-                        voice.releaseStep = 0.0f;
-                        voice.deferredReleaseCompletion = true;
-                    }
-                } else {
-                    voice.level = std::max(0.0f, voice.level - voice.releaseStep);
-                }
+                advanceEnvelope(index, voice, frame, blockFrames, noteEndSink, ok);
             }
 
             left[frame] = mix;
@@ -244,6 +369,9 @@ private:
     VoiceLifecycle lifecycle_{};
     std::array<Voice, VoiceAllocator::kMaximumVoices> voices_{};
     double sampleRate_ = 0.0;
+    std::uint32_t attackSamples_ = 0;
+    std::uint32_t decaySamples_ = 0;
+    float sustainLevel_ = 1.0f;
     std::uint32_t releaseSamples_ = 0;
     bool configured_ = false;
 };
