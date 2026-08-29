@@ -75,3 +75,18 @@ jobs:
 
       - name: Run top-level example tests
         run: ctest --test-dir build-root-examples -C Debug --output-on-failure -R '^webview_gui_examples_'
+
+      - name: Configure pinned clap-wrapper foundation
+        run: >-
+          cmake
+          -S examples
+          -B build-wrapper-foundation
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+
+      - name: Verify pinned clap-wrapper foundation
+        run: >-
+          ctest --test-dir build-wrapper-foundation -C Debug --output-on-failure
+          --no-tests=error -R '^webview_gui_examples_wrapper_foundation$'
