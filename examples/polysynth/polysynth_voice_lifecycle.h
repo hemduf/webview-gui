@@ -74,8 +74,34 @@ public:
                                BoundarySink &boundarySink,
                                VoiceSink &voiceSink,
                                NoteEndSink &noteEndSink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithBoundariesAndEvents(events,
+                                              framesCount,
+                                              boundarySink,
+                                              ignoredCoreEvent,
+                                              voiceSink,
+                                              noteEndSink);
+    }
+
+    template <typename BoundarySink,
+              typename CoreEventSink,
+              typename VoiceSink,
+              typename NoteEndSink>
+    bool processWithBoundariesAndEvents(const clap_input_events_t *events,
+                                        std::uint32_t framesCount,
+                                        BoundarySink &boundarySink,
+                                        CoreEventSink &coreEventSink,
+                                        VoiceSink &voiceSink,
+                                        NoteEndSink &noteEndSink) noexcept {
         static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
                       "PolySynth voice lifecycle boundary sink must be noexcept");
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth lifecycle core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<VoiceSink &, const VoiceLifecycleEvent &>,
                       "PolySynth voice lifecycle sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
@@ -85,8 +111,8 @@ public:
                                  const ScheduledNoteEvent &event) noexcept {
             applyScheduled(event, voiceSink, noteEndSink);
         };
-        return scheduler_.processWithBoundaries(
-            events, framesCount, boundarySink, scheduledSink);
+        return scheduler_.processWithBoundariesAndEvents(
+            events, framesCount, boundarySink, coreEventSink, scheduledSink);
     }
 
     template <typename NoteEndSink>
