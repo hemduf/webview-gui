@@ -187,6 +187,18 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     )
     target_compile_features(webview_gui_example_gain_webview_resource_tests PRIVATE cxx_std_17)
 
+    add_executable(webview_gui_example_gain_webview_param_tests
+        tests/gain_webview_param_tests.cpp
+    )
+    target_include_directories(webview_gui_example_gain_webview_param_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/gain
+        ${CMAKE_CURRENT_LIST_DIR}/common
+    )
+    target_link_libraries(webview_gui_example_gain_webview_param_tests PRIVATE
+        webview_gui_example_gain_clap_core
+    )
+    target_compile_features(webview_gui_example_gain_webview_param_tests PRIVATE cxx_std_17)
+
     add_test(NAME webview_gui_examples_gain_core
         COMMAND webview_gui_example_gain_core_tests)
     add_test(NAME webview_gui_examples_gain_meter
@@ -195,6 +207,8 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
         COMMAND webview_gui_example_gain_clap_tests)
     add_test(NAME webview_gui_examples_gain_webview_resource
         COMMAND webview_gui_example_gain_webview_resource_tests)
+    add_test(NAME webview_gui_examples_gain_webview_param
+        COMMAND webview_gui_example_gain_webview_param_tests)
 endif()
 
 # #28 only prepares the pinned native wrapper integration point. Concrete VST3,
