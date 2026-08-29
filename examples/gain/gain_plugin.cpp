@@ -25,7 +25,7 @@ using GainBase = clap::helpers::Plugin<
 static_assert(std::atomic<float>::is_always_lock_free,
               "Gain parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<bool>::is_always_lock_free,
-              "Bypass parameter snapshots must be lock-free on supported targets");
+              "Bypass/UI flags must be lock-free on supported targets");
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "Gain state handoff revision must be lock-free on supported targets");
 static_assert(sizeof(double) == sizeof(uint64_t), "Gain state requires a 64-bit double");
@@ -61,6 +61,9 @@ constexpr const char kEditorScriptUri[] = "/gain.js";
 constexpr const char kEditorScriptMime[] = "text/javascript; charset=utf-8";
 constexpr uint32_t kEditorWidth = 480;
 constexpr uint32_t kEditorHeight = 320;
+constexpr std::size_t kUiParameterMessageSize = 16;
+constexpr uint8_t kUiGainParameter = 1;
+constexpr uint8_t kUiBypassParameter = 2;
 constexpr const char kEditorHtml[] = R"html(<!doctype html>
 <html lang="en">
 <head>
@@ -140,6 +143,27 @@ function endGain() {
     gainGestureOpen = false;
 }
 
+function applyParameterSync(data) {
+    if (!(data instanceof ArrayBuffer) || data.byteLength !== 16)
+        return;
+    const bytes = new Uint8Array(data);
+    if (bytes[0] !== 0x57 || bytes[1] !== 0x56 ||
+        bytes[2] !== 0x55 || bytes[3] !== 0x31 ||
+        bytes[5] !== 0 || bytes[6] !== 0 || bytes[7] !== 0)
+        return;
+    const value = new DataView(data).getFloat64(8, true);
+    if (!Number.isFinite(value))
+        return;
+    if (bytes[4] === PARAM_GAIN) {
+        gain.value = String(value);
+        gainValue.textContent = `${value.toFixed(2)} dB`;
+    } else if (bytes[4] === PARAM_BYPASS) {
+        bypass.checked = value !== 0;
+    }
+}
+
+window.addEventListener("message", event => applyParameterSync(event.data));
+
 gain.addEventListener("pointerdown", beginGain);
 gain.addEventListener("input", () => {
     beginGain();
@@ -187,6 +211,20 @@ void storeU32Le(uint8_t *destination, uint32_t value) noexcept {
 void storeU64Le(uint8_t *destination, uint64_t value) noexcept {
     for (unsigned i = 0; i < 8; ++i)
         destination[i] = static_cast<uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+std::array<uint8_t, kUiParameterMessageSize> encodeUiParameterMessage(uint8_t parameter,
+                                                                      double value) noexcept {
+    std::array<uint8_t, kUiParameterMessageSize> bytes{};
+    bytes[0] = 0x57;
+    bytes[1] = 0x56;
+    bytes[2] = 0x55;
+    bytes[3] = 0x31;
+    bytes[4] = parameter;
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    storeU64Le(bytes.data() + 8, bits);
+    return bytes;
 }
 
 uint32_t loadU32Le(const uint8_t *source) noexcept {
@@ -298,6 +336,21 @@ protected:
         return CLAP_PROCESS_CONTINUE;
     }
 
+    void onMainThread() noexcept override {
+        uiCallbackPending_.store(false, std::memory_order_release);
+        if (!guiCreated_ || !uiVisible_.load(std::memory_order_acquire))
+            return;
+
+        const auto gainMessage = encodeUiParameterMessage(
+            kUiGainParameter,
+            static_cast<double>(gainDbSnapshot_.load(std::memory_order_relaxed)));
+        const auto bypassMessage = encodeUiParameterMessage(
+            kUiBypassParameter,
+            bypassSnapshot_.load(std::memory_order_relaxed) ? 1.0 : 0.0);
+        (void)gui_.send(gainMessage.data(), gainMessage.size());
+        (void)gui_.send(bypassMessage.data(), bypassMessage.size());
+    }
+
     bool enableDraftExtensions() const noexcept override { return true; }
     bool implementsWebview() const noexcept override { return true; }
 
@@ -386,6 +439,7 @@ protected:
     }
 
     void guiDestroy() noexcept override {
+        uiVisible_.store(false, std::memory_order_release);
         guiParameterBridge_.closeOpenGestures();
         gui_.destroy();
         guiCreated_ = false;
@@ -393,21 +447,27 @@ protected:
     }
 
     bool guiSetScale(double) noexcept override {
-        // The CLAP WebView API uses logical pixels and explicitly forbids
-        // set_scale(). No native backend in this example applies explicit scale.
         return false;
     }
 
     bool guiShow() noexcept override {
         if (!guiCreated_)
             return false;
-        return hostOwnedWebviewGui_ ? true : gui_.show();
+        const bool shown = hostOwnedWebviewGui_ ? true : gui_.show();
+        if (!shown)
+            return false;
+        uiVisible_.store(true, std::memory_order_release);
+        requestUiParameterSync();
+        return true;
     }
 
     bool guiHide() noexcept override {
         if (!guiCreated_)
             return false;
-        return hostOwnedWebviewGui_ ? true : gui_.hide();
+        const bool hidden = hostOwnedWebviewGui_ ? true : gui_.hide();
+        if (hidden)
+            uiVisible_.store(false, std::memory_order_release);
+        return hidden;
     }
 
     bool guiGetSize(uint32_t *width, uint32_t *height) noexcept override {
@@ -476,20 +536,11 @@ protected:
         if (!decodeState(bytes, gainDb, bypassed))
             return false;
 
-        // State callbacks are main-thread operations, while process() may be on
-        // the RT thread. Publish a complete pending state through lock-free
-        // atomics and let the parameter/process thread apply it between blocks.
-        // This avoids mutating GainProcessor concurrently with process().
         const auto gain = static_cast<float>(gainDb);
         pendingLoadedGainDb_.store(gain, std::memory_order_relaxed);
         pendingLoadedBypass_.store(bypassed, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
-
-        // Host-visible values update before load() returns. If process() races
-        // this publication, its end-of-block synchronization detects the new
-        // revision and restores these loaded values instead of overwriting them.
-        gainDbSnapshot_.store(gain, std::memory_order_relaxed);
-        bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
+        publishParameterSnapshots(gain, bypassed);
         return true;
     }
 
@@ -630,6 +681,25 @@ protected:
     }
 
 private:
+    void requestUiParameterSync() noexcept {
+        if (!host_ || !host_->request_callback ||
+            !uiVisible_.load(std::memory_order_acquire))
+            return;
+        bool expected = false;
+        if (uiCallbackPending_.compare_exchange_strong(expected,
+                                                       true,
+                                                       std::memory_order_acq_rel,
+                                                       std::memory_order_relaxed))
+            host_->request_callback(host_);
+    }
+
+    void publishParameterSnapshots(float gain, bool bypassed) noexcept {
+        const auto previousGain = gainDbSnapshot_.exchange(gain, std::memory_order_relaxed);
+        const auto previousBypass = bypassSnapshot_.exchange(bypassed, std::memory_order_relaxed);
+        if (previousGain != gain || previousBypass != bypassed)
+            requestUiParameterSync();
+    }
+
     void applyPendingLoadedState() noexcept {
         const auto revision = loadedStateRevision_.load(std::memory_order_acquire);
         if (revision == appliedLoadedStateRevision_)
@@ -643,16 +713,13 @@ private:
     }
 
     void syncParameterSnapshotsFromProcessor() noexcept {
-        gainDbSnapshot_.store(static_cast<float>(processor_.processor().gainDb()),
-                              std::memory_order_relaxed);
-        bypassSnapshot_.store(processor_.processor().bypassed(), std::memory_order_relaxed);
+        publishParameterSnapshots(static_cast<float>(processor_.processor().gainDb()),
+                                  processor_.processor().bypassed());
     }
 
     void restoreSnapshotsFromPendingState() noexcept {
-        gainDbSnapshot_.store(pendingLoadedGainDb_.load(std::memory_order_relaxed),
-                              std::memory_order_relaxed);
-        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_relaxed),
-                              std::memory_order_relaxed);
+        publishParameterSnapshots(pendingLoadedGainDb_.load(std::memory_order_relaxed),
+                                  pendingLoadedBypass_.load(std::memory_order_relaxed));
     }
 
     void syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
@@ -664,9 +731,6 @@ private:
 
         syncParameterSnapshotsFromProcessor();
 
-        // A main-thread load may have published after revisionBefore but before
-        // the processor snapshots above. In that case the loaded state wins;
-        // restore it so get_value()/stateSave() cannot observe stale values.
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore)
             restoreSnapshotsFromPendingState();
@@ -678,6 +742,8 @@ private:
     mutable GainWebviewParameterBridge guiParameterBridge_{};
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
+    std::atomic<bool> uiVisible_{false};
+    std::atomic<bool> uiCallbackPending_{false};
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
 
