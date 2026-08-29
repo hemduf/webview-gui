@@ -85,11 +85,12 @@ public:
     // already guarantees sample-sorted input; equal-time order is significant and
     // is forwarded exactly as received.
     //
-    // An adapter may additionally expose `noteOnDispatched(const clap_event_note_t&)`
-    // on its core-event sink. The scheduler invokes that optional hook only after a
-    // valid NOTE_ON has been allocated and dispatched to the voice/lifecycle sink.
-    // This keeps the public core-event stream note-free while giving higher layers
-    // a bounded sample-boundary reconciliation point before any audio is rendered.
+    // An adapter may additionally expose
+    // `noteOnDispatched(const ScheduledNoteEvent&)` on its core-event sink. The
+    // scheduler invokes that optional hook only after a valid NOTE_ON has been
+    // allocated and dispatched to the voice/lifecycle sink. Supplying the exact
+    // allocated slot is important for hosts which use note_id == -1 and can
+    // therefore replace a generation with the same visible identity tuple.
     template <typename BoundarySink, typename CoreEventSink, typename Sink>
     bool processWithBoundariesAndEvents(const clap_input_events_t *events,
                                         std::uint32_t framesCount,
@@ -209,7 +210,7 @@ private:
 
     template <typename CoreEventSink>
     static auto notifyNoteOnDispatched(CoreEventSink &coreEventSink,
-                                       const clap_event_note_t &event,
+                                       const ScheduledNoteEvent &event,
                                        int) noexcept
         -> decltype(static_cast<bool>(coreEventSink.noteOnDispatched(event))) {
         static_assert(noexcept(coreEventSink.noteOnDispatched(event)),
@@ -219,7 +220,7 @@ private:
 
     template <typename CoreEventSink>
     static bool notifyNoteOnDispatched(CoreEventSink &,
-                                       const clap_event_note_t &,
+                                       const ScheduledNoteEvent &,
                                        long) noexcept {
         return true;
     }
@@ -246,7 +247,7 @@ private:
             allocation.replacedIdentity,
         };
         sink(scheduled);
-        return notifyNoteOnDispatched(coreEventSink, event, 0);
+        return notifyNoteOnDispatched(coreEventSink, scheduled, 0);
     }
 
     template <typename Sink>
