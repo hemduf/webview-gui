@@ -51,6 +51,13 @@ public:
     [[nodiscard]] VoiceIndex capacity() const noexcept { return capacity_; }
     [[nodiscard]] VoiceIndex activeCount() const noexcept { return activeCount_; }
 
+    [[nodiscard]] bool voiceIdentity(VoiceIndex index, VoiceIdentity &identity) const noexcept {
+        if (index >= capacity_ || !slots_[index].active)
+            return false;
+        identity = slots_[index].identity;
+        return true;
+    }
+
     [[nodiscard]] VoiceIndex findExact(const VoiceIdentity &identity) const noexcept {
         for (VoiceIndex index = 0; index < capacity_; ++index) {
             const auto &slot = slots_[index];
