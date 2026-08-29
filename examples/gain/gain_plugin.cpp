@@ -98,6 +98,16 @@ bool copyText(char *destination, std::size_t capacity, const char *text) noexcep
     return written >= 0 && static_cast<std::size_t>(written) < capacity;
 }
 
+bool copyExactText(char *destination, std::size_t capacity, const char *text) noexcept {
+    if (!destination || !text)
+        return false;
+    const auto length = std::strlen(text) + 1u;
+    if (capacity < length)
+        return false;
+    std::memcpy(destination, text, length);
+    return true;
+}
+
 void storeU32Le(uint8_t *destination, uint32_t value) noexcept {
     for (unsigned i = 0; i < 4; ++i)
         destination[i] = static_cast<uint8_t>((value >> (i * 8u)) & 0xffu);
@@ -225,7 +235,7 @@ protected:
                             const clap_ostream_t *dataStream) override {
         if (!path || std::strcmp(path, kEditorUri) != 0 || !dataStream || !dataStream->write)
             return false;
-        if (!copyText(mime, mimeCapacity, kEditorMime))
+        if (!copyExactText(mime, mimeCapacity, kEditorMime))
             return false;
 
         return writeAll(dataStream,
