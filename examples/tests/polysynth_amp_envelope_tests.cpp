@@ -176,5 +176,53 @@ int main() {
         return 14;
     }
 
+    // Specialist review regression: changing the default envelope while a
+    // voice is active must not splice new stage lengths into the middle of that
+    // voice's current lifecycle. Each NOTE_ON snapshots one coherent ADSR
+    // configuration; subsequent configuration changes apply to future voices.
+    engine.reset();
+    if (!engine.setAmpEnvelope(4, 4, 0.5f, 4))
+        return 15;
+    InputEvents snapshotOn;
+    if (!snapshotOn.pushNote(0, CLAP_EVENT_NOTE_ON, 702, 0, 0, 69, 1.0))
+        return 16;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    NoteEndCapture snapshotEnds;
+    if (!engine.process(&snapshotOn.input, 2, left.data(), right.data(), snapshotEnds) ||
+        !engine.voiceEnvelopeLevel(0, level) || !approximately(level, 0.5f))
+        return 17;
+
+    if (!engine.setAmpEnvelope(0, 0, 1.0f, 1))
+        return 18;
+
+    left.fill(0.0f);
+    right.fill(0.0f);
+    if (!engine.process(nullptr, 2, left.data(), right.data(), snapshotEnds) ||
+        !engine.voiceEnvelopeLevel(0, level) || !approximately(level, 1.0f)) {
+        std::cerr << "active voice attack/decay changed when defaults were updated\n";
+        return 19;
+    }
+
+    left.fill(0.0f);
+    right.fill(0.0f);
+    if (!engine.process(nullptr, 4, left.data(), right.data(), snapshotEnds) ||
+        !engine.voiceEnvelopeLevel(0, level) || !approximately(level, 0.5f)) {
+        std::cerr << "active voice did not preserve its NOTE_ON decay/sustain snapshot\n";
+        return 20;
+    }
+
+    InputEvents snapshotOff;
+    if (!snapshotOff.pushNote(0, CLAP_EVENT_NOTE_OFF, 702, 0, 0, 69))
+        return 21;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    if (!engine.process(&snapshotOff.input, 2, left.data(), right.data(), snapshotEnds) ||
+        snapshotEnds.count != 0 || !engine.voiceEnvelopeLevel(0, level) ||
+        !approximately(level, 0.25f)) {
+        std::cerr << "active voice release length changed after default envelope update\n";
+        return 22;
+    }
+
     return 0;
 }
