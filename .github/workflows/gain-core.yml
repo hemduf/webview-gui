@@ -50,10 +50,10 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
 
-      - name: Build Gain tests
+      - name: Build Gain CLAP and tests
         run: >-
           cmake --build build-gain-core
-          --target webview_gui_example_gain_core_tests webview_gui_example_gain_clap_tests
+          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_clap_tests
           --config Debug --parallel
 
       - name: Run Gain tests
