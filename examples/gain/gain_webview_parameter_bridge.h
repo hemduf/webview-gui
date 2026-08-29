@@ -56,6 +56,16 @@ public:
         return true;
     }
 
+    void closeOpenGestures() noexcept {
+        bool queued = false;
+        if (gainGestureOpen_)
+            queued = queueGestureEnd(kGainParamId) || queued;
+        if (bypassGestureOpen_)
+            queued = queueGestureEnd(kBypassParamId) || queued;
+        if (queued)
+            schedulePending();
+    }
+
     void drain(const clap_output_events_t *out, GainEventProcessor &processor) noexcept {
         if (!out || !out->try_push) {
             if (hasPending())
@@ -195,6 +205,13 @@ private:
         if (paramId == kBypassParamId)
             return &bypassGestureOpen_;
         return nullptr;
+    }
+
+    bool queueGestureEnd(clap_id paramId) noexcept {
+        Command command{};
+        command.kind = CommandKind::GestureEnd;
+        command.paramId = paramId;
+        return pushPreservingGestureClosure(command);
     }
 
     bool pushPreservingGestureClosure(const Command &command) noexcept {
