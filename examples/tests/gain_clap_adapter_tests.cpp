@@ -159,6 +159,20 @@ int main() {
         return 12;
     }
 
+    // CLAP stepped parameters use integer cast/truncation semantics. A fractional
+    // bypass value in [0,1) therefore maps to 0, not a thresholded true value.
+    InputEvents fractionalBypass;
+    if (!fractionalBypass.pushParamValue(0, kBypassParamId, 0.9)) {
+        plugin->destroy(plugin);
+        return 18;
+    }
+    params->flush(plugin, fractionalBypass.clapInputEvents(), nullptr);
+    if (!params->get_value(plugin, kBypassParamId, &value) || value != 0.0) {
+        std::cerr << "fractional stepped bypass did not use CLAP truncation semantics\n";
+        plugin->destroy(plugin);
+        return 19;
+    }
+
     if (!plugin->activate(plugin, 48000.0, 1, 64) || !plugin->start_processing(plugin)) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
