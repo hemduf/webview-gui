@@ -1,1 +1,0 @@
-RED: native CLAP hosts without clap.webview/3 must still negotiate the bundled Gain editor through cocoa/win32/x11.
