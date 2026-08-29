@@ -14,6 +14,11 @@
 
 namespace webview_gui::examples::polysynth {
 
+// Host-facing parameter adapter for the #31 reference voice engine. Persistent
+// CLAP base values, global modulation, voice-addressed modulation and note
+// expressions remain separate from the DSP state. The adapter consumes the same
+// ordered core-event stream that drives NOTE events, so changes are applied at
+// the exact sample boundary without resetting oscillator phase or lifecycle state.
 class ParameterVoiceEngine : public VoiceEngine {
 public:
     bool configure(std::size_t requestedVoices,
@@ -38,6 +43,7 @@ public:
     bool setFineTuningCents(float cents) noexcept {
         if (!VoiceEngine::setFineTuningCents(cents))
             return false;
+
         fineTuneBaseCents_ = static_cast<double>(cents);
         fineTuneGlobalModulationCents_ = 0.0;
         return polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_) &&
@@ -74,9 +80,11 @@ public:
 
         struct CoreEventSink {
             ParameterVoiceEngine *owner = nullptr;
+
             bool operator()(const clap_event_header_t &header) noexcept {
                 return owner && owner->applyCoreEvent(header);
             }
+
             bool noteOnDispatched(const ScheduledNoteEvent &event) noexcept {
                 return owner && owner->noteOnDispatched(event);
             }
@@ -149,11 +157,13 @@ private:
     bool storePendingTuning(const clap_event_note_expression_t &event) noexcept {
         const auto address = addressFrom(event);
         for (auto &entry : pendingTuningExpressions_) {
-            if (!entry.active || entry.time != event.header.time || entry.address != address)
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
                 continue;
             entry.semitones = event.value;
             return true;
         }
+
         for (auto &entry : pendingTuningExpressions_) {
             if (entry.active)
                 continue;
@@ -169,11 +179,13 @@ private:
     bool storePendingVolume(const clap_event_note_expression_t &event) noexcept {
         const auto address = addressFrom(event);
         for (auto &entry : pendingVolumeExpressions_) {
-            if (!entry.active || entry.time != event.header.time || entry.address != address)
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
                 continue;
             entry.gain = event.value;
             return true;
         }
+
         for (auto &entry : pendingVolumeExpressions_) {
             if (entry.active)
                 continue;
@@ -192,7 +204,8 @@ private:
         bool found = false;
         semitones = 0.0;
         for (const auto &entry : pendingTuningExpressions_) {
-            if (!entry.active || entry.time != time || !addressMatches(identity, entry.address))
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
                 continue;
             semitones = entry.semitones;
             found = true;
@@ -206,7 +219,8 @@ private:
         bool found = false;
         gain = 1.0;
         for (const auto &entry : pendingVolumeExpressions_) {
-            if (!entry.active || entry.time != time || !addressMatches(identity, entry.address))
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
                 continue;
             gain = entry.gain;
             found = true;
@@ -215,13 +229,21 @@ private:
     }
 
     double globalFineTuningCents() const noexcept {
-        return std::clamp(fineTuneBaseCents_ + fineTuneGlobalModulationCents_, -100.0, 100.0);
+        return std::clamp(fineTuneBaseCents_ + fineTuneGlobalModulationCents_,
+                          -100.0,
+                          100.0);
     }
 
     bool restoreGlobalFineTuningDefault() noexcept {
-        return VoiceEngine::setFineTuningCents(static_cast<float>(globalFineTuningCents()));
+        return VoiceEngine::setFineTuningCents(
+            static_cast<float>(globalFineTuningCents()));
     }
 
+    // The scheduler supplies the exact allocated slot after lifecycle/DSP NOTE_ON
+    // dispatch but before rendering resumes. Reset adapter-local state for every
+    // generation, even when a host without note IDs reuses the identical visible
+    // tuple in the same slot. Then apply any earlier same-sample expression before
+    // the first sample of the new generation is rendered.
     bool noteOnDispatched(const ScheduledNoteEvent &event) noexcept {
         const auto index = event.voiceIndex;
         if (index >= capacity() || event.kind != ScheduledNoteKind::NoteOn)
@@ -241,8 +263,11 @@ private:
             return false;
 
         double volumeGain = 1.0;
-        return !pendingVolumeFor(event.identity, event.time, volumeGain) ||
-               VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(volumeGain));
+        if (pendingVolumeFor(event.identity, event.time, volumeGain) &&
+            !VoiceEngine::setVoiceVolumeExpression(index,
+                                                   static_cast<float>(volumeGain)))
+            return false;
+        return true;
     }
 
     bool syncVoices() noexcept {
@@ -286,10 +311,15 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
+            // Fine Tune remains a +/-100-cent parameter domain. CLAP TUNING is
+            // a separate statement-of-value offset in semitones and must retain
+            // its full +/-120-semitone range rather than inheriting the parameter
+            // clamp. The resulting voice-local offset is bounded to +/-12100c.
             const auto parameterCents = std::clamp(base + modulation, -100.0, 100.0);
             const auto effectiveCents =
                 parameterCents + voiceTuningExpressionSemitones_[index] * 100.0;
-            if (!VoiceEngine::setVoiceFineTuningCents(index, static_cast<float>(effectiveCents)))
+            if (!VoiceEngine::setVoiceFineTuningCents(
+                    index, static_cast<float>(effectiveCents)))
                 return false;
         }
         return true;
@@ -305,7 +335,8 @@ private:
         const auto address = addressFrom(event);
         bool matched = false;
         for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
-            if (!trackedVoices_[index] || !addressMatches(trackedIdentities_[index], address))
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
                 continue;
             voiceTuningExpressionSemitones_[index] = event.value;
             matched = true;
@@ -325,9 +356,11 @@ private:
 
         const auto address = addressFrom(event);
         for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
-            if (!trackedVoices_[index] || !addressMatches(trackedIdentities_[index], address))
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
                 continue;
-            if (!VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(event.value)))
+            if (!VoiceEngine::setVoiceVolumeExpression(
+                    index, static_cast<float>(event.value)))
                 return false;
         }
         return storePendingVolume(event);
@@ -342,7 +375,8 @@ private:
         if (header.type == CLAP_EVENT_NOTE_EXPRESSION) {
             if (header.size < sizeof(clap_event_note_expression_t))
                 return false;
-            const auto &event = *reinterpret_cast<const clap_event_note_expression_t *>(&header);
+            const auto &event =
+                *reinterpret_cast<const clap_event_note_expression_t *>(&header);
             switch (event.expression_id) {
                 case CLAP_NOTE_EXPRESSION_TUNING:
                     return applyTuningExpression(event);
@@ -356,17 +390,23 @@ private:
         if (header.type == CLAP_EVENT_PARAM_VALUE) {
             if (header.size < sizeof(clap_event_param_value_t))
                 return false;
-            const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(&header);
+            const auto &event =
+                *reinterpret_cast<const clap_event_param_value_t *>(&header);
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
-            if (!std::isfinite(event.value) || event.value < spec->minValue || event.value > spec->maxValue)
+            if (!std::isfinite(event.value) ||
+                event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
                 return false;
-            if (isGlobalAddress(event.note_id, event.port_index, event.channel, event.key))
+
+            if (isGlobalAddress(event.note_id,
+                                event.port_index,
+                                event.channel,
+                                event.key))
                 fineTuneBaseCents_ = event.value;
             return applyFineTuningState();
         }
@@ -374,7 +414,8 @@ private:
         if (header.type == CLAP_EVENT_PARAM_MOD) {
             if (header.size < sizeof(clap_event_param_mod_t))
                 return false;
-            const auto &event = *reinterpret_cast<const clap_event_param_mod_t *>(&header);
+            const auto &event =
+                *reinterpret_cast<const clap_event_param_mod_t *>(&header);
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
@@ -382,9 +423,14 @@ private:
                 return true;
             if (!std::isfinite(event.amount))
                 return false;
-            if (!syncVoices() || !polyphonicState_.applyModulation(fineTuneSlot(), event))
+            if (!syncVoices() ||
+                !polyphonicState_.applyModulation(fineTuneSlot(), event))
                 return false;
-            if (isGlobalAddress(event.note_id, event.port_index, event.channel, event.key))
+
+            if (isGlobalAddress(event.note_id,
+                                event.port_index,
+                                event.channel,
+                                event.key))
                 fineTuneGlobalModulationCents_ = event.amount;
             return applyFineTuningState();
         }
@@ -396,8 +442,10 @@ private:
     std::array<VoiceIdentity, VoiceAllocator::kMaximumVoices> trackedIdentities_{};
     std::array<bool, VoiceAllocator::kMaximumVoices> trackedVoices_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
-    std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices> pendingTuningExpressions_{};
-    std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices> pendingVolumeExpressions_{};
+    std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
+        pendingTuningExpressions_{};
+    std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices>
+        pendingVolumeExpressions_{};
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
