@@ -78,11 +78,6 @@ public:
                  NoteEndSink &noteEndSink) noexcept {
         clearTransientExpressionState();
 
-        // The scheduler keeps its normal core-event callback note-free, but it
-        // detects this optional post-NOTE_ON hook after allocation/lifecycle/DSP
-        // dispatch. That gives note expressions received earlier at the same
-        // sample a deterministic reconciliation point before any sample at that
-        // boundary is rendered, without reordering the host event stream.
         struct CoreEventSink {
             ParameterVoiceEngine *owner = nullptr;
 
@@ -90,7 +85,7 @@ public:
                 return owner && owner->applyCoreEvent(header);
             }
 
-            bool noteOnDispatched(const clap_event_note_t &event) noexcept {
+            bool noteOnDispatched(const ScheduledNoteEvent &event) noexcept {
                 return owner && owner->noteOnDispatched(event);
             }
         } coreEventSink{this};
@@ -115,12 +110,6 @@ private:
         bool active = false;
     };
 
-    struct PreparedVoiceStart {
-        VoiceIdentity identity{};
-        double tuningSemitones = 0.0;
-        bool active = false;
-    };
-
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -140,10 +129,6 @@ private:
                (address.key == -1 || address.key == identity.key);
     }
 
-    static VoiceIdentity identityFrom(const clap_event_note_t &event) noexcept {
-        return {event.note_id, event.port_index, event.channel, event.key};
-    }
-
     static VoiceIdentity addressFrom(const clap_event_note_expression_t &event) noexcept {
         return {event.note_id, event.port_index, event.channel, event.key};
     }
@@ -158,15 +143,10 @@ private:
     void clearTransientExpressionState() noexcept {
         for (auto &entry : pendingTuningExpressions_)
             entry = {};
-        for (auto &entry : preparedVoiceStarts_)
-            entry = {};
     }
 
     bool storePendingTuning(const clap_event_note_expression_t &event) noexcept {
         const auto address = addressFrom(event);
-
-        // Note expressions are statements, not deltas. Coalesce repeated values
-        // for the same sample/address before consuming another fixed slot.
         for (auto &entry : pendingTuningExpressions_) {
             if (!entry.active || entry.time != event.header.time ||
                 entry.address != address)
@@ -202,31 +182,6 @@ private:
         return found;
     }
 
-    bool rememberPreparedVoiceStart(const VoiceIdentity &identity,
-                                    double tuningSemitones) noexcept {
-        for (auto &entry : preparedVoiceStarts_) {
-            if (entry.active)
-                continue;
-            entry.identity = identity;
-            entry.tuningSemitones = tuningSemitones;
-            entry.active = true;
-            return true;
-        }
-        return false;
-    }
-
-    bool consumePreparedVoiceStart(const VoiceIdentity &identity,
-                                   double &tuningSemitones) noexcept {
-        for (auto &entry : preparedVoiceStarts_) {
-            if (!entry.active || entry.identity != identity)
-                continue;
-            tuningSemitones = entry.tuningSemitones;
-            entry = {};
-            return true;
-        }
-        return false;
-    }
-
     double globalFineTuningCents() const noexcept {
         return std::clamp(fineTuneBaseCents_ + fineTuneGlobalModulationCents_,
                           -100.0,
@@ -238,29 +193,26 @@ private:
             static_cast<float>(globalFineTuningCents()));
     }
 
-    bool prepareNoteOn(const clap_event_note_t &event) noexcept {
-        const auto identity = identityFrom(event);
+    // The scheduler supplies the exact allocated slot after lifecycle/DSP NOTE_ON
+    // dispatch but before rendering resumes. Reset adapter-local state for every
+    // generation, even when a host without note IDs reuses the identical visible
+    // tuple in the same slot. Then apply any earlier same-sample expression before
+    // the first sample of the new generation is rendered.
+    bool noteOnDispatched(const ScheduledNoteEvent &event) noexcept {
+        const auto index = event.voiceIndex;
+        if (index >= capacity() || event.kind != ScheduledNoteKind::NoteOn)
+            return false;
+
+        if (!polyphonicState_.startVoice(index, event.identity))
+            return false;
+        trackedVoices_[index] = true;
+        trackedIdentities_[index] = event.identity;
+        voiceTuningExpressionSemitones_[index] = 0.0;
+
         double expressionSemitones = 0.0;
-        (void)pendingTuningFor(identity, event.header.time, expressionSemitones);
+        if (pendingTuningFor(event.identity, event.time, expressionSemitones))
+            voiceTuningExpressionSemitones_[index] = expressionSemitones;
 
-        const auto cents = std::clamp(globalFineTuningCents() +
-                                          expressionSemitones * 100.0,
-                                      -100.0,
-                                      100.0);
-        if (!VoiceEngine::setFineTuningCents(static_cast<float>(cents)))
-            return false;
-        return rememberPreparedVoiceStart(identity, expressionSemitones);
-    }
-
-    // NOTE_ON has already been allocated and dispatched when this hook runs, but
-    // rendering for its timestamp has not resumed yet. Consume any earlier
-    // same-sample expression into the newly tracked voice and retune its phase
-    // increment before the first generated sample. The global NOTE_ON default is
-    // restored by applyFineTuningState(), so a targeted expression cannot leak to
-    // later voices at the same or subsequent timestamps.
-    bool noteOnDispatched(const clap_event_note_t &event) noexcept {
-        if (!prepareNoteOn(event))
-            return false;
         return applyFineTuningState();
     }
 
@@ -285,9 +237,6 @@ private:
                 trackedVoices_[index] = true;
                 trackedIdentities_[index] = identity;
                 voiceTuningExpressionSemitones_[index] = 0.0;
-                double preparedTuning = 0.0;
-                if (consumePreparedVoiceStart(identity, preparedTuning))
-                    voiceTuningExpressionSemitones_[index] = preparedTuning;
             }
         }
         return true;
@@ -336,9 +285,6 @@ private:
             matched = true;
         }
 
-        // Retain the statement for any matching NOTE_ON which appears later at
-        // this same sample, even if existing voices already matched it now. CLAP
-        // requires a same-sample expression to affect all generated samples.
         if (!storePendingTuning(event))
             return false;
         return matched ? applyFineTuningState() : true;
@@ -417,7 +363,6 @@ private:
     std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
     std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
         pendingTuningExpressions_{};
-    std::array<PreparedVoiceStart, VoiceAllocator::kMaximumVoices> preparedVoiceStarts_{};
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
