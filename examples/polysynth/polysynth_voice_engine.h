@@ -257,12 +257,48 @@ public:
         return true;
     }
 
+    // Audio-thread pitch update for an already allocated generation. Only the
+    // phase increment changes: oscillator phase, envelope, filter state and the
+    // lifecycle generation remain continuous across the event boundary.
+    bool setVoiceFineTuningCents(VoiceAllocator::VoiceIndex index,
+                                 float cents) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(cents) || cents < -100.0f || cents > 100.0f)
+            return false;
+        voices_[index].phaseIncrement =
+            phaseIncrementForKeyAndFine(voices_[index].identity.key, cents);
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
                  float *left,
                  float *right,
                  NoteEndSink &noteEndSink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithEvents(events,
+                                 framesCount,
+                                 left,
+                                 right,
+                                 ignoredCoreEvent,
+                                 noteEndSink);
+    }
+
+    template <typename CoreEventSink, typename NoteEndSink>
+    bool processWithEvents(const clap_input_events_t *events,
+                           std::uint32_t framesCount,
+                           float *left,
+                           float *right,
+                           CoreEventSink &coreEventSink,
+                           NoteEndSink &noteEndSink) noexcept {
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth voice engine core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth voice engine NOTE_END sink must be noexcept");
 
@@ -297,8 +333,12 @@ public:
             applyVoiceEvent(event);
         };
 
-        if (!lifecycle_.processWithBoundaries(
-                events, framesCount, boundarySink, voiceSink, noteEndSink))
+        if (!lifecycle_.processWithBoundariesAndEvents(events,
+                                                       framesCount,
+                                                       boundarySink,
+                                                       coreEventSink,
+                                                       voiceSink,
+                                                       noteEndSink))
             return false;
         if (!renderOk)
             return false;
@@ -443,12 +483,17 @@ private:
             voice = {};
     }
 
-    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+    [[nodiscard]] double phaseIncrementForKeyAndFine(std::int16_t key,
+                                                     float fineCents) const noexcept {
         const double semitones = static_cast<double>(key - 69) +
                                  static_cast<double>(coarseTuningSemitones_) +
-                                 static_cast<double>(fineTuningCents_) / 100.0;
+                                 static_cast<double>(fineCents) / 100.0;
         const double frequency = kReferenceFrequency * std::exp2(semitones / 12.0);
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
+    }
+
+    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+        return phaseIncrementForKeyAndFine(key, fineTuningCents_);
     }
 
     static void enterDecayOrSustain(Voice &voice) noexcept {
