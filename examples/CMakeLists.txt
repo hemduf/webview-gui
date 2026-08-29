@@ -107,8 +107,19 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     )
     target_compile_features(webview_gui_example_polysynth_voice_allocator_tests PRIVATE cxx_std_17)
 
+    add_executable(webview_gui_example_polysynth_note_scheduler_tests
+        tests/polysynth_note_scheduler_tests.cpp
+    )
+    target_include_directories(webview_gui_example_polysynth_note_scheduler_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/polysynth
+    )
+    target_link_libraries(webview_gui_example_polysynth_note_scheduler_tests PRIVATE clap)
+    target_compile_features(webview_gui_example_polysynth_note_scheduler_tests PRIVATE cxx_std_17)
+
     add_test(NAME webview_gui_examples_polysynth_voice_allocator
         COMMAND webview_gui_example_polysynth_voice_allocator_tests)
+    add_test(NAME webview_gui_examples_polysynth_note_scheduler
+        COMMAND webview_gui_example_polysynth_note_scheduler_tests)
 endif()
 
 # #28 only prepares the pinned native wrapper integration point. Concrete VST3,
