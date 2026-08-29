@@ -1,0 +1,61 @@
+name: PolySynth core contract
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    paths:
+      - 'examples/polysynth/**'
+      - 'examples/tests/polysynth_voice_allocator_tests.cpp'
+      - 'examples/CMakeLists.txt'
+      - '.github/workflows/polysynth-core.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: polysynth-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  allocator:
+    name: ${{ matrix.os }} PolySynth allocator
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure PolySynth allocator tests
+        run: >-
+          cmake
+          -S examples
+          -B build-polysynth-core
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build PolySynth allocator tests
+        run: >-
+          cmake --build build-polysynth-core
+          --target webview_gui_example_polysynth_voice_allocator_tests
+          --config Debug --parallel
+
+      - name: Run PolySynth allocator tests
+        run: >-
+          ctest --test-dir build-polysynth-core -C Debug --output-on-failure
+          --no-tests=error -R '^webview_gui_examples_polysynth_voice_allocator$'
