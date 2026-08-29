@@ -26,6 +26,10 @@ public:
         decaySamples_ = 0;
         sustainLevel_ = 1.0f;
         releaseSamples_ = releaseSamples;
+        filterEnabled_ = false;
+        filterA1_ = 0.0;
+        filterA2_ = 0.0;
+        filterA3_ = 0.0;
         configured_ = true;
         clearVoices();
         return true;
@@ -49,6 +53,39 @@ public:
         decaySamples_ = decaySamples;
         sustainLevel_ = sustainLevel;
         releaseSamples_ = releaseSamples;
+        return true;
+    }
+
+    // Configures a stable two-integrator TPT low-pass snapshot for future
+    // NOTE_ON allocations. The resonance control maps [0, 0.99] to damping
+    // [2.0, 0.02]. Coefficients are calculated outside process() and copied into
+    // each new voice, so active voices cannot acquire zipper/discontinuous
+    // coefficient changes from a control update. Future CLAP modulation support
+    // can add an explicit audio-thread coefficient handoff without weakening this
+    // baseline contract.
+    bool setFilter(float cutoffHz, float resonance) noexcept {
+        if (!configured_ || !std::isfinite(cutoffHz) || !std::isfinite(resonance) ||
+            cutoffHz < kMinimumFilterCutoffHz ||
+            static_cast<double>(cutoffHz) > sampleRate_ * kMaximumFilterCutoffFraction ||
+            resonance < 0.0f || resonance > kMaximumFilterResonance)
+            return false;
+
+        const double g = std::tan(kPi * static_cast<double>(cutoffHz) / sampleRate_);
+        const double damping = 2.0 * (1.0 - static_cast<double>(resonance));
+        const double denominator = 1.0 + g * (g + damping);
+        if (!std::isfinite(g) || !std::isfinite(denominator) || denominator <= 0.0)
+            return false;
+
+        const double a1 = 1.0 / denominator;
+        const double a2 = g * a1;
+        const double a3 = g * a2;
+        if (!std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        filterA1_ = a1;
+        filterA2_ = a2;
+        filterA3_ = a3;
+        filterEnabled_ = true;
         return true;
     }
 
@@ -139,6 +176,11 @@ private:
         std::uint64_t generation = 0;
         double phase = 0.0;
         double phaseIncrement = 0.0;
+        double filterA1 = 0.0;
+        double filterA2 = 0.0;
+        double filterA3 = 0.0;
+        double filterIc1Eq = 0.0;
+        double filterIc2Eq = 0.0;
         float peakLevel = 0.0f;
         float sustainTarget = 0.0f;
         float level = 0.0f;
@@ -149,15 +191,25 @@ private:
         AmpStage ampStage = AmpStage::Sustain;
         bool active = false;
         bool deferredReleaseCompletion = false;
+        bool filterEnabled = false;
     };
 
     static constexpr double kReferenceFrequency = 440.0;
+    static constexpr double kPi = 3.1415926535897932384626433832795;
     static constexpr double kTwoPi = 6.283185307179586476925286766559;
     static constexpr double kMaximumPhaseIncrement = 0.49;
     static constexpr float kEnvelopeDenormalFloor = 1.0e-20f;
+    static constexpr double kFilterDenormalFloor = 1.0e-30;
+    static constexpr float kMinimumFilterCutoffHz = 20.0f;
+    static constexpr double kMaximumFilterCutoffFraction = 0.45;
+    static constexpr float kMaximumFilterResonance = 0.99f;
 
     static float flushEnvelopeDenormal(float value) noexcept {
         return std::fabs(value) < kEnvelopeDenormalFloor ? 0.0f : value;
+    }
+
+    static double flushFilterDenormal(double value) noexcept {
+        return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
     }
 
     void clearVoices() noexcept {
@@ -195,6 +247,10 @@ private:
         // deterministic non-zero first sample when attack is instantaneous.
         voice.phase = 0.25;
         voice.phaseIncrement = phaseIncrementForKey(event.note.identity.key);
+        voice.filterEnabled = filterEnabled_;
+        voice.filterA1 = filterA1_;
+        voice.filterA2 = filterA2_;
+        voice.filterA3 = filterA3_;
         voice.peakLevel = flushEnvelopeDenormal(static_cast<float>(event.note.velocity));
         voice.sustainTarget = flushEnvelopeDenormal(voice.peakLevel * sustainLevel_);
         voice.decaySamples = decaySamples_;
@@ -221,6 +277,19 @@ private:
         voice.stageRemaining = voice.releaseSamples;
         voice.stageStep = flushEnvelopeDenormal(
             voice.level / static_cast<float>(voice.releaseSamples));
+    }
+
+    static double processFilter(Voice &voice, double input) noexcept {
+        if (!voice.filterEnabled)
+            return input;
+
+        const double v3 = input - voice.filterIc2Eq;
+        const double v1 = voice.filterA1 * voice.filterIc1Eq + voice.filterA2 * v3;
+        const double v2 = voice.filterIc2Eq + voice.filterA2 * voice.filterIc1Eq +
+                          voice.filterA3 * v3;
+        voice.filterIc1Eq = flushFilterDenormal(2.0 * v1 - voice.filterIc1Eq);
+        voice.filterIc2Eq = flushFilterDenormal(2.0 * v2 - voice.filterIc2Eq);
+        return flushFilterDenormal(v2);
     }
 
     void applyVoiceEvent(const VoiceLifecycleEvent &event) noexcept {
@@ -359,9 +428,10 @@ private:
                 if (!voice.active || voice.deferredReleaseCompletion)
                     continue;
 
-                const auto sample = static_cast<float>(
-                    std::sin(voice.phase * kTwoPi) * static_cast<double>(voice.level));
-                mix += sample;
+                const double oscillatorSample =
+                    std::sin(voice.phase * kTwoPi) * static_cast<double>(voice.level);
+                const auto filteredSample = processFilter(voice, oscillatorSample);
+                mix += static_cast<float>(filteredSample);
 
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
@@ -384,6 +454,10 @@ private:
     std::uint32_t decaySamples_ = 0;
     float sustainLevel_ = 1.0f;
     std::uint32_t releaseSamples_ = 0;
+    double filterA1_ = 0.0;
+    double filterA2_ = 0.0;
+    double filterA3_ = 0.0;
+    bool filterEnabled_ = false;
     bool configured_ = false;
 };
 
