@@ -1,0 +1,87 @@
+add_executable(webview_gui_example_polysynth_voice_allocator_tests
+    ../tests/polysynth_voice_allocator_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_voice_allocator_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_compile_features(webview_gui_example_polysynth_voice_allocator_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_note_scheduler_tests
+    ../tests/polysynth_note_scheduler_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_note_scheduler_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_note_scheduler_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_note_scheduler_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_voice_lifecycle_tests
+    ../tests/polysynth_voice_lifecycle_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_voice_lifecycle_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_voice_lifecycle_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_voice_lifecycle_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_voice_engine_tests
+    ../tests/polysynth_voice_engine_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_voice_engine_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_voice_engine_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_voice_engine_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_amp_envelope_tests
+    ../tests/polysynth_amp_envelope_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_amp_envelope_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_amp_envelope_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_amp_envelope_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_filter_tests
+    ../tests/polysynth_filter_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_filter_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_filter_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_filter_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_mix_controls_tests
+    ../tests/polysynth_mix_controls_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_mix_controls_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_mix_controls_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_mix_controls_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_example_polysynth_filter_envelope_tests
+    ../tests/polysynth_filter_envelope_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_filter_envelope_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_filter_envelope_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_filter_envelope_tests PRIVATE cxx_std_17)
+
+add_test(NAME webview_gui_examples_polysynth_voice_allocator
+    COMMAND webview_gui_example_polysynth_voice_allocator_tests)
+add_test(NAME webview_gui_examples_polysynth_note_scheduler
+    COMMAND webview_gui_example_polysynth_note_scheduler_tests)
+add_test(NAME webview_gui_examples_polysynth_voice_lifecycle
+    COMMAND webview_gui_example_polysynth_voice_lifecycle_tests)
+add_test(NAME webview_gui_examples_polysynth_voice_engine
+    COMMAND webview_gui_example_polysynth_voice_engine_tests)
+add_test(NAME webview_gui_examples_polysynth_amp_envelope
+    COMMAND webview_gui_example_polysynth_amp_envelope_tests)
+add_test(NAME webview_gui_examples_polysynth_filter
+    COMMAND webview_gui_example_polysynth_filter_tests)
+add_test(NAME webview_gui_examples_polysynth_mix_controls
+    COMMAND webview_gui_example_polysynth_mix_controls_tests)
+add_test(NAME webview_gui_examples_polysynth_filter_envelope
+    COMMAND webview_gui_example_polysynth_filter_envelope_tests)

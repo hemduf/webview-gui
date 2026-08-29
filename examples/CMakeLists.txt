@@ -299,6 +299,10 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
         COMMAND webview_gui_example_gain_native_gui_tests)
 endif()
 
+if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
+    add_subdirectory(polysynth)
+endif()
+
 # #28 only prepares the pinned native wrapper integration point. Concrete VST3,
 # AU and standalone products are owned by #34, and WCLAP remains on the
 # repository-owned #30 packaging path rather than clap-wrapper's WCLAP helper.
