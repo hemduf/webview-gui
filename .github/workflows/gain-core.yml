@@ -15,6 +15,7 @@ on:
       - 'examples/tests/gain_webview_resource_tests.cpp'
       - 'examples/tests/gain_webview_param_tests.cpp'
       - 'examples/tests/gain_webview_backpressure_tests.cpp'
+      - 'examples/tests/gain_validator_ci_contract.cmake'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/gain-core.yml'
   workflow_dispatch:
@@ -64,3 +65,10 @@ jobs:
         run: >-
           ctest --test-dir build-gain-core -C Debug --output-on-failure
           --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|webview_resource|webview_param|webview_backpressure)$'
+
+      - name: Run Gain validator CI contract
+        run: >-
+          cmake
+          -DWORKFLOW_FILE="${{ github.workspace }}/.github/workflows/gain-core.yml"
+          -DEXAMPLES_CMAKE_FILE="${{ github.workspace }}/examples/CMakeLists.txt"
+          -P "${{ github.workspace }}/examples/tests/gain_validator_ci_contract.cmake"
