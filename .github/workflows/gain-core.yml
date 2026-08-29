@@ -72,3 +72,56 @@ jobs:
           -DWORKFLOW_FILE="${{ github.workspace }}/.github/workflows/gain-core.yml"
           -DEXAMPLES_CMAKE_FILE="${{ github.workspace }}/examples/CMakeLists.txt"
           -P "${{ github.workspace }}/examples/tests/gain_validator_ci_contract.cmake"
+
+  gain-validator:
+    name: ${{ matrix.os }} Gain clap-validator
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Checkout pinned clap-validator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: free-audio/clap-validator
+          ref: 152b9823e992d782c5c1fd33bca0295478b919aa
+          path: clap-validator
+
+      - name: Print pinned clap-validator commit
+        run: git -C clap-validator rev-parse HEAD
+
+      - name: Install clap-validator Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Build pinned clap-validator
+        run: cargo +1.95.0 build --release --locked --manifest-path clap-validator/Cargo.toml
+
+      - name: Configure Gain validator build
+        run: >-
+          cmake
+          -S examples
+          -B build-gain-validator
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+          -DWEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT="${{ github.workspace }}/clap-validator"
+
+      - name: Build and validate exact Gain CLAP artifact
+        run: >-
+          cmake --build build-gain-validator
+          --target webview_gui_example_gain_validate
+          --config Debug --parallel
