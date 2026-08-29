@@ -219,9 +219,9 @@ int main() {
         return 13;
     }
 
-    // The Gain editor uses the shared ClapWebviewGui adapter. Headless CI tests
-    // the host-owned CLAP WebView lifecycle here; Cocoa/HWND/X11 attachment is
-    // qualified by the framework's dedicated platform lifecycle tests.
+    // Exercise the exported CLAP GUI ABI as a conforming host. Invalid host
+    // call sequences are deliberately not used here because clap-helpers treats
+    // them as host misbehaviour and terminates at the configured checking level.
     const auto *gui = static_cast<const clap_plugin_gui_t *>(
         plugin->get_extension(plugin, CLAP_EXT_GUI));
     if (!gui) {
@@ -247,26 +247,19 @@ int main() {
         return 16;
     }
 
-    uint32_t width = 0;
-    uint32_t height = 0;
-    if (gui->get_size(plugin, &width, &height)) {
-        std::cerr << "Gain clap.gui exposed size before create(), contrary to the CLAP lifecycle\n";
+    if (!gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui could not create the embedded WebView GUI\n";
         plugin->destroy(plugin);
         return 17;
     }
 
-    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
-        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
-        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
-        plugin->destroy(plugin);
-        return 18;
-    }
-
+    uint32_t width = 0;
+    uint32_t height = 0;
     if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
         std::cerr << "Gain clap.gui did not expose the expected initial logical size after create()\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 19;
+        return 18;
     }
 
     clap_window_t webviewWindow{};
@@ -276,16 +269,7 @@ int main() {
         std::cerr << "Gain host-owned WebView parent/show/hide lifecycle failed\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 20;
-    }
-
-    clap_window_t invalidWebviewWindow = webviewWindow;
-    invalidWebviewWindow.ptr = reinterpret_cast<void *>(static_cast<std::uintptr_t>(1));
-    if (gui->set_parent(plugin, &invalidWebviewWindow)) {
-        std::cerr << "Gain accepted a non-null host-owned WebView parent pointer\n";
-        gui->destroy(plugin);
-        plugin->destroy(plugin);
-        return 21;
+        return 19;
     }
 
     if (!gui->can_resize(plugin) || !gui->set_size(plugin, 640, 360) ||
@@ -293,47 +277,35 @@ int main() {
         std::cerr << "Gain clap.gui logical resize contract failed\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 22;
-    }
-
-    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
-        std::cerr << "Gain clap.gui accepted a second create() without destroy()\n";
-        gui->destroy(plugin);
-        plugin->destroy(plugin);
-        return 23;
+        return 20;
     }
 
     gui->destroy(plugin);
-    if (gui->get_size(plugin, &width, &height) || gui->show(plugin) || gui->hide(plugin)) {
-        std::cerr << "Gain clap.gui remained active after destroy()\n";
-        plugin->destroy(plugin);
-        return 24;
-    }
 
     if (!gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
         std::cerr << "Gain clap.gui could not be recreated after destroy()\n";
         plugin->destroy(plugin);
-        return 25;
+        return 21;
     }
     if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
         std::cerr << "Gain clap.gui recreate did not restore the initial logical size\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 26;
+        return 22;
     }
     gui->destroy(plugin);
     plugin->destroy(plugin);
 
-    // A host that does not expose clap.webview/3 must not be told that the
-    // host-owned WebView GUI API is available. Native platform APIs remain the
-    // shared adapter's responsibility and are intentionally not asserted here.
+    // Discovery must fail closed when the host-owned WebView path is absent.
+    // Do not call create() after a negative capability result: that would model
+    // a misbehaving host rather than test the plug-in ABI.
     const auto *nonWebviewPlugin =
         factory->create_plugin(factory, &kHostWithoutWebview, kGainPluginId);
     if (!nonWebviewPlugin)
-        return 27;
+        return 23;
     if (!nonWebviewPlugin->init(nonWebviewPlugin)) {
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 28;
+        return 24;
     }
 
     const auto *nonWebviewGui = static_cast<const clap_plugin_gui_t *>(
@@ -344,25 +316,23 @@ int main() {
         nonWebviewGui->is_api_supported(nonWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false) ||
         nonWebviewGui->get_preferred_api(nonWebviewPlugin,
                                          &unsupportedPreferredApi,
-                                         &unsupportedFloating) ||
-        nonWebviewGui->create(nonWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+                                         &unsupportedFloating)) {
         std::cerr << "Gain advertised host-owned WebView GUI without host clap.webview/3 support\n";
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 29;
+        return 25;
     }
     nonWebviewPlugin->destroy(nonWebviewPlugin);
 
     // A non-null host extension with a missing send callback is still an
-    // incomplete host-owned WebView path and must fail negotiation exactly like
-    // a missing extension. This protects against advertising a GUI that cannot
-    // deliver plugin-to-WebView messages.
+    // incomplete host-owned WebView path and must fail discovery exactly like a
+    // missing extension.
     const auto *brokenWebviewPlugin =
         factory->create_plugin(factory, &kHostWithBrokenWebview, kGainPluginId);
     if (!brokenWebviewPlugin)
-        return 30;
+        return 26;
     if (!brokenWebviewPlugin->init(brokenWebviewPlugin)) {
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 31;
+        return 27;
     }
 
     const auto *brokenWebviewGui = static_cast<const clap_plugin_gui_t *>(
@@ -375,11 +345,10 @@ int main() {
                                            false) ||
         brokenWebviewGui->get_preferred_api(brokenWebviewPlugin,
                                             &brokenPreferredApi,
-                                            &brokenFloating) ||
-        brokenWebviewGui->create(brokenWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+                                            &brokenFloating)) {
         std::cerr << "Gain advertised host-owned WebView GUI with a missing host send callback\n";
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 32;
+        return 28;
     }
 
     brokenWebviewPlugin->destroy(brokenWebviewPlugin);
