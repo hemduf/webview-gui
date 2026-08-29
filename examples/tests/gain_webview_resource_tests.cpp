@@ -171,6 +171,13 @@ bool contains(const std::string &text, const char *needle) {
     return needle && text.find(needle) != std::string::npos;
 }
 
+uint32_t loadU32Le(const uint8_t *bytes) {
+    uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<uint32_t>(bytes[i]) << (i * 8u);
+    return value;
+}
+
 uint64_t loadU64Le(const uint8_t *bytes) {
     uint64_t value = 0;
     for (unsigned i = 0; i < 8; ++i)
@@ -190,6 +197,27 @@ bool matchesUiParameterMessage(const std::vector<uint8_t> &message,
     double value = 0.0;
     std::memcpy(&value, &bits, sizeof(value));
     return std::isfinite(value) && std::fabs(value - expected) < 1.0e-9;
+}
+
+bool matchesUiMeterMessage(const std::vector<uint8_t> &message,
+                           float expectedLeft,
+                           float expectedRight) {
+    if (message.size() != 16 ||
+        message[0] != 0x57 || message[1] != 0x56 ||
+        message[2] != 0x4d || message[3] != 0x31)
+        return false;
+
+    const uint32_t leftBits = loadU32Le(message.data() + 4);
+    const uint32_t rightBits = loadU32Le(message.data() + 8);
+    const uint32_t sequence = loadU32Le(message.data() + 12);
+    float left = 0.0f;
+    float right = 0.0f;
+    std::memcpy(&left, &leftBits, sizeof(left));
+    std::memcpy(&right, &rightBits, sizeof(right));
+    return std::isfinite(left) && std::isfinite(right) &&
+           std::fabs(left - expectedLeft) < 1.0e-6f &&
+           std::fabs(right - expectedRight) < 1.0e-6f &&
+           sequence != 0u && (sequence & 1u) == 0u;
 }
 
 } // namespace
@@ -310,6 +338,16 @@ int main() {
         std::cerr << "Gain editor script does not poll and consume the parameter sync protocol\n";
         plugin->destroy(plugin);
         return 94;
+    }
+
+    if (!contains(script, "getFloat32(4, true)") ||
+        !contains(script, "getFloat32(8, true)") ||
+        !contains(script, "meterLeft.value =") ||
+        !contains(script, "meterRight.value =") ||
+        !contains(script, "bytes[2] === 0x4d")) {
+        std::cerr << "Gain editor script does not consume the WVM1 stereo meter protocol\n";
+        plugin->destroy(plugin);
+        return 104;
     }
 
     if (contains(script, "JSON.stringify") || contains(script, "fetch(") ||
@@ -486,6 +524,82 @@ int main() {
         plugin->destroy(plugin);
         return 103;
     }
+
+    gHostCapture.reset();
+    if (!plugin->activate(plugin, 48000.0, 1, 64) || !plugin->start_processing(plugin)) {
+        std::cerr << "Gain could not enter processing for WebView meter qualification\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 105;
+    }
+
+    std::array<float, 4> inputLeft{{0.25f, -0.50f, 0.125f, 0.0f}};
+    std::array<float, 4> inputRight{{-0.75f, 0.25f, 0.50f, 0.0f}};
+    std::array<float, 4> outputLeft{};
+    std::array<float, 4> outputRight{};
+    float *inputChannels[2]{inputLeft.data(), inputRight.data()};
+    float *outputChannels[2]{outputLeft.data(), outputRight.data()};
+    clap_audio_buffer_t audioInput{};
+    audioInput.data32 = inputChannels;
+    audioInput.channel_count = 2;
+    clap_audio_buffer_t audioOutput{};
+    audioOutput.data32 = outputChannels;
+    audioOutput.channel_count = 2;
+    clap_process_t meterProcess{};
+    meterProcess.frames_count = 4;
+    meterProcess.audio_inputs = &audioInput;
+    meterProcess.audio_outputs = &audioOutput;
+    meterProcess.audio_inputs_count = 1;
+    meterProcess.audio_outputs_count = 1;
+
+    if (plugin->process(plugin, &meterProcess) != CLAP_PROCESS_CONTINUE) {
+        std::cerr << "Gain processing failed while publishing the first meter snapshot\n";
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 106;
+    }
+
+    inputLeft = {{0.0625f, -0.125f, 0.03125f, 0.0f}};
+    inputRight = {{-0.25f, 0.125f, 0.0625f, 0.0f}};
+    if (plugin->process(plugin, &meterProcess) != CLAP_PROCESS_CONTINUE ||
+        gHostCapture.callbackRequests != 0 || !gHostCapture.messages.empty()) {
+        std::cerr << "Gain audio processing performed host/UI work instead of coalescing the meter\n";
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 107;
+    }
+
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 3 ||
+        !matchesUiParameterMessage(gHostCapture.messages[0], 1, -9.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[1], 2, 1.0) ||
+        !matchesUiMeterMessage(gHostCapture.messages[2], 0.125f, 0.25f)) {
+        std::cerr << "Gain did not deliver the latest coalesced stereo meter on the UI poll\n";
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 108;
+    }
+
+    if (!webview->receive(plugin, kSyncRequest.data(), kSyncRequest.size()) ||
+        gHostCapture.messages.size() != 5 ||
+        !matchesUiParameterMessage(gHostCapture.messages[3], 1, -9.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[4], 2, 1.0)) {
+        std::cerr << "Gain resent an unchanged meter snapshot instead of coalescing UI delivery\n";
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 109;
+    }
+
+    plugin->stop_processing(plugin);
+    plugin->deactivate(plugin);
 
     if (!gui->can_resize(plugin) || !gui->set_size(plugin, 640, 360) ||
         !gui->get_size(plugin, &width, &height) || width != 640 || height != 360) {
