@@ -1,5 +1,5 @@
+#include "polysynth_parameter_voice_engine.h"
 #include "polysynth_parameters.h"
-#include "polysynth_voice_engine.h"
 
 #include <clap/clap.h>
 
@@ -10,7 +10,7 @@
 
 namespace {
 using webview_gui::examples::polysynth::ParameterSlot;
-using webview_gui::examples::polysynth::VoiceEngine;
+using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
 constexpr clap_id kFineTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
@@ -99,7 +99,9 @@ struct RenderResult {
     std::array<float, 32> right{};
 };
 
-bool render(VoiceEngine &engine, InputEvents &events, RenderResult &result) noexcept {
+bool render(ParameterVoiceEngine &engine,
+            InputEvents &events,
+            RenderResult &result) noexcept {
     auto noteEnd = [](const clap_event_note_t &) noexcept {};
     return engine.process(&events.input,
                           static_cast<std::uint32_t>(result.left.size()),
@@ -117,16 +119,16 @@ bool sameAudio(const RenderResult &a, const RenderResult &b) noexcept {
     return true;
 }
 
-bool configure(VoiceEngine &engine) noexcept {
+bool configure(ParameterVoiceEngine &engine) noexcept {
     return engine.configure(4, 48000.0, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
 }
 }
 
 int main() {
-    VoiceEngine reference;
-    VoiceEngine modulated;
-    VoiceEngine valued;
+    ParameterVoiceEngine reference;
+    ParameterVoiceEngine modulated;
+    ParameterVoiceEngine valued;
     if (!configure(reference) || !configure(modulated) || !configure(valued))
         return 1;
 
@@ -141,7 +143,7 @@ int main() {
     modulationEvents.pushNote(0, 2, 60);
     RenderResult modulationAudio;
     if (!render(modulated, modulationEvents, modulationAudio)) {
-        std::cerr << "VoiceEngine rejected a valid PARAM_MOD event stream\n";
+        std::cerr << "parameter engine rejected a valid PARAM_MOD event stream\n";
         return 3;
     }
 
@@ -172,7 +174,7 @@ int main() {
     }
 
     modulated.reset();
-    VoiceEngine plain;
+    ParameterVoiceEngine plain;
     if (!configure(plain))
         return 8;
     InputEvents plainEvents;
