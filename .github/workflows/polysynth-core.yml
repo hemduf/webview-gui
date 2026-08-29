@@ -17,6 +17,7 @@ on:
       - 'examples/tests/polysynth_filter_tests.cpp'
       - 'examples/tests/polysynth_mix_controls_tests.cpp'
       - 'examples/tests/polysynth_filter_envelope_tests.cpp'
+      - 'examples/tests/polysynth_oscillator_tuning_tests.cpp'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/polysynth-core.yml'
   workflow_dispatch:
@@ -67,9 +68,10 @@ jobs:
           webview_gui_example_polysynth_filter_tests
           webview_gui_example_polysynth_mix_controls_tests
           webview_gui_example_polysynth_filter_envelope_tests
+          webview_gui_example_polysynth_oscillator_tuning_tests
           --config Debug --parallel
 
       - name: Run PolySynth core tests
         run: >-
           ctest --test-dir build-polysynth-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|filter|mix_controls|filter_envelope)$'
+          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|filter|mix_controls|filter_envelope|oscillator_tuning)$'
