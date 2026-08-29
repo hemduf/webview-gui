@@ -71,8 +71,32 @@ public:
                                std::uint32_t framesCount,
                                BoundarySink &boundarySink,
                                Sink &sink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithBoundariesAndEvents(
+            events, framesCount, boundarySink, ignoredCoreEvent, sink);
+    }
+
+    // Preserve the host-provided ordering of all non-note CLAP core events while
+    // retaining deterministic note allocation. This lets the processor apply
+    // PARAM_VALUE, PARAM_MOD and NOTE_EXPRESSION at the same sample boundary as
+    // NOTE_ON/OFF/CHOKE without quantising or re-sorting event types. The host
+    // already guarantees sample-sorted input; equal-time order is significant and
+    // is forwarded exactly as received.
+    template <typename BoundarySink, typename CoreEventSink, typename Sink>
+    bool processWithBoundariesAndEvents(const clap_input_events_t *events,
+                                        std::uint32_t framesCount,
+                                        BoundarySink &boundarySink,
+                                        CoreEventSink &coreEventSink,
+                                        Sink &sink) noexcept {
         static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
                       "PolySynth scheduler boundary sink must be noexcept");
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<Sink &, const ScheduledNoteEvent &>,
                       "PolySynth note scheduler sink must be noexcept");
 
@@ -109,10 +133,15 @@ public:
 
             if (header->space_id != CLAP_CORE_EVENT_SPACE_ID)
                 continue;
+
             if (header->type != CLAP_EVENT_NOTE_ON &&
                 header->type != CLAP_EVENT_NOTE_OFF &&
-                header->type != CLAP_EVENT_NOTE_CHOKE)
+                header->type != CLAP_EVENT_NOTE_CHOKE) {
+                if (!coreEventSink(*header))
+                    return false;
                 continue;
+            }
+
             if (header->size < sizeof(clap_event_note_t))
                 return false;
 
