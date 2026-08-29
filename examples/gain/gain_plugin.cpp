@@ -3,6 +3,7 @@
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -23,6 +24,8 @@ static_assert(std::atomic<float>::is_always_lock_free,
               "Gain parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<bool>::is_always_lock_free,
               "Bypass parameter snapshots must be lock-free on supported targets");
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "Gain state handoff revision must be lock-free on supported targets");
 static_assert(sizeof(double) == sizeof(uint64_t), "Gain state requires a 64-bit double");
 static_assert(std::numeric_limits<double>::is_iec559,
               "Gain state requires IEEE-754 double precision");
@@ -145,16 +148,17 @@ class GainPlugin final : public GainBase {
 public:
     explicit GainPlugin(const clap_host_t *host)
         : GainBase(&kDescriptor, host) {
-        syncParameterSnapshots();
+        syncParameterSnapshotsFromProcessor();
     }
 
     ~GainPlugin() override = default;
 
 protected:
     clap_process_status process(const clap_process_t *processData) noexcept override {
+        applyPendingLoadedState();
         if (!processData || !processor_.process(*processData))
             return CLAP_PROCESS_ERROR;
-        syncParameterSnapshots();
+        syncParameterSnapshotsPreservingConcurrentStateLoad();
         return CLAP_PROCESS_CONTINUE;
     }
 
@@ -182,12 +186,20 @@ protected:
         if (!decodeState(bytes, gainDb, bypassed))
             return false;
 
-        // Commit only after the entire state has been validated, so malformed
-        // streams cannot partially replace the previous valid parameter state.
-        if (!processor_.processor().setGainDb(gainDb))
-            return false;
-        processor_.processor().setBypassed(bypassed);
-        syncParameterSnapshots();
+        // State callbacks are main-thread operations, while process() may be on
+        // the RT thread. Publish a complete pending state through lock-free
+        // atomics and let the parameter/process thread apply it between blocks.
+        // This avoids mutating GainProcessor concurrently with process().
+        const auto gain = static_cast<float>(gainDb);
+        pendingLoadedGainDb_.store(gain, std::memory_order_relaxed);
+        pendingLoadedBypass_.store(bypassed, std::memory_order_relaxed);
+        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
+
+        // Host-visible values update before load() returns. If process() races
+        // this publication, its end-of-block synchronization detects the new
+        // revision and restores these loaded values instead of overwriting them.
+        gainDbSnapshot_.store(gain, std::memory_order_relaxed);
+        bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
         return true;
     }
 
@@ -300,8 +312,11 @@ protected:
 
     void paramsFlush(const clap_input_events_t *in,
                      const clap_output_events_t *) noexcept override {
-        if (!in || !in->size || !in->get)
+        applyPendingLoadedState();
+        if (!in || !in->size || !in->get) {
+            syncParameterSnapshotsPreservingConcurrentStateLoad();
             return;
+        }
         const uint32_t count = in->size(in);
         for (uint32_t index = 0; index < count; ++index) {
             const auto *header = in->get(in, index);
@@ -314,7 +329,7 @@ protected:
             const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
             (void)processor_.applyParameterValue(event);
         }
-        syncParameterSnapshots();
+        syncParameterSnapshotsPreservingConcurrentStateLoad();
     }
 
     int32_t getParamIndexForParamId(clap_id paramId) const noexcept override {
@@ -326,15 +341,56 @@ protected:
     }
 
 private:
-    void syncParameterSnapshots() noexcept {
+    void applyPendingLoadedState() noexcept {
+        const auto revision = loadedStateRevision_.load(std::memory_order_acquire);
+        if (revision == appliedLoadedStateRevision_)
+            return;
+
+        const auto gain = pendingLoadedGainDb_.load(std::memory_order_relaxed);
+        const auto bypassed = pendingLoadedBypass_.load(std::memory_order_relaxed);
+        (void)processor_.processor().setGainDb(static_cast<double>(gain));
+        processor_.processor().setBypassed(bypassed);
+        appliedLoadedStateRevision_ = revision;
+    }
+
+    void syncParameterSnapshotsFromProcessor() noexcept {
         gainDbSnapshot_.store(static_cast<float>(processor_.processor().gainDb()),
                               std::memory_order_relaxed);
         bypassSnapshot_.store(processor_.processor().bypassed(), std::memory_order_relaxed);
     }
 
+    void restoreSnapshotsFromPendingState() noexcept {
+        gainDbSnapshot_.store(pendingLoadedGainDb_.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
+        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
+    }
+
+    void syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
+        const auto revisionBefore = loadedStateRevision_.load(std::memory_order_acquire);
+        if (revisionBefore != appliedLoadedStateRevision_) {
+            restoreSnapshotsFromPendingState();
+            return;
+        }
+
+        syncParameterSnapshotsFromProcessor();
+
+        // A main-thread load may have published after revisionBefore but before
+        // the processor snapshots above. In that case the loaded state wins;
+        // restore it so get_value()/stateSave() cannot observe stale values.
+        const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
+        if (revisionAfter != revisionBefore)
+            restoreSnapshotsFromPendingState();
+    }
+
     GainEventProcessor processor_{};
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
+
+    std::atomic<float> pendingLoadedGainDb_{0.0f};
+    std::atomic<bool> pendingLoadedBypass_{false};
+    std::atomic<uint32_t> loadedStateRevision_{0};
+    uint32_t appliedLoadedStateRevision_ = 0;
 };
 
 uint32_t CLAP_ABI factoryGetPluginCount(const clap_plugin_factory_t *) { return 1; }
