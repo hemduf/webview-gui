@@ -10,6 +10,7 @@ on:
     paths:
       - 'examples/polysynth/**'
       - 'examples/tests/polysynth_voice_allocator_tests.cpp'
+      - 'examples/tests/polysynth_note_scheduler_tests.cpp'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/polysynth-core.yml'
   workflow_dispatch:
@@ -19,8 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  allocator:
-    name: ${{ matrix.os }} PolySynth allocator
+  core:
+    name: ${{ matrix.os }} PolySynth core
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Configure PolySynth allocator tests
+      - name: Configure PolySynth core tests
         run: >-
           cmake
           -S examples
@@ -49,13 +50,14 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
 
-      - name: Build PolySynth allocator tests
+      - name: Build PolySynth core tests
         run: >-
           cmake --build build-polysynth-core
           --target webview_gui_example_polysynth_voice_allocator_tests
+          webview_gui_example_polysynth_note_scheduler_tests
           --config Debug --parallel
 
-      - name: Run PolySynth allocator tests
+      - name: Run PolySynth core tests
         run: >-
           ctest --test-dir build-polysynth-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_polysynth_voice_allocator$'
+          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler)$'
