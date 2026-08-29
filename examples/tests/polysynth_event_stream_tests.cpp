@@ -1,4 +1,4 @@
-#include "polysynth_note_scheduler.h"
+#include "polysynth_voice_lifecycle.h"
 
 #include <clap/clap.h>
 
@@ -10,6 +10,8 @@ namespace {
 using webview_gui::examples::polysynth::NoteEventScheduler;
 using webview_gui::examples::polysynth::ScheduledNoteEvent;
 using webview_gui::examples::polysynth::ScheduledNoteKind;
+using webview_gui::examples::polysynth::VoiceLifecycle;
+using webview_gui::examples::polysynth::VoiceLifecycleEvent;
 
 struct InputEvents {
     InputEvents() noexcept {
@@ -156,6 +158,53 @@ int main() {
             std::cerr << "same-sample event ordering changed\n";
             return 4;
         }
+    }
+
+    VoiceLifecycle lifecycle;
+    if (!lifecycle.configure(1))
+        return 5;
+
+    InputEvents lifecycleInput;
+    lifecycleInput.mod(0, -1);
+    lifecycleInput.note(0, CLAP_EVENT_NOTE_ON, 20);
+    lifecycleInput.expression(0, 20);
+
+    std::array<Entry, 4> lifecycleSequence{};
+    std::size_t lifecycleCount = 0;
+    auto lifecycleBoundary = [](std::uint32_t) noexcept {};
+    auto lifecycleCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        std::int32_t noteId = -1;
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION)
+            noteId = reinterpret_cast<const clap_event_note_expression_t &>(header).note_id;
+        lifecycleSequence[lifecycleCount++] = {header.type, header.time, noteId};
+        return true;
+    };
+    auto lifecycleVoice = [&](const VoiceLifecycleEvent &event) noexcept {
+        lifecycleSequence[lifecycleCount++] = {
+            CLAP_EVENT_NOTE_ON, event.note.time, event.note.identity.noteId};
+    };
+    auto noteEnd = [](const clap_event_note_t &) noexcept {};
+
+    if (!lifecycle.processWithBoundariesAndEvents(
+            &lifecycleInput.input,
+            1,
+            lifecycleBoundary,
+            lifecycleCore,
+            lifecycleVoice,
+            noteEnd)) {
+        std::cerr << "lifecycle rejected ordered non-note events\n";
+        return 6;
+    }
+
+    if (lifecycleCount != 3 ||
+        lifecycleSequence[0].type != CLAP_EVENT_PARAM_MOD ||
+        lifecycleSequence[1].type != CLAP_EVENT_NOTE_ON ||
+        lifecycleSequence[1].noteId != 20 ||
+        lifecycleSequence[2].type != CLAP_EVENT_NOTE_EXPRESSION ||
+        lifecycleSequence[2].noteId != 20 ||
+        lifecycle.generation(0) == 0) {
+        std::cerr << "lifecycle changed core/note ordering or generation\n";
+        return 7;
     }
 
     return 0;
