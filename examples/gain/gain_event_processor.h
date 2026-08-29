@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gain_meter.h"
 #include "gain_processor.h"
 
 #include <clap/clap.h>
@@ -17,6 +18,10 @@ class GainEventProcessor {
 public:
     [[nodiscard]] GainProcessor &processor() noexcept { return processor_; }
     [[nodiscard]] const GainProcessor &processor() const noexcept { return processor_; }
+
+    [[nodiscard]] bool tryReadMeter(GainMeterSnapshot &snapshot) const noexcept {
+        return meter_.tryRead(snapshot);
+    }
 
     bool applyParameterValue(const clap_event_param_value_t &event) noexcept {
         if (!isSupportedValue(event))
@@ -68,7 +73,11 @@ public:
             (void)applyParameterValue(event);
         }
 
-        return processRange(process, cursor, process.frames_count);
+        if (!processRange(process, cursor, process.frames_count))
+            return false;
+
+        publishOutputPeaks(process);
+        return true;
     }
 
 private:
@@ -136,7 +145,32 @@ private:
         return processor_.process(inputs.data(), outputs.data(), end - begin);
     }
 
+    void publishOutputPeaks(const clap_process_t &process) noexcept {
+        const auto &output = process.audio_outputs[0];
+        float leftPeak = 0.0f;
+        float rightPeak = 0.0f;
+
+        for (uint32_t frame = 0; frame < process.frames_count; ++frame) {
+            const auto left = output.data32[0][frame];
+            if (std::isfinite(left)) {
+                const auto magnitude = std::fabs(left);
+                if (magnitude > leftPeak)
+                    leftPeak = magnitude;
+            }
+
+            const auto right = output.data32[1][frame];
+            if (std::isfinite(right)) {
+                const auto magnitude = std::fabs(right);
+                if (magnitude > rightPeak)
+                    rightPeak = magnitude;
+            }
+        }
+
+        meter_.publish(leftPeak, rightPeak);
+    }
+
     GainProcessor processor_{};
+    GainMeterHandoff meter_{};
 };
 
 } // namespace webview_gui::examples::gain
