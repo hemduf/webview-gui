@@ -86,11 +86,9 @@ struct InputEvents {
 };
 
 struct Capture {
-    bool operator()(const ScheduledNoteEvent &event) noexcept {
-        if (count >= events.size())
-            return false;
-        events[count++] = event;
-        return true;
+    void operator()(const ScheduledNoteEvent &event) noexcept {
+        if (count < events.size())
+            events[count++] = event;
     }
 
     std::array<ScheduledNoteEvent, 16> events{};
@@ -205,10 +203,35 @@ int main() {
         return 10;
     }
 
+    // Review regression: when deterministic stealing occurs, the old concrete
+    // identity must survive in the scheduled NOTE_ON result. The future voice
+    // engine needs it to emit the correct CLAP NOTE_END for the host voice that
+    // was terminated by stealing.
+    scheduler.reset();
+    if (!scheduler.configure(1))
+        return 11;
+    InputEvents stealing;
+    if (!stealing.pushNote(0, CLAP_EVENT_NOTE_ON, 300, 0, 2, 64) ||
+        !stealing.pushNote(3, CLAP_EVENT_NOTE_ON, 301, 0, 2, 67)) {
+        return 12;
+    }
+    Capture stealingCapture;
+    if (!scheduler.process(&stealing.input, 4, stealingCapture) || stealingCapture.count != 2) {
+        std::cerr << "voice-stealing scheduler fixture did not produce two note-ons\n";
+        return 13;
+    }
+    if (stealingCapture.events[0].replacedVoice ||
+        !stealingCapture.events[1].replacedVoice ||
+        !sameIdentity(stealingCapture.events[1].replacedIdentity, 300, 0, 2, 64) ||
+        !sameIdentity(stealingCapture.events[1].identity, 301, 0, 2, 67)) {
+        std::cerr << "voice stealing lost the replaced CLAP note identity needed for NOTE_END\n";
+        return 14;
+    }
+
     scheduler.reset();
     if (scheduler.activeCount() != 0) {
         std::cerr << "scheduler reset leaked active voice identities\n";
-        return 11;
+        return 15;
     }
 
     return 0;
