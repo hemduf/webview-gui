@@ -105,6 +105,7 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     target_include_directories(webview_gui_example_gain_core_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/gain
     )
+    target_link_libraries(webview_gui_example_gain_core_tests PRIVATE clap)
     target_compile_features(webview_gui_example_gain_core_tests PRIVATE cxx_std_17)
 
     add_test(NAME webview_gui_examples_gain_core
