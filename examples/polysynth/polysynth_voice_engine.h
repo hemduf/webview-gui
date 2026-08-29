@@ -30,6 +30,12 @@ public:
         filterA1_ = 0.0;
         filterA2_ = 0.0;
         filterA3_ = 0.0;
+        filterCutoffHz_ = 0.0f;
+        filterResonance_ = 0.0f;
+        filterEnvelopeAmount_ = 0.0f;
+        filterBaseG_ = 0.0;
+        filterEnvelopeGDelta_ = 0.0;
+        filterDamping_ = 2.0;
         pan_ = 0.0f;
         masterGainCurrent_ = 1.0f;
         masterGainTarget_ = 1.0f;
@@ -75,22 +81,74 @@ public:
             resonance < 0.0f || resonance > kMaximumFilterResonance)
             return false;
 
-        const double g = std::tan(kPi * static_cast<double>(cutoffHz) / sampleRate_);
-        const double damping = 2.0 * (1.0 - static_cast<double>(resonance));
-        const double denominator = 1.0 + g * (g + damping);
-        if (!std::isfinite(g) || !std::isfinite(denominator) || denominator <= 0.0)
-            return false;
-
-        const double a1 = 1.0 / denominator;
-        const double a2 = g * a1;
-        const double a3 = g * a2;
-        if (!std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3))
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        double baseG = 0.0;
+        double targetG = 0.0;
+        double damping = 0.0;
+        if (!prepareFilter(cutoffHz,
+                           resonance,
+                           filterEnvelopeAmount_,
+                           a1,
+                           a2,
+                           a3,
+                           baseG,
+                           targetG,
+                           damping))
             return false;
 
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
+        filterCutoffHz_ = cutoffHz;
+        filterResonance_ = resonance;
+        filterBaseG_ = baseG;
+        filterEnvelopeGDelta_ = targetG - baseG;
+        filterDamping_ = damping;
         filterEnabled_ = true;
+        return true;
+    }
+
+    // The baseline core intentionally reuses the normalized amplitude-envelope
+    // shape as the filter-envelope source because #31 only requires an amount
+    // slot, not a second ADSR. Amount is normalized to [-1, 1] and maps to a
+    // +/-4-octave cutoff excursion. Endpoint cutoff and TPT g values are prepared
+    // outside process(); voices snapshot them at NOTE_ON, so later default updates
+    // cannot alter an active generation.
+    bool setFilterEnvelopeAmount(float amount) noexcept {
+        if (!configured_ || !std::isfinite(amount) || amount < -1.0f || amount > 1.0f)
+            return false;
+
+        if (!filterEnabled_) {
+            filterEnvelopeAmount_ = amount;
+            return true;
+        }
+
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        double baseG = 0.0;
+        double targetG = 0.0;
+        double damping = 0.0;
+        if (!prepareFilter(filterCutoffHz_,
+                           filterResonance_,
+                           amount,
+                           a1,
+                           a2,
+                           a3,
+                           baseG,
+                           targetG,
+                           damping))
+            return false;
+
+        filterEnvelopeAmount_ = amount;
+        filterA1_ = a1;
+        filterA2_ = a2;
+        filterA3_ = a3;
+        filterBaseG_ = baseG;
+        filterEnvelopeGDelta_ = targetG - baseG;
+        filterDamping_ = damping;
         return true;
     }
 
@@ -222,6 +280,9 @@ private:
         double filterA1 = 0.0;
         double filterA2 = 0.0;
         double filterA3 = 0.0;
+        double filterBaseG = 0.0;
+        double filterEnvelopeGDelta = 0.0;
+        double filterDamping = 2.0;
         double filterIc1Eq = 0.0;
         double filterIc2Eq = 0.0;
         float peakLevel = 0.0f;
@@ -237,6 +298,7 @@ private:
         bool active = false;
         bool deferredReleaseCompletion = false;
         bool filterEnabled = false;
+        bool filterEnvelopeEnabled = false;
     };
 
     static constexpr double kReferenceFrequency = 440.0;
@@ -248,6 +310,7 @@ private:
     static constexpr float kMinimumFilterCutoffHz = 20.0f;
     static constexpr double kMaximumFilterCutoffFraction = 0.45;
     static constexpr float kMaximumFilterResonance = 0.99f;
+    static constexpr double kMaximumFilterEnvelopeOctaves = 4.0;
     static constexpr float kMinimumMasterGainDb = -60.0f;
     static constexpr float kMaximumMasterGainDb = 12.0f;
 
@@ -257,6 +320,40 @@ private:
 
     static double flushFilterDenormal(double value) noexcept {
         return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
+    }
+
+    bool prepareFilter(float cutoffHz,
+                       float resonance,
+                       float envelopeAmount,
+                       double &a1,
+                       double &a2,
+                       double &a3,
+                       double &baseG,
+                       double &targetG,
+                       double &damping) const noexcept {
+        baseG = std::tan(kPi * static_cast<double>(cutoffHz) / sampleRate_);
+        damping = 2.0 * (1.0 - static_cast<double>(resonance));
+        const double denominator = 1.0 + baseG * (baseG + damping);
+        if (!std::isfinite(baseG) || !std::isfinite(damping) ||
+            !std::isfinite(denominator) || denominator <= 0.0)
+            return false;
+
+        a1 = 1.0 / denominator;
+        a2 = baseG * a1;
+        a3 = baseG * a2;
+        if (!std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        const double cutoffMultiplier =
+            std::exp2(kMaximumFilterEnvelopeOctaves * static_cast<double>(envelopeAmount));
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double targetCutoff = std::clamp(
+            static_cast<double>(cutoffHz) * cutoffMultiplier,
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        targetG = std::tan(kPi * targetCutoff / sampleRate_);
+        return std::isfinite(cutoffMultiplier) && std::isfinite(targetCutoff) &&
+               std::isfinite(targetG) && targetG >= 0.0;
     }
 
     void clearVoices() noexcept {
@@ -298,6 +395,10 @@ private:
         voice.filterA1 = filterA1_;
         voice.filterA2 = filterA2_;
         voice.filterA3 = filterA3_;
+        voice.filterBaseG = filterBaseG_;
+        voice.filterEnvelopeGDelta = filterEnvelopeGDelta_;
+        voice.filterDamping = filterDamping_;
+        voice.filterEnvelopeEnabled = filterEnabled_ && filterEnvelopeAmount_ != 0.0f;
         if (pan_ <= 0.0f) {
             voice.panLeftGain = 1.0f;
             voice.panRightGain = 1.0f + pan_;
@@ -337,10 +438,26 @@ private:
         if (!voice.filterEnabled)
             return input;
 
+        double a1 = voice.filterA1;
+        double a2 = voice.filterA2;
+        double a3 = voice.filterA3;
+        if (voice.filterEnvelopeEnabled) {
+            double normalizedEnvelope = 0.0;
+            if (voice.peakLevel > kEnvelopeDenormalFloor) {
+                normalizedEnvelope = std::clamp(
+                    static_cast<double>(voice.level / voice.peakLevel), 0.0, 1.0);
+            }
+            const double g = voice.filterBaseG +
+                             voice.filterEnvelopeGDelta * normalizedEnvelope;
+            const double denominator = 1.0 + g * (g + voice.filterDamping);
+            a1 = 1.0 / denominator;
+            a2 = g * a1;
+            a3 = g * a2;
+        }
+
         const double v3 = input - voice.filterIc2Eq;
-        const double v1 = voice.filterA1 * voice.filterIc1Eq + voice.filterA2 * v3;
-        const double v2 = voice.filterIc2Eq + voice.filterA2 * voice.filterIc1Eq +
-                          voice.filterA3 * v3;
+        const double v1 = a1 * voice.filterIc1Eq + a2 * v3;
+        const double v2 = voice.filterIc2Eq + a2 * voice.filterIc1Eq + a3 * v3;
         voice.filterIc1Eq = flushFilterDenormal(2.0 * v1 - voice.filterIc1Eq);
         voice.filterIc2Eq = flushFilterDenormal(2.0 * v2 - voice.filterIc2Eq);
         return flushFilterDenormal(v2);
@@ -527,6 +644,12 @@ private:
     double filterA1_ = 0.0;
     double filterA2_ = 0.0;
     double filterA3_ = 0.0;
+    float filterCutoffHz_ = 0.0f;
+    float filterResonance_ = 0.0f;
+    float filterEnvelopeAmount_ = 0.0f;
+    double filterBaseG_ = 0.0;
+    double filterEnvelopeGDelta_ = 0.0;
+    double filterDamping_ = 2.0;
     float pan_ = 0.0f;
     float masterGainCurrent_ = 1.0f;
     float masterGainTarget_ = 1.0f;
