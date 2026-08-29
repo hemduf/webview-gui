@@ -55,7 +55,7 @@ public:
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth voice engine NOTE_END sink must be noexcept");
 
-        if (!configured_ || !left || !right)
+        if (!configured_ || framesCount == 0 || !left || !right)
             return false;
 
         for (std::uint32_t frame = 0; frame < framesCount; ++frame) {
@@ -63,15 +63,22 @@ public:
             right[frame] = 0.0f;
         }
 
+        // CLAP output events must use an offset strictly smaller than
+        // frames_count. A release which reached zero at the previous block's
+        // end is therefore retired here at sample 0, before any new sample-zero
+        // host event can allocate the same voice slot.
+        if (!completeDeferredReleases(noteEndSink))
+            return false;
+
         std::uint32_t cursor = 0;
         bool renderOk = true;
-        auto boundarySink = [this, &cursor, left, right, &noteEndSink, &renderOk](
+        auto boundarySink = [this, framesCount, &cursor, left, right, &noteEndSink, &renderOk](
                                 std::uint32_t time) noexcept {
             if (time < cursor) {
                 renderOk = false;
                 return;
             }
-            if (!renderRange(cursor, time, left, right, noteEndSink))
+            if (!renderRange(cursor, time, framesCount, left, right, noteEndSink))
                 renderOk = false;
             cursor = time;
         };
@@ -84,7 +91,7 @@ public:
             return false;
         if (!renderOk)
             return false;
-        return renderRange(cursor, framesCount, left, right, noteEndSink);
+        return renderRange(cursor, framesCount, framesCount, left, right, noteEndSink);
     }
 
 private:
@@ -98,6 +105,7 @@ private:
         std::uint32_t releaseRemaining = 0;
         bool active = false;
         bool releasing = false;
+        bool deferredReleaseCompletion = false;
     };
 
     static constexpr double kReferenceFrequency = 440.0;
@@ -151,12 +159,30 @@ private:
     }
 
     template <typename NoteEndSink>
+    bool completeDeferredReleases(NoteEndSink &noteEndSink) noexcept {
+        bool ok = true;
+        for (VoiceAllocator::VoiceIndex index = 0;
+             index < lifecycle_.capacity(); ++index) {
+            auto &voice = voices_[index];
+            if (!voice.active || !voice.deferredReleaseCompletion)
+                continue;
+
+            const auto generation = voice.generation;
+            if (!lifecycle_.completeRelease(index, generation, 0, noteEndSink))
+                ok = false;
+            voice = {};
+        }
+        return ok;
+    }
+
+    template <typename NoteEndSink>
     bool renderRange(std::uint32_t begin,
                      std::uint32_t end,
+                     std::uint32_t blockFrames,
                      float *left,
                      float *right,
                      NoteEndSink &noteEndSink) noexcept {
-        if (end < begin)
+        if (end < begin || end > blockFrames)
             return false;
 
         bool ok = true;
@@ -166,7 +192,7 @@ private:
             for (VoiceAllocator::VoiceIndex index = 0;
                  index < lifecycle_.capacity(); ++index) {
                 auto &voice = voices_[index];
-                if (!voice.active)
+                if (!voice.active || voice.deferredReleaseCompletion)
                     continue;
 
                 const auto sample = static_cast<float>(
@@ -188,10 +214,21 @@ private:
 
                 --voice.releaseRemaining;
                 if (voice.releaseRemaining == 0) {
-                    const auto generation = voice.generation;
-                    if (!lifecycle_.completeRelease(index, generation, frame + 1u, noteEndSink))
-                        ok = false;
-                    voice = {};
+                    const auto completionTime = frame + 1u;
+                    if (completionTime < blockFrames) {
+                        const auto generation = voice.generation;
+                        if (!lifecycle_.completeRelease(
+                                index, generation, completionTime, noteEndSink))
+                            ok = false;
+                        voice = {};
+                    } else {
+                        // Keep the lifecycle slot and generation alive across the
+                        // block boundary. The next process call will emit NOTE_END
+                        // at offset 0 before scheduling its input events.
+                        voice.level = 0.0f;
+                        voice.releaseStep = 0.0f;
+                        voice.deferredReleaseCompletion = true;
+                    }
                 } else {
                     voice.level = std::max(0.0f, voice.level - voice.releaseStep);
                 }
