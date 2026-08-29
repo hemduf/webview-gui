@@ -16,6 +16,8 @@ on:
       - 'examples/tests/gain_webview_resource_tests.cpp'
       - 'examples/tests/gain_webview_param_tests.cpp'
       - 'examples/tests/gain_webview_backpressure_tests.cpp'
+      - 'examples/tests/gain_native_gui_contract.cmake'
+      - 'examples/tests/gain_native_gui_tests.cpp'
       - 'examples/tests/gain_validator_ci_contract.cmake'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/gain-core.yml'
@@ -40,6 +42,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Verify native GUI preference contract
+        run: cmake -P examples/tests/gain_native_gui_contract.cmake
+
       - name: Install Linux WebView dependencies
         if: runner.os == 'Linux'
         run: |
@@ -59,13 +64,13 @@ jobs:
       - name: Build Gain CLAP and tests
         run: >-
           cmake --build build-gain-core
-          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_meter_tests webview_gui_example_gain_clap_tests webview_gui_example_gain_state_host_sync_tests webview_gui_example_gain_webview_resource_tests webview_gui_example_gain_webview_param_tests webview_gui_example_gain_webview_backpressure_tests
+          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_meter_tests webview_gui_example_gain_clap_tests webview_gui_example_gain_state_host_sync_tests webview_gui_example_gain_webview_resource_tests webview_gui_example_gain_webview_param_tests webview_gui_example_gain_webview_backpressure_tests webview_gui_example_gain_native_gui_tests
           --config Debug --parallel
 
       - name: Run Gain tests
         run: >-
           ctest --test-dir build-gain-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|state_host_sync|webview_resource|webview_param|webview_backpressure)$'
+          --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|state_host_sync|webview_resource|webview_param|webview_backpressure|native_gui)$'
 
       - name: Run Gain validator CI contract
         run: >-

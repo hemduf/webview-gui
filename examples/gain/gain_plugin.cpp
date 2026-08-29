@@ -453,9 +453,31 @@ protected:
     }
 
     bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
-        if (!gui_.extHostWebview || !gui_.extHostWebview->send)
+        if (!api || !isFloating)
             return false;
-        return gui_.getPreferredApi(api, isFloating);
+
+        if (gui_.extHostWebview && gui_.extHostWebview->send)
+            return gui_.getPreferredApi(api, isFloating);
+
+        *isFloating = false;
+#if defined(__APPLE__)
+        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::COCOA)) {
+            *api = CLAP_WINDOW_API_COCOA;
+            return true;
+        }
+#elif defined(_WIN32) || defined(_WIN64)
+        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::HWND)) {
+            *api = CLAP_WINDOW_API_WIN32;
+            return true;
+        }
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
+      !defined(__wasm32__) && !defined(__wasm64__)
+        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::X11EMBED)) {
+            *api = CLAP_WINDOW_API_X11;
+            return true;
+        }
+#endif
+        return false;
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
