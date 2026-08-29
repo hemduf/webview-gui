@@ -359,6 +359,10 @@ protected:
     bool init() noexcept override {
         gui_.init();
         guiParameterBridge_.init(host_);
+        if (host_ && host_->get_extension) {
+            hostParams_ = static_cast<const clap_host_params_t *>(
+                host_->get_extension(host_, CLAP_EXT_PARAMS));
+        }
         return true;
     }
 
@@ -567,11 +571,18 @@ protected:
             return false;
 
         const auto gain = static_cast<float>(gainDb);
+        const bool parameterValuesChanged =
+            gainDbSnapshot_.load(std::memory_order_relaxed) != gain ||
+            bypassSnapshot_.load(std::memory_order_relaxed) != bypassed;
+
         pendingLoadedGainDb_.store(gain, std::memory_order_relaxed);
         pendingLoadedBypass_.store(bypassed, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
         gainDbSnapshot_.store(gain, std::memory_order_relaxed);
         bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
+
+        if (parameterValuesChanged && hostParams_ && hostParams_->rescan)
+            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
         return true;
     }
 
@@ -784,6 +795,7 @@ private:
     }
 
     const clap_host_t *host_ = nullptr;
+    const clap_host_params_t *hostParams_ = nullptr;
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};
