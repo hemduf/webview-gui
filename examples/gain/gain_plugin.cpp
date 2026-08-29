@@ -53,6 +53,43 @@ const clap_plugin_descriptor_t kDescriptor{
 constexpr std::array<uint8_t, 8> kStateMagic{{'W', 'V', 'G', 'G', 'A', 'I', 'N', 0}};
 constexpr uint32_t kStateVersion = 1;
 constexpr std::size_t kStateSize = 24;
+constexpr const char kEditorUri[] = "/index.html";
+constexpr const char kEditorMime[] = "text/html; charset=utf-8";
+constexpr const char kEditorHtml[] = R"html(<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>webview-gui Gain</title>
+<style>
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171717; color: #f2f2f2; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+main { width: min(30rem, calc(100vw - 2rem)); display: grid; gap: 1.25rem; padding: 1.5rem; box-sizing: border-box; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+h1 { margin: 0; font-size: 1.1rem; font-weight: 650; }
+label { display: grid; gap: .5rem; }
+input[type="range"] { width: 100%; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.meters { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+meter { width: 100%; }
+small { opacity: .7; }
+</style>
+</head>
+<body>
+<main>
+<header><h1>Gain</h1><output id="gain-value" for="gain">0.00 dB</output></header>
+<label>Gain<input id="gain" type="range" min="-60" max="12" step="0.1" value="0"></label>
+<label class="row"><span>Bypass</span><input id="bypass" type="checkbox"></label>
+<section class="meters" aria-label="Stereo output meter">
+<label>L<meter id="meter-left" min="0" max="1" value="0"></meter></label>
+<label>R<meter id="meter-right" min="0" max="1" value="0"></meter></label>
+</section>
+<small>Interactive CLAP parameter messaging is enabled by the next integration slice.</small>
+</main>
+</body>
+</html>
+)html";
 
 bool copyText(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -160,6 +197,47 @@ protected:
             return CLAP_PROCESS_ERROR;
         syncParameterSnapshotsPreservingConcurrentStateLoad();
         return CLAP_PROCESS_CONTINUE;
+    }
+
+    bool enableDraftExtensions() const noexcept override { return true; }
+    bool implementsWebview() const noexcept override { return true; }
+
+    int32_t webviewGetUri(char *uri, uint32_t uriCapacity) const noexcept override {
+        constexpr auto uriLength = sizeof(kEditorUri);
+        static_assert(uriLength <= static_cast<std::size_t>(std::numeric_limits<int32_t>::max()),
+                      "Gain WebView URI length must fit the CLAP return type");
+
+        if (uriCapacity == 0)
+            return static_cast<int32_t>(uriLength);
+        if (!uri)
+            return -1;
+
+        const auto copyLength = std::min<std::size_t>(uriLength - 1u, uriCapacity - 1u);
+        if (copyLength != 0)
+            std::memcpy(uri, kEditorUri, copyLength);
+        uri[copyLength] = '\0';
+        return static_cast<int32_t>(uriLength);
+    }
+
+    bool webviewGetResource(const char *path,
+                            char *mime,
+                            uint32_t mimeCapacity,
+                            const clap_ostream_t *dataStream) override {
+        if (!path || std::strcmp(path, kEditorUri) != 0 || !dataStream || !dataStream->write)
+            return false;
+        if (!copyText(mime, mimeCapacity, kEditorMime))
+            return false;
+
+        return writeAll(dataStream,
+                        reinterpret_cast<const uint8_t *>(kEditorHtml),
+                        sizeof(kEditorHtml) - 1u);
+    }
+
+    bool webviewReceive(const void *, uint32_t) const noexcept override {
+        // The editor is resource-only in this bounded slice. Interactive
+        // parameter gestures and meter delivery are added separately so the
+        // message protocol can be reviewed and tested independently.
+        return false;
     }
 
     bool implementsState() const noexcept override { return true; }
