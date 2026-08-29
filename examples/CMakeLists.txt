@@ -27,6 +27,11 @@ set(WEBVIEW_GUI_EXAMPLES_CLAP_HELPERS_REVISION
 set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION
     "1cca996e96f29ab2be7ae9f8cfe532bbc92e1dd6" CACHE STRING
     "Pinned free-audio/clap-wrapper revision")
+set(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_REVISION
+    "152b9823e992d782c5c1fd33bca0295478b919aa" CACHE STRING
+    "Pinned free-audio/clap-validator 0.4.1 revision")
+set(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT "" CACHE PATH
+    "Path to a built pinned clap-validator checkout; empty disables validator target")
 
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(webview_gui_example_clap
@@ -143,6 +148,39 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
         )
     elseif(WIN32 OR UNIX)
         set_target_properties(webview_gui_example_gain PROPERTIES SUFFIX ".clap")
+    endif()
+
+    if(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT)
+        find_program(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_EXECUTABLE
+            NAMES clap-validator clap-validator.exe
+            PATHS "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT}/target/release"
+            NO_DEFAULT_PATH
+        )
+        if(NOT WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_EXECUTABLE)
+            message(FATAL_ERROR
+                "Pinned clap-validator executable was not found under "
+                "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT}/target/release")
+        endif()
+
+        if(APPLE)
+            set(_webview_gui_gain_validation_path
+                "$<TARGET_BUNDLE_DIR:webview_gui_example_gain>")
+        else()
+            set(_webview_gui_gain_validation_path
+                "$<TARGET_FILE:webview_gui_example_gain>")
+        endif()
+
+        add_custom_target(webview_gui_example_gain_validate
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "clap-validator commit: ${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_REVISION}"
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "Gain CLAP path: ${_webview_gui_gain_validation_path}"
+            COMMAND "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_EXECUTABLE}" --version
+            COMMAND "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_EXECUTABLE}"
+                validate "${_webview_gui_gain_validation_path}" --only-failed
+            DEPENDS webview_gui_example_gain
+            VERBATIM
+        )
     endif()
 
     add_executable(webview_gui_example_gain_core_tests
