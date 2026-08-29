@@ -470,7 +470,7 @@ protected:
             return false;
         }
 
-        lastMeterSequenceSent_ = 0u;
+        hasSentMeterSequence_ = false;
         guiCreated_ = true;
         hostOwnedWebviewGui_ = hostOwnedWebview;
         return true;
@@ -479,7 +479,7 @@ protected:
     void guiDestroy() noexcept override {
         guiParameterBridge_.closeOpenGestures();
         gui_.destroy();
-        lastMeterSequenceSent_ = 0u;
+        hasSentMeterSequence_ = false;
         guiCreated_ = false;
         hostOwnedWebviewGui_ = false;
     }
@@ -726,7 +726,9 @@ private:
 
     bool sendMeterSnapshotToWebview() const noexcept {
         GainMeterSnapshot snapshot{};
-        if (!processor_.tryReadMeter(snapshot) || snapshot.sequence == lastMeterSequenceSent_)
+        if (!processor_.tryReadMeter(snapshot))
+            return true;
+        if (hasSentMeterSequence_ && snapshot.sequence == lastMeterSequenceSent_)
             return true;
 
         const auto message = encodeUiMeterMessage(snapshot);
@@ -734,6 +736,7 @@ private:
             return false;
 
         lastMeterSequenceSent_ = snapshot.sequence;
+        hasSentMeterSequence_ = true;
         return true;
     }
 
@@ -785,6 +788,7 @@ private:
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};
     mutable uint32_t lastMeterSequenceSent_ = 0u;
+    mutable bool hasSentMeterSequence_ = false;
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
     std::atomic<float> gainDbSnapshot_{0.0f};
