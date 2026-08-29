@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'examples/**'
+      - 'cmake/WebviewGuiClapWrapperMacOSPatch.cmake'
       - 'CMakeLists.txt'
       - '.github/workflows/examples-foundation.yml'
   workflow_dispatch:
@@ -85,6 +86,12 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+
+      - name: Build pinned clap-wrapper shared implementation
+        run: >-
+          cmake --build build-wrapper-foundation
+          --target clap-wrapper-shared-detail
+          --config Debug --parallel
 
       - name: Verify pinned clap-wrapper foundation
         run: >-

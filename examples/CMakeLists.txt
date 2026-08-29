@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(webview_gui_examples LANGUAGES C CXX)
 
+# clap-wrapper documents C++17 as its default, but when it is embedded through
+# FetchContent its top-level-only default is not applied. Set the example tree's
+# language standards explicitly so the wrapper's C++ and Objective-C++ sources
+# get the contract they require on every supported platform.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(APPLE)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+
 include(CTest)
 include(FetchContent)
 
@@ -283,6 +294,12 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
         GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
     )
     FetchContent_MakeAvailable(webview_gui_example_clap_wrapper)
+
+    if(APPLE)
+        include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiClapWrapperMacOSPatch.cmake")
+        webview_gui_apply_clap_wrapper_macos_string_patch(
+            "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/detail/clap/mac_helpers.mm")
+    endif()
 
     # clap-wrapper must reuse the already-pinned CLAP target instead of creating
     # or downloading a second SDK. Avoid forcing any clap-wrapper cache knobs here
