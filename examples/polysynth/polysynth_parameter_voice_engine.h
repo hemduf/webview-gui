@@ -77,9 +77,23 @@ public:
                  float *right,
                  NoteEndSink &noteEndSink) noexcept {
         clearTransientExpressionState();
-        auto coreEventSink = [this](const clap_event_header_t &header) noexcept -> bool {
-            return applyCoreEvent(header);
-        };
+
+        // The scheduler keeps its normal core-event callback note-free, but it
+        // detects this optional post-NOTE_ON hook after allocation/lifecycle/DSP
+        // dispatch. That gives note expressions received earlier at the same
+        // sample a deterministic reconciliation point before any sample at that
+        // boundary is rendered, without reordering the host event stream.
+        struct CoreEventSink {
+            ParameterVoiceEngine *owner = nullptr;
+
+            bool operator()(const clap_event_header_t &header) noexcept {
+                return owner && owner->applyCoreEvent(header);
+            }
+
+            bool noteOnDispatched(const clap_event_note_t &event) noexcept {
+                return owner && owner->noteOnDispatched(event);
+            }
+        } coreEventSink{this};
 
         const bool ok = VoiceEngine::processWithEvents(events,
                                                        framesCount,
@@ -219,6 +233,18 @@ private:
         return rememberPreparedVoiceStart(identity, expressionSemitones);
     }
 
+    // NOTE_ON has already been allocated and dispatched when this hook runs, but
+    // rendering for its timestamp has not resumed yet. Consume any earlier
+    // same-sample expression into the newly tracked voice and retune its phase
+    // increment before the first generated sample. The global NOTE_ON default is
+    // restored by applyFineTuningState(), so a targeted expression cannot leak to
+    // later voices at the same or subsequent timestamps.
+    bool noteOnDispatched(const clap_event_note_t &event) noexcept {
+        if (!prepareNoteOn(event))
+            return false;
+        return applyFineTuningState();
+    }
+
     bool syncVoices() noexcept {
         for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
             VoiceIdentity identity{};
@@ -300,13 +326,6 @@ private:
             return true;
         if (header.size < sizeof(clap_event_header_t))
             return false;
-
-        if (header.type == CLAP_EVENT_NOTE_ON) {
-            if (header.size < sizeof(clap_event_note_t))
-                return false;
-            const auto &event = *reinterpret_cast<const clap_event_note_t *>(&header);
-            return prepareNoteOn(event);
-        }
 
         if (header.type == CLAP_EVENT_NOTE_EXPRESSION) {
             if (header.size < sizeof(clap_event_note_expression_t))
