@@ -18,6 +18,13 @@ public:
     [[nodiscard]] GainProcessor &processor() noexcept { return processor_; }
     [[nodiscard]] const GainProcessor &processor() const noexcept { return processor_; }
 
+    bool applyParameterValue(const clap_event_param_value_t &event) noexcept {
+        if (!isSupportedValue(event))
+            return false;
+        applyValue(event);
+        return true;
+    }
+
     bool process(const clap_process_t &process) noexcept {
         if (!validateAudio(process))
             return false;
@@ -58,7 +65,7 @@ public:
                 cursor = header->time;
             }
 
-            applyValue(event);
+            (void)applyParameterValue(event);
         }
 
         return processRange(process, cursor, process.frames_count);
