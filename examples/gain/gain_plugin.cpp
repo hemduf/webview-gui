@@ -1,4 +1,5 @@
 #include "gain_plugin.h"
+#include "webview-gui/clap-webview-gui.h"
 
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
@@ -55,6 +56,8 @@ constexpr uint32_t kStateVersion = 1;
 constexpr std::size_t kStateSize = 24;
 constexpr const char kEditorUri[] = "/index.html";
 constexpr const char kEditorMime[] = "text/html; charset=utf-8";
+constexpr uint32_t kEditorWidth = 480;
+constexpr uint32_t kEditorHeight = 320;
 constexpr const char kEditorHtml[] = R"html(<!doctype html>
 <html lang="en">
 <head>
@@ -194,13 +197,18 @@ bool decodeState(const std::array<uint8_t, kStateSize> &bytes,
 class GainPlugin final : public GainBase {
 public:
     explicit GainPlugin(const clap_host_t *host)
-        : GainBase(&kDescriptor, host) {
+        : GainBase(&kDescriptor, host), gui_(clapPlugin(), host) {
         syncParameterSnapshotsFromProcessor();
     }
 
     ~GainPlugin() override = default;
 
 protected:
+    bool init() noexcept override {
+        gui_.init();
+        return gui_.setSize(kEditorWidth, kEditorHeight);
+    }
+
     clap_process_status process(const clap_process_t *processData) noexcept override {
         applyPendingLoadedState();
         if (!processData || !processor_.process(*processData))
@@ -248,6 +256,51 @@ protected:
         // parameter gestures and meter delivery are added separately so the
         // message protocol can be reviewed and tested independently.
         return false;
+    }
+
+    bool implementsGui() const noexcept override { return true; }
+
+    bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
+        return gui_.isApiSupported(api, isFloating);
+    }
+
+    bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
+        return gui_.getPreferredApi(api, isFloating);
+    }
+
+    bool guiCreate(const char *api, bool isFloating) noexcept override {
+        return gui_.create(api, isFloating);
+    }
+
+    void guiDestroy() noexcept override { gui_.destroy(); }
+
+    bool guiSetScale(double) noexcept override {
+        // The CLAP WebView API uses logical pixels and explicitly forbids
+        // set_scale(). No native backend in this example applies explicit scale.
+        return false;
+    }
+
+    bool guiShow() noexcept override { return gui_.show(); }
+    bool guiHide() noexcept override { return gui_.hide(); }
+    bool guiGetSize(uint32_t *width, uint32_t *height) noexcept override {
+        return gui_.getSize(width, height);
+    }
+    bool guiCanResize() const noexcept override { return gui_.canResize(); }
+    bool guiGetResizeHints(clap_gui_resize_hints_t *hints) noexcept override {
+        return gui_.getResizeHints(hints);
+    }
+    bool guiAdjustSize(uint32_t *width, uint32_t *height) noexcept override {
+        return gui_.adjustSize(width, height);
+    }
+    bool guiSetSize(uint32_t width, uint32_t height) noexcept override {
+        return gui_.setSize(width, height);
+    }
+    void guiSuggestTitle(const char *title) noexcept override { gui_.suggestTitle(title); }
+    bool guiSetParent(const clap_window *window) noexcept override {
+        return gui_.setParent(window);
+    }
+    bool guiSetTransient(const clap_window *window) noexcept override {
+        return gui_.setTransient(window);
     }
 
     bool implementsState() const noexcept override { return true; }
@@ -472,6 +525,7 @@ private:
     }
 
     GainEventProcessor processor_{};
++    mutable ::webview_gui::ClapWebviewGui gui_;
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
 
