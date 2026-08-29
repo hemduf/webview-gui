@@ -206,17 +206,18 @@ int main() {
         return 16;
     }
 
-    uint32_t width = 0;
-    uint32_t height = 0;
-    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
-        std::cerr << "Gain clap.gui did not expose the expected initial logical size\n";
+    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
+        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
         plugin->destroy(plugin);
         return 17;
     }
 
-    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
-        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
-        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
+        std::cerr << "Gain clap.gui did not expose the expected initial logical size after create()\n";
+        gui->destroy(plugin);
         plugin->destroy(plugin);
         return 18;
     }
@@ -234,6 +235,12 @@ int main() {
         std::cerr << "Gain clap.gui could not be recreated after destroy()\n";
         plugin->destroy(plugin);
         return 20;
+    }
+    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
+        std::cerr << "Gain clap.gui recreate did not restore the initial logical size\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 21;
     }
     gui->destroy(plugin);
 
