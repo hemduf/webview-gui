@@ -80,6 +80,26 @@ function(webview_gui_apply_choc_windows_resource_lifetime_patch content_var)
         content
         "${content}")
 
+    # This patch runs before the later repository-wide CORS narrowing, so anchor
+    # on CHOC's pinned wildcard response and leave that line intact for the next
+    # transformation. CSP is added here because this is the native response path.
+    set(WEBVIEW_GUI_RESOURCE_CSP_OLD [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");]=])
+    set(WEBVIEW_GUI_RESOURCE_CSP_NEW [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");
+                headers.emplace_back ("Content-Security-Policy: " + std::string (webview_gui::detail::pluginContentSecurityPolicy));]=])
+
+    string(FIND "${content}"
+        "${WEBVIEW_GUI_RESOURCE_CSP_OLD}"
+        WEBVIEW_GUI_RESOURCE_CSP_OFFSET)
+    if(WEBVIEW_GUI_RESOURCE_CSP_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC Windows resource response headers changed; refusing to build without native CSP enforcement")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_RESOURCE_CSP_OLD}"
+        "${WEBVIEW_GUI_RESOURCE_CSP_NEW}"
+        content
+        "${content}")
+
     set(WEBVIEW_GUI_RESOURCE_USER_AGENT_OLD [=[                if (! options.customUserAgent.empty())
                     headers.emplace_back ("User-Agent: " + options.customUserAgent);]=])
     set(WEBVIEW_GUI_RESOURCE_USER_AGENT_NEW [=[                if (! resourceUserAgent.empty())
