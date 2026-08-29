@@ -31,6 +31,12 @@ public:
         return true;
     }
 
+    // Updates the default envelope used by future NOTE_ON allocations. Active
+    // voices retain a coherent NOTE_ON snapshot so a control update cannot splice
+    // new timing into the middle of an existing attack/decay/release lifecycle.
+    // As with the rest of this core, callers must not invoke configuration APIs
+    // concurrently with process(); future CLAP parameter integration owns the
+    // audio-thread event handoff.
     bool setAmpEnvelope(std::uint32_t attackSamples,
                         std::uint32_t decaySamples,
                         float sustainLevel,
@@ -138,6 +144,8 @@ private:
         float level = 0.0f;
         float stageStep = 0.0f;
         std::uint32_t stageRemaining = 0;
+        std::uint32_t decaySamples = 0;
+        std::uint32_t releaseSamples = 0;
         AmpStage ampStage = AmpStage::Sustain;
         bool active = false;
         bool deferredReleaseCompletion = false;
@@ -163,8 +171,8 @@ private:
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
     }
 
-    void enterDecayOrSustain(Voice &voice) const noexcept {
-        if (decaySamples_ == 0) {
+    static void enterDecayOrSustain(Voice &voice) noexcept {
+        if (voice.decaySamples == 0) {
             voice.level = voice.sustainTarget;
             voice.stageStep = 0.0f;
             voice.stageRemaining = 0;
@@ -173,9 +181,10 @@ private:
         }
 
         voice.ampStage = AmpStage::Decay;
-        voice.stageRemaining = decaySamples_;
+        voice.stageRemaining = voice.decaySamples;
         voice.stageStep = flushEnvelopeDenormal(
-            (voice.peakLevel - voice.sustainTarget) / static_cast<float>(decaySamples_));
+            (voice.peakLevel - voice.sustainTarget) /
+            static_cast<float>(voice.decaySamples));
     }
 
     void startVoice(Voice &voice, const VoiceLifecycleEvent &event) const noexcept {
@@ -188,6 +197,8 @@ private:
         voice.phaseIncrement = phaseIncrementForKey(event.note.identity.key);
         voice.peakLevel = flushEnvelopeDenormal(static_cast<float>(event.note.velocity));
         voice.sustainTarget = flushEnvelopeDenormal(voice.peakLevel * sustainLevel_);
+        voice.decaySamples = decaySamples_;
+        voice.releaseSamples = releaseSamples_;
         voice.active = true;
 
         if (attackSamples_ == 0) {
@@ -203,13 +214,13 @@ private:
             voice.peakLevel / static_cast<float>(attackSamples_));
     }
 
-    void beginRelease(Voice &voice) const noexcept {
+    static void beginRelease(Voice &voice) noexcept {
         if (voice.ampStage == AmpStage::Release)
             return;
         voice.ampStage = AmpStage::Release;
-        voice.stageRemaining = releaseSamples_;
+        voice.stageRemaining = voice.releaseSamples;
         voice.stageStep = flushEnvelopeDenormal(
-            voice.level / static_cast<float>(releaseSamples_));
+            voice.level / static_cast<float>(voice.releaseSamples));
     }
 
     void applyVoiceEvent(const VoiceLifecycleEvent &event) noexcept {
