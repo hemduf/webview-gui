@@ -64,6 +64,18 @@ public:
                  std::uint32_t framesCount,
                  VoiceSink &voiceSink,
                  NoteEndSink &noteEndSink) noexcept {
+        auto boundarySink = [](std::uint32_t) noexcept {};
+        return processWithBoundaries(events, framesCount, boundarySink, voiceSink, noteEndSink);
+    }
+
+    template <typename BoundarySink, typename VoiceSink, typename NoteEndSink>
+    bool processWithBoundaries(const clap_input_events_t *events,
+                               std::uint32_t framesCount,
+                               BoundarySink &boundarySink,
+                               VoiceSink &voiceSink,
+                               NoteEndSink &noteEndSink) noexcept {
+        static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
+                      "PolySynth voice lifecycle boundary sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<VoiceSink &, const VoiceLifecycleEvent &>,
                       "PolySynth voice lifecycle sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
@@ -73,7 +85,8 @@ public:
                                  const ScheduledNoteEvent &event) noexcept {
             applyScheduled(event, voiceSink, noteEndSink);
         };
-        return scheduler_.process(events, framesCount, scheduledSink);
+        return scheduler_.processWithBoundaries(
+            events, framesCount, boundarySink, scheduledSink);
     }
 
     template <typename NoteEndSink>
