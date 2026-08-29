@@ -99,6 +99,49 @@ add_test(NAME webview_gui_examples_skeleton_factory
     COMMAND webview_gui_example_skeleton_tests)
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
+    add_library(webview_gui_example_gain_clap_core STATIC
+        gain/gain_plugin.cpp
+    )
+    target_include_directories(webview_gui_example_gain_clap_core PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/gain
+    )
+    target_link_libraries(webview_gui_example_gain_clap_core PUBLIC clap-helpers)
+    target_compile_features(webview_gui_example_gain_clap_core PUBLIC cxx_std_17)
+    set_target_properties(webview_gui_example_gain_clap_core PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+
+    add_library(webview_gui_example_gain MODULE
+        gain/gain_entry.cpp
+    )
+    target_link_libraries(webview_gui_example_gain PRIVATE
+        webview_gui_example_gain_clap_core
+        webview-gui
+    )
+    target_compile_features(webview_gui_example_gain PRIVATE cxx_std_17)
+    set_target_properties(webview_gui_example_gain PROPERTIES
+        OUTPUT_NAME "WebviewGuiGain"
+        PREFIX ""
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+
+    if(APPLE)
+        set_target_properties(webview_gui_example_gain PROPERTIES
+            BUNDLE TRUE
+            BUNDLE_EXTENSION clap
+            MACOSX_BUNDLE_GUI_IDENTIFIER "com.webview-gui.example.gain"
+            MACOSX_BUNDLE_BUNDLE_NAME "WebviewGuiGain"
+            MACOSX_BUNDLE_BUNDLE_VERSION "1"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/common/plugin.plist.in"
+        )
+    elseif(WIN32 OR UNIX)
+        set_target_properties(webview_gui_example_gain PROPERTIES SUFFIX ".clap")
+    endif()
+
     add_executable(webview_gui_example_gain_core_tests
         tests/gain_core_tests.cpp
     )
@@ -115,7 +158,9 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
         ${CMAKE_CURRENT_LIST_DIR}/gain
         ${CMAKE_CURRENT_LIST_DIR}/common
     )
-    target_link_libraries(webview_gui_example_gain_clap_tests PRIVATE clap-helpers)
+    target_link_libraries(webview_gui_example_gain_clap_tests PRIVATE
+        webview_gui_example_gain_clap_core
+    )
     target_compile_features(webview_gui_example_gain_clap_tests PRIVATE cxx_std_17)
 
     add_test(NAME webview_gui_examples_gain_core
