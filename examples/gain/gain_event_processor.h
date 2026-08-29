@@ -111,7 +111,7 @@ private:
         if (event.param_id == kGainParamId) {
             (void)processor_.setGainDb(event.value);
         } else if (event.param_id == kBypassParamId) {
-            processor_.setBypassed(event.value >= 0.5);
+            processor_.setBypassed(static_cast<int32_t>(event.value) != 0);
         }
     }
 
