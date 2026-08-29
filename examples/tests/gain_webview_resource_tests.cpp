@@ -171,6 +171,19 @@ bool contains(const std::string &text, const char *needle) {
     return needle && text.find(needle) != std::string::npos;
 }
 
+const char *expectedNativeApi() {
+#if defined(__APPLE__)
+    return CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32) || defined(_WIN64)
+    return CLAP_WINDOW_API_WIN32;
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
+      !defined(__wasm32__) && !defined(__wasm64__)
+    return CLAP_WINDOW_API_X11;
+#else
+    return nullptr;
+#endif
+}
+
 uint32_t loadU32Le(const uint8_t *bytes) {
     uint32_t value = 0;
     for (unsigned i = 0; i < 4; ++i)
@@ -625,53 +638,63 @@ int main() {
     gui->destroy(plugin);
     plugin->destroy(plugin);
 
+    const char *nativeApi = expectedNativeApi();
+    if (!nativeApi)
+        return 24;
+
     const auto *nonWebviewPlugin =
         factory->create_plugin(factory, &kHostWithoutWebview, kGainPluginId);
     if (!nonWebviewPlugin)
-        return 24;
+        return 25;
     if (!nonWebviewPlugin->init(nonWebviewPlugin)) {
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 25;
+        return 26;
     }
 
     const auto *nonWebviewGui = static_cast<const clap_plugin_gui_t *>(
         nonWebviewPlugin->get_extension(nonWebviewPlugin, CLAP_EXT_GUI));
     const char *unsupportedPreferredApi = nullptr;
-    bool unsupportedFloating = false;
+    bool unsupportedFloating = true;
     if (!nonWebviewGui ||
         nonWebviewGui->is_api_supported(nonWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false) ||
-        nonWebviewGui->get_preferred_api(nonWebviewPlugin,
-                                         &unsupportedPreferredApi,
-                                         &unsupportedFloating)) {
-        std::cerr << "Gain advertised host-owned WebView GUI without host clap.webview/3 support\n";
+        !nonWebviewGui->is_api_supported(nonWebviewPlugin, nativeApi, false) ||
+        !nonWebviewGui->get_preferred_api(nonWebviewPlugin,
+                                          &unsupportedPreferredApi,
+                                          &unsupportedFloating) ||
+        !unsupportedPreferredApi || std::strcmp(unsupportedPreferredApi, nativeApi) != 0 ||
+        unsupportedFloating) {
+        std::cerr << "Gain failed native GUI fallback without host clap.webview/3 support\n";
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 26;
+        return 27;
     }
     nonWebviewPlugin->destroy(nonWebviewPlugin);
 
     const auto *brokenWebviewPlugin =
         factory->create_plugin(factory, &kHostWithBrokenWebview, kGainPluginId);
     if (!brokenWebviewPlugin)
-        return 27;
+        return 28;
     if (!brokenWebviewPlugin->init(brokenWebviewPlugin)) {
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 28;
+        return 29;
     }
 
     const auto *brokenWebviewGui = static_cast<const clap_plugin_gui_t *>(
         brokenWebviewPlugin->get_extension(brokenWebviewPlugin, CLAP_EXT_GUI));
     const char *brokenPreferredApi = nullptr;
-    bool brokenFloating = false;
+    bool brokenFloating = true;
     if (!brokenWebviewGui ||
         brokenWebviewGui->is_api_supported(brokenWebviewPlugin,
                                            CLAP_WINDOW_API_WEBVIEW,
                                            false) ||
-        brokenWebviewGui->get_preferred_api(brokenWebviewPlugin,
-                                            &brokenPreferredApi,
-                                            &brokenFloating)) {
-        std::cerr << "Gain advertised host-owned WebView GUI with a missing host send callback\n";
+        !brokenWebviewGui->is_api_supported(brokenWebviewPlugin, nativeApi, false) ||
+        !brokenWebviewGui->get_preferred_api(brokenWebviewPlugin,
+                                             &brokenPreferredApi,
+                                             &brokenFloating) ||
+        !brokenPreferredApi || std::strcmp(brokenPreferredApi, nativeApi) != 0 ||
+        brokenFloating) {
+        std::cerr << "Gain failed native GUI fallback with an incomplete host WebView path\n";
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 29;
+        return 30;
     }
 
     brokenWebviewPlugin->destroy(brokenWebviewPlugin);
