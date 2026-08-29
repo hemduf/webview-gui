@@ -57,6 +57,22 @@ public:
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
                  Sink &sink) noexcept {
+        auto boundarySink = [](std::uint32_t) noexcept {};
+        return processWithBoundaries(events, framesCount, boundarySink, sink);
+    }
+
+    // The boundary sink runs exactly once before the first event at each sample
+    // timestamp and, critically, before allocator matching/allocation at that
+    // timestamp. A voice engine can therefore render the preceding segment and
+    // retire an envelope which ends at this boundary before same-sample NOTE_ON
+    // allocation occurs.
+    template <typename BoundarySink, typename Sink>
+    bool processWithBoundaries(const clap_input_events_t *events,
+                               std::uint32_t framesCount,
+                               BoundarySink &boundarySink,
+                               Sink &sink) noexcept {
+        static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
+                      "PolySynth scheduler boundary sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<Sink &, const ScheduledNoteEvent &>,
                       "PolySynth note scheduler sink must be noexcept");
 
@@ -68,6 +84,8 @@ public:
         const auto eventCount = events->size(events);
         std::uint32_t previousTime = 0;
         bool havePreviousTime = false;
+        std::uint32_t boundaryTime = 0;
+        bool haveBoundaryTime = false;
 
         for (std::uint32_t eventIndex = 0; eventIndex < eventCount; ++eventIndex) {
             const auto *header = events->get(events, eventIndex);
@@ -79,6 +97,12 @@ public:
 
             previousTime = header->time;
             havePreviousTime = true;
+
+            if (!haveBoundaryTime || header->time != boundaryTime) {
+                boundarySink(header->time);
+                boundaryTime = header->time;
+                haveBoundaryTime = true;
+            }
 
             if (header->space_id != CLAP_CORE_EVENT_SPACE_ID)
                 continue;
