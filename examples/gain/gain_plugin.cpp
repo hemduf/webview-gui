@@ -306,6 +306,7 @@ protected:
     }
 
     void guiDestroy() noexcept override {
+        guiParameterBridge_.closeOpenGestures();
         gui_.destroy();
         guiCreated_ = false;
         hostOwnedWebviewGui_ = false;
