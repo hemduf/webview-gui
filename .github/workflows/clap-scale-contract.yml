@@ -1,0 +1,46 @@
+name: CLAP scale contract
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/43-*'
+    paths:
+      - 'include/webview-gui/clap-webview-gui.h'
+      - 'tests/clap-scale-contract/**'
+      - '.github/workflows/clap-scale-contract.yml'
+  pull_request:
+    paths:
+      - 'include/webview-gui/clap-webview-gui.h'
+      - 'tests/clap-scale-contract/**'
+      - '.github/workflows/clap-scale-contract.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: clap-scale-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scale-contract:
+    name: ubuntu-latest / unsupported scale fails closed
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure
+        run: cmake -S tests/clap-scale-contract -B build-clap-scale -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-clap-scale --parallel
+
+      - name: Test unsupported scaling contract
+        run: ctest --test-dir build-clap-scale --output-on-failure
