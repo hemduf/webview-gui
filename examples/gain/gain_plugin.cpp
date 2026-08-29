@@ -558,7 +558,7 @@ private:
     void restoreSnapshotsFromPendingState() noexcept {
         gainDbSnapshot_.store(pendingLoadedGainDb_.load(std::memory_order_relaxed),
                               std::memory_order_relaxed);
-        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_order_relaxed),
+        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_relaxed),
                               std::memory_order_relaxed);
     }
 
