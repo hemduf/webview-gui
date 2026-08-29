@@ -206,6 +206,43 @@ int main() {
         }
     }
 
+    // Review regression: CLAP output event timestamps must be strictly inside
+    // the current process block. A release which reaches zero exactly at
+    // frames_count therefore cannot emit NOTE_END at that out-of-range offset.
+    // Keep the lifecycle generation pending and retire it at sample 0 of the
+    // next block, before any same-sample NOTE_ON allocation.
+    engine.reset();
+    if (!engine.configure(1, 48000.0, 4))
+        return 17;
+    InputEvents blockEndRelease;
+    if (!blockEndRelease.pushNote(0, CLAP_EVENT_NOTE_ON, 300, 0, 3, 67, 0.75) ||
+        !blockEndRelease.pushNote(4, CLAP_EVENT_NOTE_OFF, 300, 0, 3, 67))
+        return 18;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    NoteEndCapture boundaryEnds;
+    if (!engine.process(&blockEndRelease.input, 8, left.data(), right.data(), boundaryEnds))
+        return 19;
+    if (boundaryEnds.count != 0 || engine.activeCount() != 1) {
+        std::cerr << "voice engine emitted NOTE_END at the invalid frames_count offset\n";
+        return 20;
+    }
+
+    InputEvents nextBlock;
+    if (!nextBlock.pushNote(0, CLAP_EVENT_NOTE_ON, 301, 0, 3, 72, 1.0))
+        return 21;
+    left.fill(0.0f);
+    right.fill(0.0f);
+    if (!engine.process(&nextBlock.input, 4, left.data(), right.data(), boundaryEnds))
+        return 22;
+    if (boundaryEnds.count != 1 || boundaryEnds.events[0].header.time != 0 ||
+        boundaryEnds.events[0].note_id != 300 || engine.activeCount() != 1 ||
+        !engine.voiceIdentity(0, remaining) || !sameIdentity(remaining, 301, 0, 3, 72) ||
+        nearZero(left[0]) || nearZero(right[0])) {
+        std::cerr << "deferred block-end NOTE_END was not retired before next-block sample-zero events\n";
+        return 23;
+    }
+
     engine.reset();
     left.fill(1.0f);
     right.fill(1.0f);
@@ -213,12 +250,12 @@ int main() {
     if (!engine.process(nullptr, 8, left.data(), right.data(), resetEnds) ||
         engine.activeCount() != 0 || resetEnds.count != 0) {
         std::cerr << "reset voice engine rejected an empty block or leaked lifecycle state\n";
-        return 17;
+        return 24;
     }
     for (std::size_t frame = 0; frame < 8; ++frame) {
         if (!nearZero(left[frame]) || !nearZero(right[frame])) {
             std::cerr << "voice engine was not silent after reset\n";
-            return 18;
+            return 25;
         }
     }
 
