@@ -21,6 +21,10 @@ public:
     void init(const clap_host_t *host) noexcept {
         host_ = host;
         hostParams_ = nullptr;
+        writeIndex_.store(0, std::memory_order_relaxed);
+        readIndex_.store(0, std::memory_order_relaxed);
+        gainGestureOpen_ = false;
+        bypassGestureOpen_ = false;
         active_.store(false, std::memory_order_relaxed);
         if (host_ && host_->get_extension) {
             hostParams_ = static_cast<const clap_host_params_t *>(
@@ -45,7 +49,7 @@ public:
             return false;
         if (!canSchedule())
             return false;
-        if (!push(command))
+        if (!pushPreservingGestureClosure(command))
             return false;
 
         schedulePending();
@@ -88,6 +92,8 @@ private:
         double value = 0.0;
     };
 
+    static_assert(kQueueCapacity > 2,
+                  "Gain WebView parameter queue needs room for a command and gesture closure");
     static_assert(std::atomic<uint32_t>::is_always_lock_free,
                   "Gain WebView parameter queue indices must be lock-free");
 
@@ -171,6 +177,58 @@ private:
                writeIndex_.load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] uint32_t freeSlots() const noexcept {
+        const auto write = writeIndex_.load(std::memory_order_relaxed);
+        const auto read = readIndex_.load(std::memory_order_acquire);
+        const auto capacity = static_cast<uint32_t>(kQueueCapacity);
+        const auto used = write >= read ? write - read : capacity - (read - write);
+        return (capacity - 1u) - used;
+    }
+
+    [[nodiscard]] uint32_t openGestureCount() const noexcept {
+        return (gainGestureOpen_ ? 1u : 0u) + (bypassGestureOpen_ ? 1u : 0u);
+    }
+
+    bool *gestureState(clap_id paramId) noexcept {
+        if (paramId == kGainParamId)
+            return &gainGestureOpen_;
+        if (paramId == kBypassParamId)
+            return &bypassGestureOpen_;
+        return nullptr;
+    }
+
+    bool pushPreservingGestureClosure(const Command &command) noexcept {
+        auto *gestureOpen = gestureState(command.paramId);
+        if (!gestureOpen)
+            return false;
+
+        auto reservedAfter = openGestureCount();
+        if (command.kind == CommandKind::GestureBegin) {
+            if (*gestureOpen)
+                return false;
+            ++reservedAfter;
+        } else if (command.kind == CommandKind::GestureEnd) {
+            if (!*gestureOpen)
+                return false;
+            --reservedAfter;
+        }
+
+        // One slot is needed for this command. Every gesture which remains open
+        // afterwards permanently reserves one additional slot for its matching
+        // CLAP_EVENT_PARAM_GESTURE_END. The consumer can only free slots, so a
+        // conservative read index is safe for this single-producer SPSC queue.
+        if (freeSlots() < reservedAfter + 1u)
+            return false;
+        if (!push(command))
+            return false;
+
+        if (command.kind == CommandKind::GestureBegin)
+            *gestureOpen = true;
+        else if (command.kind == CommandKind::GestureEnd)
+            *gestureOpen = false;
+        return true;
+    }
+
     bool push(const Command &command) noexcept {
         const auto write = writeIndex_.load(std::memory_order_relaxed);
         const auto next = increment(write);
@@ -244,6 +302,8 @@ private:
     std::atomic<uint32_t> writeIndex_{0};
     std::atomic<uint32_t> readIndex_{0};
     std::atomic<bool> active_{false};
+    bool gainGestureOpen_ = false;
+    bool bypassGestureOpen_ = false;
 };
 
 } // namespace webview_gui::examples::gain
