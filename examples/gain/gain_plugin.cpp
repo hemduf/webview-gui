@@ -1,4 +1,5 @@
 #include "gain_plugin.h"
+#include "gain_webview_parameter_bridge.h"
 #include "webview-gui/clap-webview-gui.h"
 
 #include <clap/helpers/plugin.hh>
@@ -197,7 +198,7 @@ bool decodeState(const std::array<uint8_t, kStateSize> &bytes,
 class GainPlugin final : public GainBase {
 public:
     explicit GainPlugin(const clap_host_t *host)
-        : GainBase(&kDescriptor, host), gui_(clapPlugin(), host) {
+        : GainBase(&kDescriptor, host), host_(host), gui_(clapPlugin(), host) {
         syncParameterSnapshotsFromProcessor();
     }
 
@@ -206,12 +207,25 @@ public:
 protected:
     bool init() noexcept override {
         gui_.init();
+        guiParameterBridge_.init(host_);
         return true;
+    }
+
+    bool activate(double, uint32_t, uint32_t) noexcept override {
+        guiParameterBridge_.setActive(true);
+        return true;
+    }
+
+    void deactivate() noexcept override {
+        guiParameterBridge_.setActive(false);
     }
 
     clap_process_status process(const clap_process_t *processData) noexcept override {
         applyPendingLoadedState();
-        if (!processData || !processor_.process(*processData))
+        if (!processData)
+            return CLAP_PROCESS_ERROR;
+        guiParameterBridge_.drain(processData->out_events, processor_);
+        if (!processor_.process(*processData))
             return CLAP_PROCESS_ERROR;
         syncParameterSnapshotsPreservingConcurrentStateLoad();
         return CLAP_PROCESS_CONTINUE;
@@ -251,11 +265,8 @@ protected:
                         sizeof(kEditorHtml) - 1u);
     }
 
-    bool webviewReceive(const void *, uint32_t) const noexcept override {
-        // The editor is resource-only in this bounded slice. Interactive
-        // parameter gestures and meter delivery are added separately so the
-        // message protocol can be reviewed and tested independently.
-        return false;
+    bool webviewReceive(const void *buffer, uint32_t size) const noexcept override {
+        return guiParameterBridge_.receive(guiCreated_, buffer, size);
     }
 
     bool implementsGui() const noexcept override { return true; }
@@ -509,24 +520,23 @@ protected:
     }
 
     void paramsFlush(const clap_input_events_t *in,
-                     const clap_output_events_t *) noexcept override {
+                     const clap_output_events_t *out) noexcept override {
         applyPendingLoadedState();
-        if (!in || !in->size || !in->get) {
-            syncParameterSnapshotsPreservingConcurrentStateLoad();
-            return;
+        if (in && in->size && in->get) {
+            const uint32_t count = in->size(in);
+            for (uint32_t index = 0; index < count; ++index) {
+                const auto *header = in->get(in, index);
+                if (!header || header->size < sizeof(clap_event_header_t))
+                    continue;
+                if (header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
+                    header->type != CLAP_EVENT_PARAM_VALUE ||
+                    header->size < sizeof(clap_event_param_value_t))
+                    continue;
+                const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
+                (void)processor_.applyParameterValue(event);
+            }
         }
-        const uint32_t count = in->size(in);
-        for (uint32_t index = 0; index < count; ++index) {
-            const auto *header = in->get(in, index);
-            if (!header || header->size < sizeof(clap_event_header_t))
-                continue;
-            if (header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
-                header->type != CLAP_EVENT_PARAM_VALUE ||
-                header->size < sizeof(clap_event_param_value_t))
-                continue;
-            const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
-            (void)processor_.applyParameterValue(event);
-        }
+        guiParameterBridge_.drain(out, processor_);
         syncParameterSnapshotsPreservingConcurrentStateLoad();
     }
 
@@ -581,8 +591,10 @@ private:
             restoreSnapshotsFromPendingState();
     }
 
+    const clap_host_t *host_ = nullptr;
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
+    mutable GainWebviewParameterBridge guiParameterBridge_{};
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
     std::atomic<float> gainDbSnapshot_{0.0f};
