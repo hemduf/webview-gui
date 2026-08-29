@@ -67,7 +67,6 @@ protected:
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
-
     uint32_t audioPortsCount(bool) const noexcept override { return 1; }
 
     bool audioPortsInfo(uint32_t index,
@@ -75,7 +74,6 @@ protected:
                         clap_audio_port_info_t *info) const noexcept override {
         if (index != 0 || !info)
             return false;
-
         *info = {};
         info->id = isInput ? kGainInputPortId : kGainOutputPortId;
         info->flags = CLAP_AUDIO_PORT_IS_MAIN;
@@ -86,13 +84,11 @@ protected:
     }
 
     bool implementsParams() const noexcept override { return true; }
-
     uint32_t paramsCount() const noexcept override { return 2; }
 
     bool paramsInfo(uint32_t paramIndex, clap_param_info_t *info) const noexcept override {
         if (!info || paramIndex >= 2)
             return false;
-
         *info = {};
         if (paramIndex == 0) {
             info->id = kGainParamId;
@@ -102,7 +98,6 @@ protected:
             info->default_value = 0.0;
             return copyText(info->name, sizeof(info->name), "Gain");
         }
-
         info->id = kBypassParamId;
         info->flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS |
                       CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_BYPASS;
@@ -132,13 +127,13 @@ protected:
                            uint32_t size) noexcept override {
         if (!display || size == 0 || !std::isfinite(value))
             return false;
-
         int written = -1;
         if (paramId == kGainParamId &&
             value >= GainProcessor::kMinimumGainDb && value <= GainProcessor::kMaximumGainDb) {
             written = std::snprintf(display, size, "%.2f dB", value);
         } else if (paramId == kBypassParamId && value >= 0.0 && value <= 1.0) {
-            written = std::snprintf(display, size, "%s", value >= 0.5 ? "On" : "Off");
+            written = std::snprintf(display, size, "%s",
+                                    static_cast<int32_t>(value) != 0 ? "On" : "Off");
         }
         return written >= 0 && static_cast<uint32_t>(written) < size;
     }
@@ -148,7 +143,6 @@ protected:
                            double *value) noexcept override {
         if (!display || !value)
             return false;
-
         if (paramId == kBypassParamId) {
             if (std::strcmp(display, "On") == 0 || std::strcmp(display, "1") == 0) {
                 *value = 1.0;
@@ -160,16 +154,13 @@ protected:
             }
             return false;
         }
-
         if (paramId != kGainParamId)
             return false;
-
         char *end = nullptr;
         const double parsed = std::strtod(display, &end);
         if (end == display || !std::isfinite(parsed) ||
             parsed < GainProcessor::kMinimumGainDb || parsed > GainProcessor::kMaximumGainDb)
             return false;
-
         while (*end == ' ' || *end == '\t')
             ++end;
         if (end[0] == 'd' && end[1] == 'B')
@@ -178,7 +169,6 @@ protected:
             ++end;
         if (*end != '\0')
             return false;
-
         *value = parsed;
         return true;
     }
@@ -187,7 +177,6 @@ protected:
                      const clap_output_events_t *) noexcept override {
         if (!in || !in->size || !in->get)
             return;
-
         const uint32_t count = in->size(in);
         for (uint32_t index = 0; index < count; ++index) {
             const auto *header = in->get(in, index);
@@ -197,7 +186,6 @@ protected:
                 header->type != CLAP_EVENT_PARAM_VALUE ||
                 header->size < sizeof(clap_event_param_value_t))
                 continue;
-
             const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
             (void)processor_.applyParameterValue(event);
         }
@@ -214,8 +202,8 @@ protected:
 
 private:
     void syncParameterSnapshots() noexcept {
-        gainDbSnapshot_.store(
-            static_cast<float>(processor_.processor().gainDb()), std::memory_order_relaxed);
+        gainDbSnapshot_.store(static_cast<float>(processor_.processor().gainDb()),
+                              std::memory_order_relaxed);
         bypassSnapshot_.store(processor_.processor().bypassed(), std::memory_order_relaxed);
     }
 
@@ -236,7 +224,6 @@ const clap_plugin_t *CLAP_ABI factoryCreatePlugin(
     if (!host || !pluginId || !clap_version_is_compatible(host->clap_version) ||
         std::strcmp(pluginId, kGainPluginId) != 0)
         return nullptr;
-
     auto *instance = new (std::nothrow) GainPlugin(host);
     return instance ? instance->clapPlugin() : nullptr;
 }
