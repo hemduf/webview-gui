@@ -161,7 +161,7 @@ function applyParameterSync(data) {
     const value = new DataView(data).getFloat64(8, true);
     if (!Number.isFinite(value))
         return;
-    if (bytes[4] === PARAM_GAIN) {
+    if (bytes[4] === PARAM_GAIN && !gainGestureOpen) {
         gain.value = String(value);
         gainValue.textContent = `${value.toFixed(2)} dB`;
     } else if (bytes[4] === PARAM_BYPASS) {
