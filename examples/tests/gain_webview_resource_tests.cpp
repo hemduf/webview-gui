@@ -4,6 +4,7 @@
 #include <clap/ext/draft/webview.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -13,7 +14,24 @@
 
 namespace {
 
-bool CLAP_ABI hostWebviewSend(const clap_host_t *, const void *, uint32_t) {
+struct HostCapture {
+    uint32_t callbackRequests = 0;
+    std::vector<std::vector<uint8_t>> messages;
+
+    void reset() {
+        callbackRequests = 0;
+        messages.clear();
+    }
+};
+
+HostCapture gHostCapture;
+
+bool CLAP_ABI hostWebviewSend(const clap_host_t *host, const void *buffer, uint32_t size) {
+    if (!host || !host->host_data || (!buffer && size != 0))
+        return false;
+    auto &capture = *static_cast<HostCapture *>(host->host_data);
+    const auto *bytes = static_cast<const uint8_t *>(buffer);
+    capture.messages.emplace_back(bytes, bytes + size);
     return true;
 }
 
@@ -43,11 +61,14 @@ const void *CLAP_ABI hostGetNoExtension(const clap_host_t *, const char *) {
 
 void CLAP_ABI hostRequestRestart(const clap_host_t *) {}
 void CLAP_ABI hostRequestProcess(const clap_host_t *) {}
-void CLAP_ABI hostRequestCallback(const clap_host_t *) {}
+void CLAP_ABI hostRequestCallback(const clap_host_t *host) {
+    if (host && host->host_data)
+        ++static_cast<HostCapture *>(host->host_data)->callbackRequests;
+}
 
 const clap_host_t kHost{
     CLAP_VERSION,
-    nullptr,
+    &gHostCapture,
     "webview-gui Gain WebView resource tests",
     "webview-gui",
     "https://github.com/hemduf/webview-gui",
@@ -113,8 +134,61 @@ struct MemoryOutputStream {
     clap_ostream_t stream;
 };
 
+struct SingleParamInput {
+    SingleParamInput(clap_id paramId, double value) {
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.header.flags = 0;
+        event.param_id = paramId;
+        event.cookie = nullptr;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    static uint32_t CLAP_ABI size(const clap_input_events_t *) { return 1; }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *list,
+                                                    uint32_t index) {
+        if (!list || !list->ctx || index != 0)
+            return nullptr;
+        return &static_cast<const SingleParamInput *>(list->ctx)->event.header;
+    }
+
+    clap_event_param_value_t event{};
+    clap_input_events_t input{};
+};
+
 bool contains(const std::string &text, const char *needle) {
     return needle && text.find(needle) != std::string::npos;
+}
+
+uint64_t loadU64Le(const uint8_t *bytes) {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value |= static_cast<uint64_t>(bytes[i]) << (i * 8u);
+    return value;
+}
+
+bool matchesUiParameterMessage(const std::vector<uint8_t> &message,
+                               uint8_t parameter,
+                               double expected) {
+    if (message.size() != 16 ||
+        message[0] != 0x57 || message[1] != 0x56 ||
+        message[2] != 0x55 || message[3] != 0x31 ||
+        message[4] != parameter || message[5] != 0 || message[6] != 0 || message[7] != 0)
+        return false;
+    const uint64_t bits = loadU64Le(message.data() + 8);
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return std::isfinite(value) && std::fabs(value - expected) < 1.0e-9;
 }
 
 } // namespace
@@ -122,6 +196,7 @@ bool contains(const std::string &text, const char *needle) {
 int main() {
     using namespace webview_gui::examples::gain;
 
+    gHostCapture.reset();
     const auto *factory = gainFactory();
     if (!factory)
         return 1;
@@ -193,9 +268,6 @@ int main() {
         return 10;
     }
 
-    // RED contract for the next UI integration slice: the DOM controls must be
-    // wired to the already-qualified fixed-size WVG1 parameter transport without
-    // introducing JSON, remote scripts, or inline script execution.
     if (!contains(html, "script-src 'self'") ||
         !contains(html, "<script src=\"gain.js\" defer></script>")) {
         std::cerr << "bundled Gain editor does not load its same-origin parameter transport script\n";
@@ -225,6 +297,18 @@ int main() {
         std::cerr << "Gain editor script does not implement the WVG1 binary control protocol\n";
         plugin->destroy(plugin);
         return 92;
+    }
+
+    // RED for processor/host -> editor reconciliation. The WebView must consume
+    // the fixed-size WVU1 snapshots emitted by the plug-in on the main thread.
+    if (!contains(script, "window.addEventListener(\"message\"") ||
+        !contains(script, "getFloat64(8, true)") ||
+        !contains(script, "gain.value =") ||
+        !contains(script, "bypass.checked =") ||
+        !contains(script, "0x55")) {
+        std::cerr << "Gain editor script does not consume the WVU1 parameter sync protocol\n";
+        plugin->destroy(plugin);
+        return 94;
     }
 
     if (contains(script, "JSON.stringify") || contains(script, "fetch(") ||
@@ -260,13 +344,12 @@ int main() {
         return 13;
     }
 
-    // Exercise the exported CLAP GUI ABI as a conforming host. Invalid host
-    // call sequences are deliberately not used here because clap-helpers treats
-    // them as host misbehaviour and terminates at the configured checking level.
     const auto *gui = static_cast<const clap_plugin_gui_t *>(
         plugin->get_extension(plugin, CLAP_EXT_GUI));
-    if (!gui) {
-        std::cerr << "Gain must expose clap.gui through ClapWebviewGui\n";
+    const auto *params = static_cast<const clap_plugin_params_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+    if (!gui || !params) {
+        std::cerr << "Gain must expose clap.gui and clap.params for editor synchronization\n";
         plugin->destroy(plugin);
         return 14;
     }
@@ -306,11 +389,101 @@ int main() {
     clap_window_t webviewWindow{};
     webviewWindow.api = CLAP_WINDOW_API_WEBVIEW;
     webviewWindow.ptr = nullptr;
-    if (!gui->set_parent(plugin, &webviewWindow) || !gui->show(plugin) || !gui->hide(plugin)) {
-        std::cerr << "Gain host-owned WebView parent/show/hide lifecycle failed\n";
+    if (!gui->set_parent(plugin, &webviewWindow) || !gui->show(plugin)) {
+        std::cerr << "Gain host-owned WebView parent/show lifecycle failed\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
         return 19;
+    }
+
+    if (gHostCapture.callbackRequests != 1 || !gHostCapture.messages.empty()) {
+        std::cerr << "Gain must schedule initial editor sync without sending from gui.show()\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 95;
+    }
+
+    plugin->on_main_thread(plugin);
+    if (gHostCapture.messages.size() != 2 ||
+        !matchesUiParameterMessage(gHostCapture.messages[0], 1, 0.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[1], 2, 0.0)) {
+        std::cerr << "Gain did not publish the initial parameter snapshot on the main thread\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 96;
+    }
+
+    SingleParamInput gainChange{kGainParamId, -12.0};
+    SingleParamInput bypassChange{kBypassParamId, 1.0};
+    params->flush(plugin, &gainChange.input, nullptr);
+    params->flush(plugin, &bypassChange.input, nullptr);
+    if (gHostCapture.callbackRequests != 2 || gHostCapture.messages.size() != 2) {
+        std::cerr << "Gain host parameter changes were not coalesced onto the main thread\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 97;
+    }
+
+    plugin->on_main_thread(plugin);
+    if (gHostCapture.messages.size() != 4 ||
+        !matchesUiParameterMessage(gHostCapture.messages[2], 1, -12.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[3], 2, 1.0)) {
+        std::cerr << "Gain did not reconcile host parameter changes into the WebView\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 98;
+    }
+
+    SingleParamInput gainIntermediate{kGainParamId, -6.0};
+    SingleParamInput gainLatest{kGainParamId, -3.0};
+    params->flush(plugin, &gainIntermediate.input, nullptr);
+    params->flush(plugin, &gainLatest.input, nullptr);
+    if (gHostCapture.callbackRequests != 3) {
+        std::cerr << "Gain editor synchronization did not coalesce repeated parameter changes\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 99;
+    }
+    plugin->on_main_thread(plugin);
+    if (gHostCapture.messages.size() != 6 ||
+        !matchesUiParameterMessage(gHostCapture.messages[4], 1, -3.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[5], 2, 1.0)) {
+        std::cerr << "Gain editor synchronization did not publish the latest coalesced snapshot\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 100;
+    }
+
+    if (!gui->hide(plugin)) {
+        std::cerr << "Gain host-owned WebView hide lifecycle failed\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 20;
+    }
+
+    SingleParamInput hiddenGainChange{kGainParamId, -9.0};
+    params->flush(plugin, &hiddenGainChange.input, nullptr);
+    if (gHostCapture.callbackRequests != 3) {
+        std::cerr << "Gain scheduled WebView synchronization while the editor was hidden\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 101;
+    }
+
+    if (!gui->show(plugin) || gHostCapture.callbackRequests != 4) {
+        std::cerr << "Gain did not schedule the latest parameter snapshot when the editor reopened\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 102;
+    }
+    plugin->on_main_thread(plugin);
+    if (gHostCapture.messages.size() != 8 ||
+        !matchesUiParameterMessage(gHostCapture.messages[6], 1, -9.0) ||
+        !matchesUiParameterMessage(gHostCapture.messages[7], 2, 1.0)) {
+        std::cerr << "Gain did not reconcile hidden parameter changes when the editor reopened\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 103;
     }
 
     if (!gui->can_resize(plugin) || !gui->set_size(plugin, 640, 360) ||
@@ -318,7 +491,7 @@ int main() {
         std::cerr << "Gain clap.gui logical resize contract failed\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 20;
+        return 21;
     }
 
     gui->destroy(plugin);
@@ -326,27 +499,24 @@ int main() {
     if (!gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
         std::cerr << "Gain clap.gui could not be recreated after destroy()\n";
         plugin->destroy(plugin);
-        return 21;
+        return 22;
     }
     if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
         std::cerr << "Gain clap.gui recreate did not restore the initial logical size\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 22;
+        return 23;
     }
     gui->destroy(plugin);
     plugin->destroy(plugin);
 
-    // Discovery must fail closed when the host-owned WebView path is absent.
-    // Do not call create() after a negative capability result: that would model
-    // a misbehaving host rather than test the plug-in ABI.
     const auto *nonWebviewPlugin =
         factory->create_plugin(factory, &kHostWithoutWebview, kGainPluginId);
     if (!nonWebviewPlugin)
-        return 23;
+        return 24;
     if (!nonWebviewPlugin->init(nonWebviewPlugin)) {
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 24;
+        return 25;
     }
 
     const auto *nonWebviewGui = static_cast<const clap_plugin_gui_t *>(
@@ -360,20 +530,17 @@ int main() {
                                          &unsupportedFloating)) {
         std::cerr << "Gain advertised host-owned WebView GUI without host clap.webview/3 support\n";
         nonWebviewPlugin->destroy(nonWebviewPlugin);
-        return 25;
+        return 26;
     }
     nonWebviewPlugin->destroy(nonWebviewPlugin);
 
-    // A non-null host extension with a missing send callback is still an
-    // incomplete host-owned WebView path and must fail discovery exactly like a
-    // missing extension.
     const auto *brokenWebviewPlugin =
         factory->create_plugin(factory, &kHostWithBrokenWebview, kGainPluginId);
     if (!brokenWebviewPlugin)
-        return 26;
+        return 27;
     if (!brokenWebviewPlugin->init(brokenWebviewPlugin)) {
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 27;
+        return 28;
     }
 
     const auto *brokenWebviewGui = static_cast<const clap_plugin_gui_t *>(
@@ -389,7 +556,7 @@ int main() {
                                             &brokenFloating)) {
         std::cerr << "Gain advertised host-owned WebView GUI with a missing host send callback\n";
         brokenWebviewPlugin->destroy(brokenWebviewPlugin);
-        return 28;
+        return 29;
     }
 
     brokenWebviewPlugin->destroy(brokenWebviewPlugin);
