@@ -105,7 +105,10 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     target_include_directories(webview_gui_example_gain_clap_core PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/gain
     )
-    target_link_libraries(webview_gui_example_gain_clap_core PUBLIC clap-helpers)
+    target_link_libraries(webview_gui_example_gain_clap_core
+        PUBLIC clap-helpers
+        PRIVATE webview-gui
+    )
     target_compile_features(webview_gui_example_gain_clap_core PUBLIC cxx_std_17)
     set_target_properties(webview_gui_example_gain_clap_core PROPERTIES
         POSITION_INDEPENDENT_CODE ON
