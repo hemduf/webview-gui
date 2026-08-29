@@ -1,5 +1,9 @@
+include("${CMAKE_CURRENT_LIST_DIR}/WebviewGuiChocBootstrapLifecyclePatch.cmake")
+
 function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
     file(READ "${source_file}" WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_disable_choc_automatic_resource_navigation(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     set(WEBVIEW_GUI_CHOC_MACOS_OLD_TEARDOWN [=[    ~Pimpl()
     {
@@ -130,6 +134,65 @@ function(webview_gui_apply_choc_macos_lifetime_patch source_file output_file)
     string(REPLACE
         "${WEBVIEW_GUI_CHOC_MACOS_OLD_DELETION_CHECKER}"
         "${WEBVIEW_GUI_CHOC_MACOS_SAFE_DELETION_CHECKER}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    # In CHOC the WKWebView class holder is a function-local static. In an
+    # unloadable header-only plug-in DSO, ASan can observe that inline static
+    # storage being coalesced/reused across dlclose/reload and report a write
+    # into stale global storage when the holder is reconstructed. The plug-in
+    # profile disables both features implemented by CHOC's WKWebView subclass,
+    # so no dynamic subclass is needed in that configuration. Keep upstream
+    # behavior whenever either subclass feature is requested, but allocate the
+    # process-resident system WKWebView directly when both are disabled.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW [=[    id allocateWebview()
+    {
+        static WebviewClass c;
+        return objc::call<id> ((id) c.webviewClass, "alloc");
+    }]=])
+
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_ALLOCATE_WEBVIEW [=[    id allocateWebview()
+    {
+        if (! options->acceptsFirstMouseClick
+            && ! options->enableDefaultClipboardKeyShortcutsInSafari)
+            return objc::call<id> ((id) objc_getClass ("WKWebView"), "alloc");
+
+        static WebviewClass c;
+        return objc::call<id> ((id) c.webviewClass, "alloc");
+    }]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW}"
+        WEBVIEW_GUI_CHOC_MACOS_ALLOCATE_WEBVIEW_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_ALLOCATE_WEBVIEW_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS WebView allocator changed; refusing to bypass plug-in-local static class storage without revalidation")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_ALLOCATE_WEBVIEW}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_ALLOCATE_WEBVIEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    # WKURLSchemeHandler builds an NSHTTPURLResponse for each local resource.
+    # Add CSP there so policy enforcement is independent of HTML parsing.
+    set(WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS [=[                id headerKeys[]    = { getNSString ("Content-Length"), getNSString ("Content-Type"), getNSString ("Cache-Control"), getNSString ("Access-Control-Allow-Origin") };
+                id headerObjects[] = { getNSString (contentLength),    getNSString (mimeType),       getNSString ("no-store") ,     getNSString ("*") };]=])
+    set(WEBVIEW_GUI_CHOC_MACOS_SAFE_RESOURCE_HEADERS [=[                id headerKeys[]    = { getNSString ("Content-Length"), getNSString ("Content-Type"), getNSString ("Cache-Control"), getNSString ("Access-Control-Allow-Origin"), getNSString ("Content-Security-Policy") };
+                id headerObjects[] = { getNSString (contentLength),    getNSString (mimeType),       getNSString ("no-store") ,     getNSString ("*"),                           getNSString (webview_gui::detail::pluginContentSecurityPolicy.data()) };]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS}"
+        WEBVIEW_GUI_CHOC_MACOS_RESOURCE_HEADERS_OFFSET)
+    if(WEBVIEW_GUI_CHOC_MACOS_RESOURCE_HEADERS_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC macOS resource response headers changed; refusing to build without native CSP enforcement")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_MACOS_OLD_RESOURCE_HEADERS}"
+        "${WEBVIEW_GUI_CHOC_MACOS_SAFE_RESOURCE_HEADERS}"
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 

@@ -342,9 +342,9 @@ inline constexpr std::string_view pluginContentSecurityPolicy =
     "base-uri 'none'; "
     "form-action 'none'";
 
-inline std::string bridgeBootstrapScript()
+inline std::string bridgeBootstrapInitScript()
 {
-    return std::string(R"(<script>(()=>{
+    return std::string(R"((()=>{
 const storageKey='__webview_gui_capability';
 let token='';
 const match=location.hash.match(/(?:^#|&)__wg=([0-9a-f]{64})(?:&|$)/);
@@ -359,28 +359,213 @@ if(!Uint8Array.fromBase64){Uint8Array.fromBase64=b64=>{const s=atob(b64);const a
 window.addEventListener('message',e=>{if(e.source!==window)return;e.stopImmediatePropagation();let d=e.data;if(d instanceof ArrayBuffer)d=new Uint8Array(d);if(!(d instanceof Uint8Array))d=new Uint8Array(d);if(d.byteLength>maxBytes)return;window._WebviewGui_receive64(token,d.toBase64());},{capture:true});
 window['_WebviewGui_send_'+token]=b64=>{const d=Uint8Array.fromBase64(b64);if(d.byteLength<=maxBytes)window.dispatchEvent(new MessageEvent('message',{data:d.buffer,source:window}));};
 if(typeof window._WebviewGui_ready==='function')window._WebviewGui_ready(token);
-})();</script>)";
+})();)";
+}
+
+inline bool isHTMLWhitespace(char c) noexcept
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f';
+}
+
+inline bool isASCIIAlpha(char c) noexcept
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+inline bool isHTMLTagNameDelimiter(char c) noexcept
+{
+    return isHTMLWhitespace(c) || c == '/' || c == '>';
+}
+
+inline bool matchesHTMLTagNameAt(std::string_view html,
+                                 std::size_t nameStart,
+                                 std::string_view name) noexcept
+{
+    const auto nameEnd = nameStart + name.size();
+    return nameEnd < html.size()
+        && equalsASCIIInsensitive(html.substr(nameStart, name.size()), name)
+        && isHTMLTagNameDelimiter(html[nameEnd]);
+}
+
+inline std::size_t findHTMLTagEnd(std::string_view html, std::size_t tagStart) noexcept
+{
+    char quote = 0;
+    for (std::size_t i = tagStart + 1; i < html.size(); ++i) {
+        const char c = html[i];
+        if (quote != 0) {
+            if (c == quote)
+                quote = 0;
+            continue;
+        }
+        if (c == '\'' || c == '"') {
+            quote = c;
+            continue;
+        }
+        if (c == '>')
+            return i;
+    }
+    return std::string_view::npos;
+}
+
+inline std::size_t firstNonHTMLWhitespace(std::string_view html,
+                                          std::size_t begin,
+                                          std::size_t end) noexcept
+{
+    for (std::size_t i = begin; i < end; ++i)
+        if (!isHTMLWhitespace(html[i]))
+            return i;
+    return std::string_view::npos;
+}
+
+inline bool findHTMLCommentEnd(std::string_view html,
+                               std::size_t contentStart,
+                               std::size_t& afterComment) noexcept
+{
+    const auto normal = html.find("-->", contentStart);
+    const auto bang = html.find("--!>", contentStart);
+    const auto end = normal == std::string_view::npos ? bang
+        : bang == std::string_view::npos ? normal
+        : std::min(normal, bang);
+    if (end == std::string_view::npos)
+        return false;
+
+    afterComment = end + (end == bang ? 4u : 3u);
+    return true;
+}
+
+inline bool findHTMLHardeningInsertionPoint(std::string_view html,
+                                            std::size_t& insertion,
+                                            bool& createHead) noexcept
+{
+    const bool hasUTF8BOM = html.size() >= 3
+        && static_cast<unsigned char>(html[0]) == 0xEFu
+        && static_cast<unsigned char>(html[1]) == 0xBBu
+        && static_cast<unsigned char>(html[2]) == 0xBFu;
+    std::size_t cursor = hasUTF8BOM ? 3u : 0u;
+
+    // Only emulate the browser states which can exist before the document head
+    // has been created. Once any other token is seen, HTML creates an implicit
+    // head and reprocesses that token. Inject immediately before that token, so
+    // later text such as <head> inside script/template/foreign/body content can
+    // never redirect the CSP policy into an inert element.
+    while (cursor < html.size()) {
+        const auto relative = html.substr(cursor).find('<');
+        const auto tagStart = relative == std::string_view::npos
+            ? html.size() : cursor + relative;
+
+        if (const auto text = firstNonHTMLWhitespace(html, cursor, tagStart);
+            text != std::string_view::npos) {
+            insertion = text;
+            createHead = true;
+            return true;
+        }
+
+        if (tagStart == html.size())
+            break;
+
+        const auto remaining = html.substr(tagStart);
+
+        if (remaining.size() >= 4 && remaining.substr(0, 4) == "<!--") {
+            std::size_t afterComment = 0;
+            if (!findHTMLCommentEnd(html, tagStart + 4, afterComment))
+                return false;
+            cursor = afterComment;
+            continue;
+        }
+
+        if (startsWithASCIIInsensitive(remaining, "<!doctype")
+            && remaining.size() > 9
+            && isHTMLTagNameDelimiter(remaining[9])) {
+            const auto tagEnd = findHTMLTagEnd(html, tagStart);
+            if (tagEnd == std::string_view::npos)
+                return false;
+            cursor = tagEnd + 1;
+            continue;
+        }
+
+        // HTML tokenizes processing instructions as bogus comments. They are
+        // harmless before the head, but malformed/unclosed forms fail closed.
+        if (remaining.size() >= 2 && remaining.substr(0, 2) == "<?") {
+            const auto end = html.find('>', tagStart + 2);
+            if (end == std::string_view::npos)
+                return false;
+            cursor = end + 1;
+            continue;
+        }
+
+        // Unknown declarations have complicated bogus-comment rules. Refuse to
+        // guess their browser context rather than risking a misplaced policy.
+        if (remaining.size() >= 2 && remaining.substr(0, 2) == "<!")
+            return false;
+
+        if (remaining.size() >= 2 && remaining.substr(0, 2) == "</") {
+            const auto nameStart = tagStart + 2;
+            if (matchesHTMLTagNameAt(html, nameStart, "head")
+                || matchesHTMLTagNameAt(html, nameStart, "body")
+                || matchesHTMLTagNameAt(html, nameStart, "html")
+                || matchesHTMLTagNameAt(html, nameStart, "br")) {
+                insertion = tagStart;
+                createHead = true;
+                return true;
+            }
+
+            // Other end tags are ignored by both the before-html and before-head
+            // insertion modes. Skip the complete token and keep looking.
+            const auto tagEnd = findHTMLTagEnd(html, tagStart);
+            if (tagEnd == std::string_view::npos)
+                return false;
+            cursor = tagEnd + 1;
+            continue;
+        }
+
+        if (remaining.size() >= 2 && remaining[0] == '<'
+            && isASCIIAlpha(remaining[1])) {
+            const auto nameStart = tagStart + 1;
+            if (matchesHTMLTagNameAt(html, nameStart, "html")) {
+                const auto tagEnd = findHTMLTagEnd(html, tagStart);
+                if (tagEnd == std::string_view::npos)
+                    return false;
+                cursor = tagEnd + 1;
+                continue;
+            }
+
+            if (matchesHTMLTagNameAt(html, nameStart, "head")) {
+                const auto tagEnd = findHTMLTagEnd(html, tagStart);
+                if (tagEnd == std::string_view::npos)
+                    return false;
+                insertion = tagEnd + 1;
+                createHead = false;
+                return true;
+            }
+
+            insertion = tagStart;
+            createHead = true;
+            return true;
+        }
+
+        // A stray '<' or malformed tag opener is emitted as character data by
+        // the tokenizer. Non-whitespace character data implies the head.
+        insertion = tagStart;
+        createHead = true;
+        return true;
+    }
+
+    insertion = html.size();
+    createHead = true;
+    return true;
 }
 
 inline bool injectIntoHTMLHead(std::string& html, std::string_view content)
 {
-    const auto head = findASCIIInsensitive(html, "<head");
-    if (head != std::string::npos) {
-        const auto end = html.find('>', head);
-        if (end == std::string::npos) return false;
-        html.insert(end + 1, content);
-        return true;
-    }
+    std::size_t insertion = 0;
+    bool createHead = false;
+    if (!findHTMLHardeningInsertionPoint(html, insertion, createHead))
+        return false;
 
-    const auto htmlTag = findASCIIInsensitive(html, "<html");
-    if (htmlTag != std::string::npos) {
-        const auto end = html.find('>', htmlTag);
-        if (end == std::string::npos) return false;
-        html.insert(end + 1, "<head>" + std::string(content) + "</head>");
-        return true;
-    }
-
-    html.insert(0, "<head>" + std::string(content) + "</head>");
+    if (createHead)
+        html.insert(insertion, "<head>" + std::string(content) + "</head>");
+    else
+        html.insert(insertion, content);
     return true;
 }
 
@@ -405,21 +590,7 @@ inline bool applyPluginContentSecurityPolicy(std::vector<unsigned char>& bytes)
 
 inline bool applyPluginHTMLHardening(std::vector<unsigned char>& bytes)
 {
-    if (!resourceSizeAllowed(bytes.size())) return false;
-
-    std::string html(bytes.begin(), bytes.end());
-    const std::string headContent =
-        "<meta http-equiv=\"Content-Security-Policy\" content=\""
-        + std::string(pluginContentSecurityPolicy)
-        + "\">"
-        + bridgeBootstrapScript();
-
-    if (!resourceSizeAllowed(html.size() + headContent.size() + 13u)
-        || !injectIntoHTMLHead(html, headContent))
-        return false;
-
-    bytes.assign(html.begin(), html.end());
-    return resourceSizeAllowed(bytes.size());
+    return applyPluginContentSecurityPolicy(bytes);
 }
 
 } // namespace webview_gui::detail

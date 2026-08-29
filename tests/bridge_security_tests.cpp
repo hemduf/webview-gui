@@ -108,9 +108,19 @@ TEST_CASE("native backend origin policies never accept another backend's local o
     CHECK_FALSE(detail::isTrustedWindowsPluginURL("https://example.com/"));
 }
 
-TEST_CASE("HTML hardening injects a generic capability bootstrap without embedding the secret")
+TEST_CASE("bridge bootstrap is a document-start script without HTML markup")
 {
-    const std::string token(64, 'e');
+    const auto bootstrap = detail::bridgeBootstrapInitScript();
+    CHECK(bootstrap.find("<script") == std::string::npos);
+    CHECK(bootstrap.find("</script") == std::string::npos);
+    CHECK(bootstrap.find("sessionStorage") != std::string::npos);
+    CHECK(bootstrap.find("__wg=") != std::string::npos);
+    CHECK(bootstrap.find("_WebviewGui_receive64(token") != std::string::npos);
+    CHECK(bootstrap.find("window['_WebviewGui_send_'+token]") != std::string::npos);
+}
+
+TEST_CASE("HTML hardening injects CSP without embedding bridge bootstrap")
+{
     const std::string source = "<!doctype html><html><head><title>UI</title></head><body></body></html>";
     std::vector<unsigned char> bytes(source.begin(), source.end());
 
@@ -118,10 +128,190 @@ TEST_CASE("HTML hardening injects a generic capability bootstrap without embeddi
     const std::string hardened(bytes.begin(), bytes.end());
 
     CHECK(hardened.find("Content-Security-Policy") != std::string::npos);
-    CHECK(hardened.find("sessionStorage") != std::string::npos);
-    CHECK(hardened.find("__wg=") != std::string::npos);
-    CHECK(hardened.find("_WebviewGui_receive64(token") != std::string::npos);
-    CHECK(hardened.find("window['_WebviewGui_send_'+token]") != std::string::npos);
+    CHECK(hardened.find("sessionStorage") == std::string::npos);
+    CHECK(hardened.find("__wg=") == std::string::npos);
+    CHECK(hardened.find("_WebviewGui_receive64(token") == std::string::npos);
+}
 
-    CHECK(hardened.find(token) == std::string::npos);
+TEST_CASE("HTML hardening ignores decoy head tags inside comments")
+{
+    const std::string source =
+        "<!-- <head>comment decoy</head> -->"
+        "<!doctype html><html><head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto commentEnd = hardened.find("-->");
+    const auto title = hardened.find("<title>UI</title>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(commentEnd != std::string::npos);
+    REQUIRE(title != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp > commentEnd);
+    CHECK(csp < title);
+    CHECK(hardened.substr(0, commentEnd + 3).find("Content-Security-Policy") == std::string::npos);
+}
+
+TEST_CASE("HTML hardening inserts before script when the browser would imply head")
+{
+    const std::string source =
+        "<!doctype html><html><script>const decoy = '<head>';</script>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto scriptStart = hardened.find("<script>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(scriptStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < scriptStart);
+}
+
+TEST_CASE("HTML hardening does not depend on fake raw-text closing syntax")
+{
+    const std::string source =
+        "<!doctype html><html><script>const decoy = '</script=> <head><title>decoy</title></head>';"
+        "</script><head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto scriptStart = hardened.find("<script>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(scriptStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < scriptStart);
+}
+
+TEST_CASE("HTML hardening does not need to emulate script double-escape states")
+{
+    const std::string source =
+        "<!doctype html><html><script><!--<script></script>"
+        "<head><title>decoy</title></head>--></script>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto scriptStart = hardened.find("<script>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(scriptStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < scriptStart);
+}
+
+TEST_CASE("HTML hardening synthesizes head before non-whitespace content implies it")
+{
+    const std::string source =
+        "<!doctype html><html>attacker<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto attacker = hardened.find("attacker");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(attacker != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < attacker);
+}
+
+TEST_CASE("HTML hardening inserts before foreign content can imply head")
+{
+    const std::string source =
+        "<!doctype html><html><svg><head><title>decoy</title></head></svg>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto svg = hardened.find("<svg>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(svg != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < svg);
+}
+
+TEST_CASE("HTML hardening fails closed on unterminated inert markup")
+{
+    const std::string source = "<!-- <head>decoy<html><head><title>UI</title></head>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+    const auto original = bytes;
+
+    CHECK_FALSE(detail::applyPluginHTMLHardening(bytes));
+    CHECK(bytes == original);
+}
+
+TEST_CASE("HTML hardening inserts before template content can imply head")
+{
+    const std::string source =
+        "<!doctype html><html><template><head><title>decoy</title></head></template>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto templateStart = hardened.find("<template>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(templateStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < templateStart);
+}
+
+TEST_CASE("HTML hardening inserts before header rather than treating it as head")
+{
+    const std::string source =
+        "<!doctype html><html><header>banner</header><head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto headerStart = hardened.find("<header>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(headerStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < headerStart);
+}
+
+TEST_CASE("HTML hardening inserts before plaintext enters terminal text state")
+{
+    const std::string source =
+        "<!doctype html><html><plaintext>decoy</plaintext>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto plaintextStart = hardened.find("<plaintext>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(plaintextStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < plaintextStart);
+}
+
+TEST_CASE("HTML hardening treats head-prefixed unknown tags as implied-head content")
+{
+    const std::string source =
+        "<!doctype html><html><head.fake><title>decoy</title></head.fake>"
+        "<head><title>UI</title></head><body></body></html>";
+    std::vector<unsigned char> bytes(source.begin(), source.end());
+
+    REQUIRE(detail::applyPluginHTMLHardening(bytes));
+    const std::string hardened(bytes.begin(), bytes.end());
+
+    const auto decoyStart = hardened.find("<head.fake>");
+    const auto csp = hardened.find("Content-Security-Policy");
+    REQUIRE(decoyStart != std::string::npos);
+    REQUIRE(csp != std::string::npos);
+    CHECK(csp < decoyStart);
 }

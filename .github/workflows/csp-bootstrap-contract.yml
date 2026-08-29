@@ -1,0 +1,39 @@
+name: CSP bootstrap contract
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: csp-bootstrap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-bootstrap:
+    name: Native bootstrap contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Build contract test
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
+            -Iinclude tests/csp_bootstrap_contract_tests.cpp \
+            -o csp_bootstrap_contract_tests
+
+      - name: Run contract test
+        run: ./csp_bootstrap_contract_tests
+
+      - name: Verify bootstrap-before-navigation lifecycle
+        run: cmake -P tests/choc_bootstrap_lifecycle_contract.cmake
+
+      - name: Verify native CSP response headers
+        run: cmake -P tests/native_csp_response_contract.cmake
