@@ -11,6 +11,12 @@
 
 namespace webview_gui::examples::polysynth {
 
+enum class OscillatorWaveform : std::uint8_t {
+    Sine,
+    Saw,
+    Square,
+};
+
 class VoiceEngine {
 public:
     bool configure(std::size_t requestedVoices,
@@ -22,6 +28,9 @@ public:
             return false;
 
         sampleRate_ = sampleRate;
+        oscillatorWaveform_ = OscillatorWaveform::Sine;
+        coarseTuningSemitones_ = 0;
+        fineTuningCents_ = 0.0f;
         attackSamples_ = 0;
         decaySamples_ = 0;
         sustainLevel_ = 1.0f;
@@ -43,6 +52,38 @@ public:
         masterGainRemaining_ = 0;
         configured_ = true;
         clearVoices();
+        return true;
+    }
+
+    // Oscillator and tuning controls are NOTE_ON defaults. Active generations
+    // retain their waveform and phase increment, preventing a non-event-thread
+    // default update from causing a discontinuity in a sounding voice. #32 can
+    // layer sample-accurate CLAP modulation on the voice-local pitch state.
+    bool setOscillatorWaveform(OscillatorWaveform waveform) noexcept {
+        if (!configured_)
+            return false;
+
+        switch (waveform) {
+            case OscillatorWaveform::Sine:
+            case OscillatorWaveform::Saw:
+            case OscillatorWaveform::Square:
+                oscillatorWaveform_ = waveform;
+                return true;
+        }
+        return false;
+    }
+
+    bool setCoarseTuningSemitones(int semitones) noexcept {
+        if (!configured_ || semitones < -48 || semitones > 48)
+            return false;
+        coarseTuningSemitones_ = semitones;
+        return true;
+    }
+
+    bool setFineTuningCents(float cents) noexcept {
+        if (!configured_ || !std::isfinite(cents) || cents < -100.0f || cents > 100.0f)
+            return false;
+        fineTuningCents_ = cents;
         return true;
     }
 
@@ -295,6 +336,7 @@ private:
         std::uint32_t decaySamples = 0;
         std::uint32_t releaseSamples = 0;
         AmpStage ampStage = AmpStage::Sustain;
+        OscillatorWaveform waveform = OscillatorWaveform::Sine;
         bool active = false;
         bool deferredReleaseCompletion = false;
         bool filterEnabled = false;
@@ -320,6 +362,46 @@ private:
 
     static double flushFilterDenormal(double value) noexcept {
         return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
+    }
+
+    // Compact polyBLEP correction keeps the discontinuities of the educational
+    // saw/square modes bounded without allocating tables or performing any
+    // unbounded work on the audio thread. The sine path remains unchanged.
+    static double polyBlep(double phase, double phaseIncrement) noexcept {
+        if (!(phaseIncrement > 0.0) || phaseIncrement >= 1.0)
+            return 0.0;
+
+        if (phase < phaseIncrement) {
+            const double t = phase / phaseIncrement;
+            return t + t - t * t - 1.0;
+        }
+        if (phase > 1.0 - phaseIncrement) {
+            const double t = (phase - 1.0) / phaseIncrement;
+            return t * t + t + t + 1.0;
+        }
+        return 0.0;
+    }
+
+    static double oscillatorSample(const Voice &voice) noexcept {
+        switch (voice.waveform) {
+            case OscillatorWaveform::Sine:
+                return std::sin(voice.phase * kTwoPi);
+
+            case OscillatorWaveform::Saw:
+                return 2.0 * voice.phase - 1.0 -
+                       polyBlep(voice.phase, voice.phaseIncrement);
+
+            case OscillatorWaveform::Square: {
+                double sample = voice.phase < 0.5 ? 1.0 : -1.0;
+                sample += polyBlep(voice.phase, voice.phaseIncrement);
+                double shifted = voice.phase + 0.5;
+                if (shifted >= 1.0)
+                    shifted -= 1.0;
+                sample -= polyBlep(shifted, voice.phaseIncrement);
+                return sample;
+            }
+        }
+        return 0.0;
     }
 
     bool prepareFilter(float cutoffHz,
@@ -362,8 +444,10 @@ private:
     }
 
     [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
-        const double semitones = static_cast<double>(key - 69) / 12.0;
-        const double frequency = kReferenceFrequency * std::exp2(semitones);
+        const double semitones = static_cast<double>(key - 69) +
+                                 static_cast<double>(coarseTuningSemitones_) +
+                                 static_cast<double>(fineTuningCents_) / 100.0;
+        const double frequency = kReferenceFrequency * std::exp2(semitones / 12.0);
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
     }
 
@@ -391,6 +475,7 @@ private:
         // deterministic non-zero first sample when attack is instantaneous.
         voice.phase = 0.25;
         voice.phaseIncrement = phaseIncrementForKey(event.note.identity.key);
+        voice.waveform = oscillatorWaveform_;
         voice.filterEnabled = filterEnabled_;
         voice.filterA1 = filterA1_;
         voice.filterA2 = filterA2_;
@@ -613,9 +698,9 @@ private:
                 if (!voice.active || voice.deferredReleaseCompletion)
                     continue;
 
-                const double oscillatorSample =
-                    std::sin(voice.phase * kTwoPi) * static_cast<double>(voice.level);
-                const auto filteredSample = static_cast<float>(processFilter(voice, oscillatorSample));
+                const double oscillator =
+                    oscillatorSample(voice) * static_cast<double>(voice.level);
+                const auto filteredSample = static_cast<float>(processFilter(voice, oscillator));
                 leftMix += filteredSample * voice.panLeftGain;
                 rightMix += filteredSample * voice.panRightGain;
 
@@ -637,6 +722,9 @@ private:
     VoiceLifecycle lifecycle_{};
     std::array<Voice, VoiceAllocator::kMaximumVoices> voices_{};
     double sampleRate_ = 0.0;
+    OscillatorWaveform oscillatorWaveform_ = OscillatorWaveform::Sine;
+    int coarseTuningSemitones_ = 0;
+    float fineTuningCents_ = 0.0f;
     std::uint32_t attackSamples_ = 0;
     std::uint32_t decaySamples_ = 0;
     float sustainLevel_ = 1.0f;
