@@ -86,6 +86,12 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
 
+      - name: Build pinned clap-wrapper shared implementation
+        run: >-
+          cmake --build build-wrapper-foundation
+          --target clap-wrapper-shared-detail
+          --config Debug --parallel
+
       - name: Verify pinned clap-wrapper foundation
         run: >-
           ctest --test-dir build-wrapper-foundation -C Debug --output-on-failure
