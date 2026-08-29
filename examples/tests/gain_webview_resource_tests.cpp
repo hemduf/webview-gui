@@ -193,6 +193,47 @@ int main() {
         return 10;
     }
 
+    // RED contract for the next UI integration slice: the DOM controls must be
+    // wired to the already-qualified fixed-size WVG1 parameter transport without
+    // introducing JSON, remote scripts, or inline script execution.
+    if (!contains(html, "script-src 'self'") ||
+        !contains(html, "<script src=\"gain.js\" defer></script>")) {
+        std::cerr << "bundled Gain editor does not load its same-origin parameter transport script\n";
+        plugin->destroy(plugin);
+        return 90;
+    }
+
+    MemoryOutputStream scriptOutput(5);
+    char scriptMime[64] = {};
+    if (!webview->get_resource(plugin, "/gain.js", scriptMime, sizeof(scriptMime),
+                               &scriptOutput.stream) ||
+        std::strcmp(scriptMime, "text/javascript; charset=utf-8") != 0 ||
+        scriptOutput.bytes.empty()) {
+        std::cerr << "bundled Gain parameter transport script was not served correctly\n";
+        plugin->destroy(plugin);
+        return 91;
+    }
+
+    const std::string script(scriptOutput.bytes.begin(), scriptOutput.bytes.end());
+    if (!contains(script, "new ArrayBuffer(16)") ||
+        !contains(script, "bytes.set([0x57, 0x56, 0x47, 0x31])") ||
+        !contains(script, "setFloat64(8, value, true)") ||
+        !contains(script, "window.parent.postMessage(encode(kind, parameter, value), \"*\")") ||
+        !contains(script, "gain.addEventListener(\"input\"") ||
+        !contains(script, "gain.addEventListener(\"pointercancel\"") ||
+        !contains(script, "bypass.addEventListener(\"change\"")) {
+        std::cerr << "Gain editor script does not implement the WVG1 binary control protocol\n";
+        plugin->destroy(plugin);
+        return 92;
+    }
+
+    if (contains(script, "JSON.stringify") || contains(script, "fetch(") ||
+        contains(script, "XMLHttpRequest")) {
+        std::cerr << "Gain editor control transport introduced JSON or network I/O\n";
+        plugin->destroy(plugin);
+        return 93;
+    }
+
     MemoryOutputStream unknownOutput;
     char unknownMime[64] = {};
     if (webview->get_resource(plugin, "/missing.js", unknownMime, sizeof(unknownMime),
