@@ -36,6 +36,12 @@ const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *id) {
     return nullptr;
 }
 
+const void *CLAP_ABI hostGetExtensionWithoutParams(const clap_host_t *, const char *id) {
+    if (id && std::strcmp(id, CLAP_EXT_WEBVIEW) == 0)
+        return &kHostWebview;
+    return nullptr;
+}
+
 void CLAP_ABI hostRequestRestart(const clap_host_t *) {}
 void CLAP_ABI hostRequestProcess(const clap_host_t *) { ++gRequestProcessCount; }
 void CLAP_ABI hostRequestCallback(const clap_host_t *) {}
@@ -48,6 +54,19 @@ const clap_host_t kHost{
     "https://github.com/hemduf/webview-gui",
     "0.1.0",
     hostGetExtension,
+    hostRequestRestart,
+    hostRequestProcess,
+    hostRequestCallback,
+};
+
+const clap_host_t kHostWithoutParams{
+    CLAP_VERSION,
+    nullptr,
+    "webview-gui Gain minimal parameter bridge host",
+    "webview-gui",
+    "https://github.com/hemduf/webview-gui",
+    "0.1.0",
+    hostGetExtensionWithoutParams,
     hostRequestRestart,
     hostRequestProcess,
     hostRequestCallback,
@@ -95,6 +114,7 @@ bool checkGesture(const CapturedOutputEvents &events,
     return copyEvent(events, index, event) &&
            event.header.space_id == CLAP_CORE_EVENT_SPACE_ID &&
            event.header.type == expectedType && event.header.time == 0 &&
+           event.header.flags == CLAP_EVENT_IS_LIVE &&
            event.param_id == expectedParam;
 }
 
@@ -106,6 +126,7 @@ bool checkValue(const CapturedOutputEvents &events,
     return copyEvent(events, index, event) &&
            event.header.space_id == CLAP_CORE_EVENT_SPACE_ID &&
            event.header.type == CLAP_EVENT_PARAM_VALUE && event.header.time == 0 &&
+           event.header.flags == CLAP_EVENT_IS_LIVE &&
            event.param_id == expectedParam && event.cookie == nullptr &&
            event.note_id == -1 && event.port_index == -1 &&
            event.channel == -1 && event.key == -1 &&
@@ -269,5 +290,90 @@ int main() {
     plugin->deactivate(plugin);
     gui->destroy(plugin);
     plugin->destroy(plugin);
+
+    // CLAP permits either request_flush() or request_process() for a plug-in UI
+    // edit. A minimal/WCLAP-style host may expose WebView without clap.host-params;
+    // in that case the bridge must fall back to the thread-safe core request_process().
+    gRequestFlushCount = 0;
+    gRequestProcessCount = 0;
+    const auto *fallbackPlugin =
+        factory->create_plugin(factory, &kHostWithoutParams, kGainPluginId);
+    if (!fallbackPlugin)
+        return 16;
+    if (!fallbackPlugin->init(fallbackPlugin)) {
+        fallbackPlugin->destroy(fallbackPlugin);
+        return 17;
+    }
+
+    const auto *fallbackWebview = static_cast<const clap_plugin_webview_t *>(
+        fallbackPlugin->get_extension(fallbackPlugin, CLAP_EXT_WEBVIEW));
+    const auto *fallbackGui = static_cast<const clap_plugin_gui_t *>(
+        fallbackPlugin->get_extension(fallbackPlugin, CLAP_EXT_GUI));
+    if (!fallbackWebview || !fallbackGui ||
+        !fallbackGui->create(fallbackPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        fallbackPlugin->destroy(fallbackPlugin);
+        return 18;
+    }
+
+    const auto fallbackBegin = makeUiMessage(kUiGestureBegin, kUiGain);
+    const auto fallbackValue = makeUiMessage(kUiValue, kUiGain, -3.0);
+    const auto fallbackEnd = makeUiMessage(kUiGestureEnd, kUiGain);
+    if (!fallbackWebview->receive(fallbackPlugin, fallbackBegin.data(), fallbackBegin.size()) ||
+        !fallbackWebview->receive(fallbackPlugin, fallbackValue.data(), fallbackValue.size()) ||
+        !fallbackWebview->receive(fallbackPlugin, fallbackEnd.data(), fallbackEnd.size()) ||
+        gRequestFlushCount != 0 || gRequestProcessCount != 3) {
+        std::cerr << "WebView edit did not fall back to request_process without host params\n";
+        fallbackGui->destroy(fallbackPlugin);
+        fallbackPlugin->destroy(fallbackPlugin);
+        return 19;
+    }
+
+    if (!fallbackPlugin->activate(fallbackPlugin, 48000.0, 1, 64) ||
+        !fallbackPlugin->start_processing(fallbackPlugin)) {
+        fallbackGui->destroy(fallbackPlugin);
+        fallbackPlugin->destroy(fallbackPlugin);
+        return 20;
+    }
+
+    StereoFloatBlock fallbackBlock(2);
+    fallbackBlock.fillInput(1.0f, 1.0f);
+    CapturedOutputEvents fallbackOutput;
+    clap_process_t fallbackProcess{};
+    fallbackProcess.frames_count = fallbackBlock.frames();
+    fallbackProcess.audio_inputs = fallbackBlock.input();
+    fallbackProcess.audio_outputs = fallbackBlock.output();
+    fallbackProcess.audio_inputs_count = 1;
+    fallbackProcess.audio_outputs_count = 1;
+    fallbackProcess.out_events = fallbackOutput.clapOutputEvents();
+    if (fallbackPlugin->process(fallbackPlugin, &fallbackProcess) != CLAP_PROCESS_CONTINUE ||
+        fallbackOutput.size() != 3 ||
+        !checkGesture(fallbackOutput, 0, CLAP_EVENT_PARAM_GESTURE_BEGIN, kGainParamId) ||
+        !checkValue(fallbackOutput, 1, kGainParamId, -3.0) ||
+        !checkGesture(fallbackOutput, 2, CLAP_EVENT_PARAM_GESTURE_END, kGainParamId)) {
+        std::cerr << "request_process fallback did not drain the queued WebView edit\n";
+        fallbackPlugin->stop_processing(fallbackPlugin);
+        fallbackPlugin->deactivate(fallbackPlugin);
+        fallbackGui->destroy(fallbackPlugin);
+        fallbackPlugin->destroy(fallbackPlugin);
+        return 21;
+    }
+
+    const float minusThree = static_cast<float>(std::pow(10.0, -3.0 / 20.0));
+    for (uint32_t frame = 0; frame < fallbackBlock.frames(); ++frame) {
+        if (std::fabs(fallbackBlock.outputChannel(0)[frame] - minusThree) > 1.0e-6f ||
+            std::fabs(fallbackBlock.outputChannel(1)[frame] - minusThree) > 1.0e-6f) {
+            std::cerr << "request_process fallback edit was not applied before audio processing\n";
+            fallbackPlugin->stop_processing(fallbackPlugin);
+            fallbackPlugin->deactivate(fallbackPlugin);
+            fallbackGui->destroy(fallbackPlugin);
+            fallbackPlugin->destroy(fallbackPlugin);
+            return 22;
+        }
+    }
+
+    fallbackPlugin->stop_processing(fallbackPlugin);
+    fallbackPlugin->deactivate(fallbackPlugin);
+    fallbackGui->destroy(fallbackPlugin);
+    fallbackPlugin->destroy(fallbackPlugin);
     return 0;
 }
