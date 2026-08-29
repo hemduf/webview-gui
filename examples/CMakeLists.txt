@@ -6,7 +6,7 @@ include(FetchContent)
 
 option(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN "Build the Gain reference example" OFF)
 option(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH "Build the PolySynth reference example" OFF)
-option(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS "Build native wrapper formats" OFF)
+option(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS "Enable pinned native wrapper integration" OFF)
 
 set(WEBVIEW_GUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
     "Path to the webview-gui repository root")
@@ -102,16 +102,19 @@ add_test(NAME webview_gui_examples_skeleton_factory
 # AU and standalone products are owned by #34, and WCLAP remains on the
 # repository-owned #30 packaging path rather than clap-wrapper's WCLAP helper.
 if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
-    set(CLAP_WRAPPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
-    set(CLAP_SDK_ROOT "${webview_gui_example_clap_SOURCE_DIR}" CACHE PATH
-        "CLAP SDK shared by the examples and clap-wrapper" FORCE)
-
     FetchContent_Declare(webview_gui_example_clap_wrapper
         GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
         GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
     )
     FetchContent_MakeAvailable(webview_gui_example_clap_wrapper)
+
+    # clap-wrapper must reuse the already-pinned CLAP target instead of creating
+    # or downloading a second SDK. Avoid forcing any clap-wrapper cache knobs here
+    # so an embedding project keeps ownership of its global wrapper configuration.
+    if(NOT TARGET base-sdk-clap)
+        message(FATAL_ERROR
+            "Pinned clap-wrapper did not reuse the existing example CLAP SDK target")
+    endif()
 
     if(NOT COMMAND target_add_vst3_wrapper
        OR NOT COMMAND target_add_auv2_wrapper
