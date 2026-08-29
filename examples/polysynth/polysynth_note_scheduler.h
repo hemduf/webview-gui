@@ -84,6 +84,12 @@ public:
     // NOTE_ON/OFF/CHOKE without quantising or re-sorting event types. The host
     // already guarantees sample-sorted input; equal-time order is significant and
     // is forwarded exactly as received.
+    //
+    // An adapter may additionally expose `noteOnDispatched(const clap_event_note_t&)`
+    // on its core-event sink. The scheduler invokes that optional hook only after a
+    // valid NOTE_ON has been allocated and dispatched to the voice/lifecycle sink.
+    // This keeps the public core-event stream note-free while giving higher layers
+    // a bounded sample-boundary reconciliation point before any audio is rendered.
     template <typename BoundarySink, typename CoreEventSink, typename Sink>
     bool processWithBoundariesAndEvents(const clap_input_events_t *events,
                                         std::uint32_t framesCount,
@@ -147,7 +153,8 @@ public:
 
             const auto &event = *reinterpret_cast<const clap_event_note_t *>(header);
             if (header->type == CLAP_EVENT_NOTE_ON) {
-                dispatchNoteOn(event, sink);
+                if (!dispatchNoteOn(event, coreEventSink, sink))
+                    return false;
                 continue;
             }
 
@@ -200,15 +207,34 @@ private:
                fieldMatches(pattern.key, identity.key);
     }
 
-    template <typename Sink>
-    void dispatchNoteOn(const clap_event_note_t &event, Sink &sink) noexcept {
+    template <typename CoreEventSink>
+    static auto notifyNoteOnDispatched(CoreEventSink &coreEventSink,
+                                       const clap_event_note_t &event,
+                                       int) noexcept
+        -> decltype(static_cast<bool>(coreEventSink.noteOnDispatched(event))) {
+        static_assert(noexcept(coreEventSink.noteOnDispatched(event)),
+                      "PolySynth note-on dispatch hook must be noexcept");
+        return coreEventSink.noteOnDispatched(event);
+    }
+
+    template <typename CoreEventSink>
+    static bool notifyNoteOnDispatched(CoreEventSink &,
+                                       const clap_event_note_t &,
+                                       long) noexcept {
+        return true;
+    }
+
+    template <typename CoreEventSink, typename Sink>
+    bool dispatchNoteOn(const clap_event_note_t &event,
+                        CoreEventSink &coreEventSink,
+                        Sink &sink) noexcept {
         if (!validNoteOn(event))
-            return;
+            return true;
 
         const auto identity = identityFrom(event);
         const auto allocation = allocator_.allocateDetailed(identity);
         if (allocation.voiceIndex == VoiceAllocator::kInvalidVoice)
-            return;
+            return true;
 
         const ScheduledNoteEvent scheduled{
             event.header.time,
@@ -220,6 +246,7 @@ private:
             allocation.replacedIdentity,
         };
         sink(scheduled);
+        return notifyNoteOnDispatched(coreEventSink, event, 0);
     }
 
     template <typename Sink>
