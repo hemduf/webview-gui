@@ -148,6 +148,13 @@ private:
         return {event.note_id, event.port_index, event.channel, event.key};
     }
 
+    static bool validExpressionAddress(const clap_event_note_expression_t &event) noexcept {
+        return event.note_id >= -1 &&
+               event.port_index >= -1 &&
+               event.channel >= -1 && event.channel <= 15 &&
+               event.key >= -1 && event.key <= 127;
+    }
+
     void clearTransientExpressionState() noexcept {
         for (auto &entry : pendingTuningExpressions_)
             entry = {};
@@ -156,10 +163,22 @@ private:
     }
 
     bool storePendingTuning(const clap_event_note_expression_t &event) noexcept {
+        const auto address = addressFrom(event);
+
+        // Note expressions are statements, not deltas. Coalesce repeated values
+        // for the same sample/address before consuming another fixed slot.
+        for (auto &entry : pendingTuningExpressions_) {
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
+                continue;
+            entry.semitones = event.value;
+            return true;
+        }
+
         for (auto &entry : pendingTuningExpressions_) {
             if (entry.active)
                 continue;
-            entry.address = addressFrom(event);
+            entry.address = address;
             entry.time = event.header.time;
             entry.semitones = event.value;
             entry.active = true;
@@ -301,7 +320,8 @@ private:
     }
 
     bool applyTuningExpression(const clap_event_note_expression_t &event) noexcept {
-        if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0)
+        if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0 ||
+            !validExpressionAddress(event))
             return false;
         if (!syncVoices())
             return false;
@@ -316,7 +336,10 @@ private:
             matched = true;
         }
 
-        if (!matched && !storePendingTuning(event))
+        // Retain the statement for any matching NOTE_ON which appears later at
+        // this same sample, even if existing voices already matched it now. CLAP
+        // requires a same-sample expression to affect all generated samples.
+        if (!storePendingTuning(event))
             return false;
         return matched ? applyFineTuningState() : true;
     }
