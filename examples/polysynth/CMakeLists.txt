@@ -105,6 +105,15 @@ target_include_directories(webview_gui_example_polysynth_parameter_model_tests P
 target_link_libraries(webview_gui_example_polysynth_parameter_model_tests PRIVATE clap)
 target_compile_features(webview_gui_example_polysynth_parameter_model_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_example_polysynth_parameter_event_tests
+    ../tests/polysynth_parameter_event_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_parameter_event_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_parameter_event_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_parameter_event_tests PRIVATE cxx_std_17)
+
 add_test(NAME webview_gui_examples_polysynth_voice_allocator
     COMMAND webview_gui_example_polysynth_voice_allocator_tests)
 add_test(NAME webview_gui_examples_polysynth_note_scheduler
@@ -129,3 +138,5 @@ add_test(NAME webview_gui_examples_polysynth_event_stream
     COMMAND webview_gui_example_polysynth_event_stream_tests)
 add_test(NAME webview_gui_examples_polysynth_parameter_model
     COMMAND webview_gui_example_polysynth_parameter_model_tests)
+add_test(NAME webview_gui_examples_polysynth_parameter_event
+    COMMAND webview_gui_example_polysynth_parameter_event_tests)
