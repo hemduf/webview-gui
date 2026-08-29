@@ -32,6 +32,12 @@ public:
     static constexpr VoiceIndex kMaximumVoices = 64;
     static constexpr VoiceIndex kInvalidVoice = std::numeric_limits<VoiceIndex>::max();
 
+    struct AllocationResult {
+        VoiceIndex voiceIndex = kInvalidVoice;
+        bool replacedVoice = false;
+        VoiceIdentity replacedIdentity{};
+    };
+
     bool configure(std::size_t requestedVoices) noexcept {
         if (requestedVoices == 0 || requestedVoices > kMaximumVoices)
             return false;
@@ -67,15 +73,15 @@ public:
         return kInvalidVoice;
     }
 
-    [[nodiscard]] VoiceIndex allocate(const VoiceIdentity &identity) noexcept {
+    [[nodiscard]] AllocationResult allocateDetailed(const VoiceIdentity &identity) noexcept {
         if (capacity_ == 0)
-            return kInvalidVoice;
+            return {};
 
         for (VoiceIndex index = 0; index < capacity_; ++index) {
             if (!slots_[index].active) {
                 activate(index, identity);
                 ++activeCount_;
-                return index;
+                return {index, false, {}};
             }
         }
 
@@ -85,8 +91,13 @@ public:
                 oldest = index;
         }
 
+        const auto replacedIdentity = slots_[oldest].identity;
         activate(oldest, identity);
-        return oldest;
+        return {oldest, true, replacedIdentity};
+    }
+
+    [[nodiscard]] VoiceIndex allocate(const VoiceIdentity &identity) noexcept {
+        return allocateDetailed(identity).voiceIndex;
     }
 
     bool releaseExact(const VoiceIdentity &identity) noexcept {
