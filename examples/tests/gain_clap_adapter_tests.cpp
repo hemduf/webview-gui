@@ -3,9 +3,13 @@
 
 #include <clap/clap.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
+#include <vector>
 
 namespace {
 
@@ -25,6 +29,73 @@ const clap_host_t kHost{
     hostRequestRestart,
     hostRequestProcess,
     hostRequestCallback,
+};
+
+struct MemoryOutputStream {
+    explicit MemoryOutputStream(std::size_t maxWrite = std::numeric_limits<std::size_t>::max(),
+                                std::size_t failAfterBytes = std::numeric_limits<std::size_t>::max())
+        : maxWrite(maxWrite), failAfterBytes(failAfterBytes), stream{this, write} {}
+
+    static int64_t CLAP_ABI write(const clap_ostream_t *stream,
+                                  const void *buffer,
+                                  uint64_t size) {
+        auto &self = *static_cast<MemoryOutputStream *>(stream->ctx);
+        if (!buffer || size == 0)
+            return size == 0 ? 0 : -1;
+        if (self.bytes.size() >= self.failAfterBytes)
+            return -1;
+
+        const auto remainingBeforeFailure = self.failAfterBytes - self.bytes.size();
+        const auto requested = static_cast<std::size_t>(std::min<uint64_t>(
+            size, static_cast<uint64_t>(std::numeric_limits<std::size_t>::max())));
+        const auto amount = std::min({requested, self.maxWrite, remainingBeforeFailure});
+        if (amount == 0)
+            return -1;
+
+        const auto *begin = static_cast<const uint8_t *>(buffer);
+        self.bytes.insert(self.bytes.end(), begin, begin + amount);
+        return static_cast<int64_t>(amount);
+    }
+
+    std::size_t maxWrite;
+    std::size_t failAfterBytes;
+    std::vector<uint8_t> bytes;
+    clap_ostream_t stream;
+};
+
+struct MemoryInputStream {
+    explicit MemoryInputStream(const std::vector<uint8_t> &bytes,
+                               std::size_t maxRead = std::numeric_limits<std::size_t>::max(),
+                               std::size_t failAfterBytes = std::numeric_limits<std::size_t>::max())
+        : bytes(bytes), maxRead(maxRead), failAfterBytes(failAfterBytes), stream{this, read} {}
+
+    static int64_t CLAP_ABI read(const clap_istream_t *stream, void *buffer, uint64_t size) {
+        auto &self = *static_cast<MemoryInputStream *>(stream->ctx);
+        if (!buffer || size == 0)
+            return size == 0 ? 0 : -1;
+        if (self.position >= self.failAfterBytes)
+            return -1;
+        if (self.position >= self.bytes.size())
+            return 0;
+
+        const auto requested = static_cast<std::size_t>(std::min<uint64_t>(
+            size, static_cast<uint64_t>(std::numeric_limits<std::size_t>::max())));
+        const auto available = self.bytes.size() - self.position;
+        const auto beforeFailure = self.failAfterBytes - self.position;
+        const auto amount = std::min({requested, self.maxRead, available, beforeFailure});
+        if (amount == 0)
+            return -1;
+
+        std::memcpy(buffer, self.bytes.data() + self.position, amount);
+        self.position += amount;
+        return static_cast<int64_t>(amount);
+    }
+
+    const std::vector<uint8_t> &bytes;
+    std::size_t maxRead;
+    std::size_t failAfterBytes;
+    std::size_t position = 0;
+    clap_istream_t stream;
 };
 
 bool checkPort(const clap_plugin_audio_ports_t *ports,
@@ -106,7 +177,11 @@ int main() {
         plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
-    if (!ports || !params || plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS) != nullptr) {
+    const auto *state = static_cast<const clap_plugin_state_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_STATE));
+    if (!ports || !params || !state ||
+        plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS) != nullptr) {
+        std::cerr << "required Gain CLAP extensions are missing or a note extension is falsely exposed\n";
         plugin->destroy(plugin);
         return 6;
     }
@@ -149,6 +224,89 @@ int main() {
         !params->get_value(plugin, kBypassParamId, &value) || value != 1.0) {
         plugin->destroy(plugin);
         return 12;
+    }
+
+    // State streams are allowed to return short reads/writes. A valid state
+    // round-trip must therefore loop until the entire payload is transferred.
+    MemoryOutputStream savedState(3);
+    if (!state->save(plugin, &savedState.stream) || savedState.bytes.empty()) {
+        std::cerr << "CLAP state save did not handle partial stream writes\n";
+        plugin->destroy(plugin);
+        return 22;
+    }
+
+    InputEvents changedState;
+    if (!changedState.pushParamValue(0, kGainParamId, 3.0) ||
+        !changedState.pushParamValue(0, kBypassParamId, 0.0)) {
+        plugin->destroy(plugin);
+        return 23;
+    }
+    params->flush(plugin, changedState.clapInputEvents(), nullptr);
+
+    MemoryInputStream savedStateInput(savedState.bytes, 2);
+    if (!state->load(plugin, &savedStateInput.stream) ||
+        !params->get_value(plugin, kGainParamId, &value) || std::fabs(value + 6.0) > 1.0e-6 ||
+        !params->get_value(plugin, kBypassParamId, &value) || value != 1.0) {
+        std::cerr << "CLAP state round-trip did not restore Gain/Bypass\n";
+        plugin->destroy(plugin);
+        return 24;
+    }
+
+    // Malformed/truncated state must fail atomically: a rejected load must not
+    // partially replace the last valid parameter state.
+    InputEvents atomicBaseline;
+    if (!atomicBaseline.pushParamValue(0, kGainParamId, -3.0) ||
+        !atomicBaseline.pushParamValue(0, kBypassParamId, 0.0)) {
+        plugin->destroy(plugin);
+        return 25;
+    }
+    params->flush(plugin, atomicBaseline.clapInputEvents(), nullptr);
+
+    auto truncatedState = savedState.bytes;
+    truncatedState.pop_back();
+    MemoryInputStream truncatedInput(truncatedState, 2);
+    if (state->load(plugin, &truncatedInput.stream) ||
+        !params->get_value(plugin, kGainParamId, &value) || std::fabs(value + 3.0) > 1.0e-6 ||
+        !params->get_value(plugin, kBypassParamId, &value) || value != 0.0) {
+        std::cerr << "truncated CLAP state was accepted or mutated live state\n";
+        plugin->destroy(plugin);
+        return 26;
+    }
+
+    auto corruptState = savedState.bytes;
+    corruptState.front() ^= 0x7fu;
+    MemoryInputStream corruptInput(corruptState, 2);
+    if (state->load(plugin, &corruptInput.stream) ||
+        !params->get_value(plugin, kGainParamId, &value) || std::fabs(value + 3.0) > 1.0e-6 ||
+        !params->get_value(plugin, kBypassParamId, &value) || value != 0.0) {
+        std::cerr << "corrupt CLAP state was accepted or mutated live state\n";
+        plugin->destroy(plugin);
+        return 27;
+    }
+
+    auto stateWithTrailingData = savedState.bytes;
+    stateWithTrailingData.push_back(0x42u);
+    MemoryInputStream trailingInput(stateWithTrailingData, 2);
+    if (state->load(plugin, &trailingInput.stream) ||
+        !params->get_value(plugin, kGainParamId, &value) || std::fabs(value + 3.0) > 1.0e-6) {
+        std::cerr << "non-canonical CLAP state with trailing data was accepted\n";
+        plugin->destroy(plugin);
+        return 28;
+    }
+
+    MemoryOutputStream failingOutput(3, 4);
+    if (state->save(plugin, &failingOutput.stream)) {
+        std::cerr << "CLAP state save ignored a stream write error\n";
+        plugin->destroy(plugin);
+        return 29;
+    }
+
+    MemoryInputStream failingInput(savedState.bytes, 2, 4);
+    if (state->load(plugin, &failingInput.stream) ||
+        !params->get_value(plugin, kGainParamId, &value) || std::fabs(value + 3.0) > 1.0e-6) {
+        std::cerr << "CLAP state load ignored a stream read error or mutated live state\n";
+        plugin->destroy(plugin);
+        return 30;
     }
 
     // CLAP stepped parameters use integer cast/truncation semantics. A fractional
@@ -201,9 +359,9 @@ int main() {
         return 16;
     }
 
-    const float minusSix = static_cast<float>(std::pow(10.0, -6.0 / 20.0));
+    const float minusThree = static_cast<float>(std::pow(10.0, -3.0 / 20.0));
     for (uint32_t frame = 0; frame < 4; ++frame) {
-        if (std::fabs(block.outputChannel(0)[frame] - minusSix) > 1.0e-6f) {
+        if (std::fabs(block.outputChannel(0)[frame] - minusThree) > 1.0e-6f) {
             plugin->stop_processing(plugin);
             plugin->deactivate(plugin);
             plugin->destroy(plugin);
