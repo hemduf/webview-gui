@@ -16,6 +16,7 @@ on:
       - 'examples/tests/gain_webview_resource_tests.cpp'
       - 'examples/tests/gain_webview_param_tests.cpp'
       - 'examples/tests/gain_webview_backpressure_tests.cpp'
+      - 'examples/tests/gain_native_gui_contract.cmake'
       - 'examples/tests/gain_validator_ci_contract.cmake'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/gain-core.yml'
@@ -39,6 +40,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+
+      - name: Verify native GUI preference contract
+        run: cmake -P examples/tests/gain_native_gui_contract.cmake
 
       - name: Install Linux WebView dependencies
         if: runner.os == 'Linux'
