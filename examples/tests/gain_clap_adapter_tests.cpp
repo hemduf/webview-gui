@@ -323,6 +323,22 @@ int main() {
         return 19;
     }
 
+    // Preserve a state that will be loaded after start_processing(). CLAP state
+    // callbacks are main-thread operations and may race an active audio thread;
+    // the next process block must observe the loaded values without a direct
+    // main-thread mutation of the DSP object.
+    MemoryOutputStream activeState;
+    if (!state->save(plugin, &activeState.stream)) {
+        plugin->destroy(plugin);
+        return 31;
+    }
+    InputEvents activePreloadChange;
+    if (!activePreloadChange.pushParamValue(0, kGainParamId, 6.0)) {
+        plugin->destroy(plugin);
+        return 32;
+    }
+    params->flush(plugin, activePreloadChange.clapInputEvents(), nullptr);
+
     if (!plugin->activate(plugin, 48000.0, 1, 64)) {
         plugin->destroy(plugin);
         return 13;
@@ -331,6 +347,39 @@ int main() {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 14;
+    }
+
+    MemoryInputStream activeStateInput(activeState.bytes, 2);
+    if (!state->load(plugin, &activeStateInput.stream)) {
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 33;
+    }
+
+    StereoFloatBlock loadedBlock(2);
+    loadedBlock.fillInput(1.0f, 1.0f);
+    clap_process_t loadedProcess{};
+    loadedProcess.frames_count = loadedBlock.frames();
+    loadedProcess.audio_inputs = loadedBlock.input();
+    loadedProcess.audio_outputs = loadedBlock.output();
+    loadedProcess.audio_inputs_count = 1;
+    loadedProcess.audio_outputs_count = 1;
+    if (plugin->process(plugin, &loadedProcess) != CLAP_PROCESS_CONTINUE) {
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 34;
+    }
+    const float minusThree = static_cast<float>(std::pow(10.0, -3.0 / 20.0));
+    for (uint32_t frame = 0; frame < loadedBlock.frames(); ++frame) {
+        if (std::fabs(loadedBlock.outputChannel(0)[frame] - minusThree) > 1.0e-6f) {
+            std::cerr << "active CLAP state load was not applied before the next process block\n";
+            plugin->stop_processing(plugin);
+            plugin->deactivate(plugin);
+            plugin->destroy(plugin);
+            return 35;
+        }
     }
 
     StereoFloatBlock block(8);
@@ -359,7 +408,6 @@ int main() {
         return 16;
     }
 
-    const float minusThree = static_cast<float>(std::pow(10.0, -3.0 / 20.0));
     for (uint32_t frame = 0; frame < 4; ++frame) {
         if (std::fabs(block.outputChannel(0)[frame] - minusThree) > 1.0e-6f) {
             plugin->stop_processing(plugin);
