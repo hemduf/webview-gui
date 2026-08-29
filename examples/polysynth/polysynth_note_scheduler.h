@@ -23,6 +23,8 @@ struct ScheduledNoteEvent {
     VoiceAllocator::VoiceIndex voiceIndex = VoiceAllocator::kInvalidVoice;
     VoiceIdentity identity{};
     double velocity = 0.0;
+    bool replacedVoice = false;
+    VoiceIdentity replacedIdentity{};
 };
 
 class NoteEventScheduler {
@@ -143,16 +145,18 @@ private:
             return;
 
         const auto identity = identityFrom(event);
-        const auto voiceIndex = allocator_.allocate(identity);
-        if (voiceIndex == VoiceAllocator::kInvalidVoice)
+        const auto allocation = allocator_.allocateDetailed(identity);
+        if (allocation.voiceIndex == VoiceAllocator::kInvalidVoice)
             return;
 
         const ScheduledNoteEvent scheduled{
             event.header.time,
             ScheduledNoteKind::NoteOn,
-            voiceIndex,
+            allocation.voiceIndex,
             identity,
             event.velocity,
+            allocation.replacedVoice,
+            allocation.replacedIdentity,
         };
         sink(scheduled);
     }
@@ -173,6 +177,8 @@ private:
                 voiceIndex,
                 identity,
                 kind == ScheduledNoteKind::NoteOff ? event.velocity : 0.0,
+                false,
+                {},
             };
             sink(scheduled);
         }
