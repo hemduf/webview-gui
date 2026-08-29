@@ -322,5 +322,22 @@ int main() {
         return 14;
     }
 
+    // CLAP TUNING note expressions are specified in semitones over the full
+    // [-120, +120] range. The Fine Tune parameter remains a +/-100-cent base,
+    // but the expression layer must not inherit that parameter range. A +12
+    // semitone expression is exactly one octave and must remain sample-accurate.
+    ParameterVoiceEngine octaveExpression;
+    if (!configure(octaveExpression))
+        return 15;
+    InputEvents octaveEvents;
+    octaveEvents.pushNote(0, 81, 60);
+    octaveEvents.pushTuning(8, 12.0, 81);
+    RenderResult octaveAudio;
+    if (!render(octaveExpression, octaveEvents, octaveAudio) ||
+        !matchesRetune(octaveAudio, 8, 60.0, 72.0)) {
+        std::cerr << "NOTE_EXPRESSION_TUNING was incorrectly clipped to the Fine Tune parameter range\n";
+        return 16;
+    }
+
     return 0;
 }
