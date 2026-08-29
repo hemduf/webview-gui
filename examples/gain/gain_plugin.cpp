@@ -525,7 +525,7 @@ private:
     }
 
     GainEventProcessor processor_{};
-+    mutable ::webview_gui::ClapWebviewGui gui_;
+    mutable ::webview_gui::ClapWebviewGui gui_;
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
 
