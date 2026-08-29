@@ -257,12 +257,15 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
-            const auto effective = std::clamp(
-                base + modulation + voiceTuningExpressionSemitones_[index] * 100.0,
-                -100.0,
-                100.0);
+            // Fine Tune remains a +/-100-cent parameter domain. CLAP TUNING is
+            // a separate statement-of-value offset in semitones and must retain
+            // its full +/-120-semitone range rather than inheriting the parameter
+            // clamp. The resulting voice-local offset is bounded to +/-12100c.
+            const auto parameterCents = std::clamp(base + modulation, -100.0, 100.0);
+            const auto effectiveCents =
+                parameterCents + voiceTuningExpressionSemitones_[index] * 100.0;
             if (!VoiceEngine::setVoiceFineTuningCents(
-                    index, static_cast<float>(effective)))
+                    index, static_cast<float>(effectiveCents)))
                 return false;
         }
         return true;
