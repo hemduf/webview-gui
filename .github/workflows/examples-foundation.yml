@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'examples/**'
+      - 'cmake/WebviewGuiClapWrapperMacOSPatch.cmake'
       - 'CMakeLists.txt'
       - '.github/workflows/examples-foundation.yml'
   workflow_dispatch:
