@@ -170,7 +170,7 @@ private:
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!std::isfinite(event.value) ||
-                event.value < spec->minimum || event.value > spec->maximum)
+                event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
                 return false;
