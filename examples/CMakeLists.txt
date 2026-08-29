@@ -151,6 +151,16 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     target_link_libraries(webview_gui_example_gain_core_tests PRIVATE clap)
     target_compile_features(webview_gui_example_gain_core_tests PRIVATE cxx_std_17)
 
+    add_executable(webview_gui_example_gain_meter_tests
+        tests/gain_meter_tests.cpp
+    )
+    target_include_directories(webview_gui_example_gain_meter_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/gain
+        ${CMAKE_CURRENT_LIST_DIR}/common
+    )
+    target_link_libraries(webview_gui_example_gain_meter_tests PRIVATE clap)
+    target_compile_features(webview_gui_example_gain_meter_tests PRIVATE cxx_std_17)
+
     add_executable(webview_gui_example_gain_clap_tests
         tests/gain_clap_adapter_tests.cpp
     )
@@ -165,6 +175,8 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
 
     add_test(NAME webview_gui_examples_gain_core
         COMMAND webview_gui_example_gain_core_tests)
+    add_test(NAME webview_gui_examples_gain_meter
+        COMMAND webview_gui_example_gain_meter_tests)
     add_test(NAME webview_gui_examples_gain_clap_adapter
         COMMAND webview_gui_example_gain_clap_tests)
 endif()
