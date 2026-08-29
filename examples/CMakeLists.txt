@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(webview_gui_examples LANGUAGES C CXX)
 
+# clap-wrapper documents C++17 as its default, but when it is embedded through
+# FetchContent its top-level-only default is not applied. Set the example tree's
+# language standards explicitly so the wrapper's C++ and Objective-C++ sources
+# get the contract they require on every supported platform.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(APPLE)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+
 include(CTest)
 include(FetchContent)
 
