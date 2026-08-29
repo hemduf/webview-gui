@@ -3,11 +3,13 @@
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace webview_gui::examples::gain {
@@ -21,6 +23,9 @@ static_assert(std::atomic<float>::is_always_lock_free,
               "Gain parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<bool>::is_always_lock_free,
               "Bypass parameter snapshots must be lock-free on supported targets");
+static_assert(sizeof(double) == sizeof(uint64_t), "Gain state requires a 64-bit double");
+static_assert(std::numeric_limits<double>::is_iec559,
+              "Gain state requires IEEE-754 double precision");
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
@@ -42,11 +47,98 @@ const clap_plugin_descriptor_t kDescriptor{
     kFeatures,
 };
 
+constexpr std::array<uint8_t, 8> kStateMagic{{'W', 'V', 'G', 'G', 'A', 'I', 'N', 0}};
+constexpr uint32_t kStateVersion = 1;
+constexpr std::size_t kStateSize = 24;
+
 bool copyText(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
         return false;
     const int written = std::snprintf(destination, capacity, "%s", text);
     return written >= 0 && static_cast<std::size_t>(written) < capacity;
+}
+
+void storeU32Le(uint8_t *destination, uint32_t value) noexcept {
+    for (unsigned i = 0; i < 4; ++i)
+        destination[i] = static_cast<uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+void storeU64Le(uint8_t *destination, uint64_t value) noexcept {
+    for (unsigned i = 0; i < 8; ++i)
+        destination[i] = static_cast<uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+uint32_t loadU32Le(const uint8_t *source) noexcept {
+    uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<uint32_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+uint64_t loadU64Le(const uint8_t *source) noexcept {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value |= static_cast<uint64_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+bool writeAll(const clap_ostream_t *stream, const uint8_t *data, std::size_t size) noexcept {
+    if (!stream || !stream->write || (!data && size != 0))
+        return false;
+
+    std::size_t offset = 0;
+    while (offset < size) {
+        const auto written = stream->write(stream, data + offset, size - offset);
+        if (written <= 0 || static_cast<uint64_t>(written) > size - offset)
+            return false;
+        offset += static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+bool readAll(const clap_istream_t *stream, uint8_t *data, std::size_t size) noexcept {
+    if (!stream || !stream->read || (!data && size != 0))
+        return false;
+
+    std::size_t offset = 0;
+    while (offset < size) {
+        const auto read = stream->read(stream, data + offset, size - offset);
+        if (read <= 0 || static_cast<uint64_t>(read) > size - offset)
+            return false;
+        offset += static_cast<std::size_t>(read);
+    }
+    return true;
+}
+
+std::array<uint8_t, kStateSize> encodeState(double gainDb, bool bypassed) noexcept {
+    std::array<uint8_t, kStateSize> bytes{};
+    std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
+    storeU32Le(bytes.data() + 8, kStateVersion);
+
+    uint64_t gainBits = 0;
+    std::memcpy(&gainBits, &gainDb, sizeof(gainBits));
+    storeU64Le(bytes.data() + 12, gainBits);
+    bytes[20] = bypassed ? 1u : 0u;
+    return bytes;
+}
+
+bool decodeState(const std::array<uint8_t, kStateSize> &bytes,
+                 double &gainDb,
+                 bool &bypassed) noexcept {
+    if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()) ||
+        loadU32Le(bytes.data() + 8) != kStateVersion ||
+        (bytes[20] != 0u && bytes[20] != 1u) ||
+        bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
+        return false;
+
+    const uint64_t gainBits = loadU64Le(bytes.data() + 12);
+    std::memcpy(&gainDb, &gainBits, sizeof(gainDb));
+    if (!std::isfinite(gainDb) || gainDb < GainProcessor::kMinimumGainDb ||
+        gainDb > GainProcessor::kMaximumGainDb)
+        return false;
+
+    bypassed = bytes[20] != 0u;
+    return true;
 }
 
 class GainPlugin final : public GainBase {
@@ -64,6 +156,39 @@ protected:
             return CLAP_PROCESS_ERROR;
         syncParameterSnapshots();
         return CLAP_PROCESS_CONTINUE;
+    }
+
+    bool implementsState() const noexcept override { return true; }
+
+    bool stateSave(const clap_ostream_t *stream) noexcept override {
+        const auto bytes = encodeState(
+            static_cast<double>(gainDbSnapshot_.load(std::memory_order_relaxed)),
+            bypassSnapshot_.load(std::memory_order_relaxed));
+        return writeAll(stream, bytes.data(), bytes.size());
+    }
+
+    bool stateLoad(const clap_istream_t *stream) noexcept override {
+        std::array<uint8_t, kStateSize> bytes{};
+        if (!readAll(stream, bytes.data(), bytes.size()))
+            return false;
+
+        uint8_t trailing = 0;
+        const auto trailingRead = stream->read(stream, &trailing, 1);
+        if (trailingRead != 0)
+            return false;
+
+        double gainDb = 0.0;
+        bool bypassed = false;
+        if (!decodeState(bytes, gainDb, bypassed))
+            return false;
+
+        // Commit only after the entire state has been validated, so malformed
+        // streams cannot partially replace the previous valid parameter state.
+        if (!processor_.processor().setGainDb(gainDb))
+            return false;
+        processor_.processor().setBypassed(bypassed);
+        syncParameterSnapshots();
+        return true;
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
