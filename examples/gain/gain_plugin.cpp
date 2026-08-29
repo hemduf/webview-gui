@@ -261,6 +261,9 @@ protected:
     bool implementsGui() const noexcept override { return true; }
 
     bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
+        if (isFloating && api &&
+            std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
+            return false;
         return gui_.isApiSupported(api, isFloating);
     }
 
@@ -269,6 +272,9 @@ protected:
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
+        if (isFloating && api &&
+            std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
+            return false;
         if (!gui_.create(api, isFloating))
             return false;
         if (!gui_.setSize(kEditorWidth, kEditorHeight)) {
