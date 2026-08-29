@@ -26,6 +26,11 @@ const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *id) {
         return &kHostWebview;
     return nullptr;
 }
+
+const void *CLAP_ABI hostGetNoExtension(const clap_host_t *, const char *) {
+    return nullptr;
+}
+
 void CLAP_ABI hostRequestRestart(const clap_host_t *) {}
 void CLAP_ABI hostRequestProcess(const clap_host_t *) {}
 void CLAP_ABI hostRequestCallback(const clap_host_t *) {}
@@ -38,6 +43,19 @@ const clap_host_t kHost{
     "https://github.com/hemduf/webview-gui",
     "0.1.0",
     hostGetExtension,
+    hostRequestRestart,
+    hostRequestProcess,
+    hostRequestCallback,
+};
+
+const clap_host_t kHostWithoutWebview{
+    CLAP_VERSION,
+    nullptr,
+    "webview-gui Gain non-WebView host tests",
+    "webview-gui",
+    "https://github.com/hemduf/webview-gui",
+    "0.1.0",
+    hostGetNoExtension,
     hostRequestRestart,
     hostRequestProcess,
     hostRequestCallback,
@@ -179,7 +197,7 @@ int main() {
     }
 
     // The Gain editor uses the shared ClapWebviewGui adapter. Headless CI tests
-    // only the host-owned CLAP WebView path here; Cocoa/HWND/X11 attachment is
+    // the host-owned CLAP WebView lifecycle here; Cocoa/HWND/X11 attachment is
     // qualified by the framework's dedicated platform lifecycle tests.
     const auto *gui = static_cast<const clap_plugin_gui_t *>(
         plugin->get_extension(plugin, CLAP_EXT_GUI));
@@ -206,20 +224,45 @@ int main() {
         return 16;
     }
 
-    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
-        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
-        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (gui->get_size(plugin, &width, &height)) {
+        std::cerr << "Gain clap.gui exposed size before create(), contrary to the CLAP lifecycle\n";
         plugin->destroy(plugin);
         return 17;
     }
 
-    uint32_t width = 0;
-    uint32_t height = 0;
+    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
+        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
+        plugin->destroy(plugin);
+        return 18;
+    }
+
     if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
         std::cerr << "Gain clap.gui did not expose the expected initial logical size after create()\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 18;
+        return 19;
+    }
+
+    clap_window_t webviewWindow{};
+    webviewWindow.api = CLAP_WINDOW_API_WEBVIEW;
+    webviewWindow.ptr = nullptr;
+    if (!gui->set_parent(plugin, &webviewWindow) || !gui->show(plugin) || !gui->hide(plugin)) {
+        std::cerr << "Gain host-owned WebView parent/show/hide lifecycle failed\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 20;
+    }
+
+    clap_window_t invalidWebviewWindow = webviewWindow;
+    invalidWebviewWindow.ptr = reinterpret_cast<void *>(static_cast<std::uintptr_t>(1));
+    if (gui->set_parent(plugin, &invalidWebviewWindow)) {
+        std::cerr << "Gain accepted a non-null host-owned WebView parent pointer\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 21;
     }
 
     if (!gui->can_resize(plugin) || !gui->set_size(plugin, 640, 360) ||
@@ -227,23 +270,64 @@ int main() {
         std::cerr << "Gain clap.gui logical resize contract failed\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 19;
+        return 22;
+    }
+
+    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui accepted a second create() without destroy()\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 23;
     }
 
     gui->destroy(plugin);
+    if (gui->get_size(plugin, &width, &height) || gui->show(plugin) || gui->hide(plugin)) {
+        std::cerr << "Gain clap.gui remained active after destroy()\n";
+        plugin->destroy(plugin);
+        return 24;
+    }
+
     if (!gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
         std::cerr << "Gain clap.gui could not be recreated after destroy()\n";
         plugin->destroy(plugin);
-        return 20;
+        return 25;
     }
     if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
         std::cerr << "Gain clap.gui recreate did not restore the initial logical size\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 21;
+        return 26;
     }
     gui->destroy(plugin);
-
     plugin->destroy(plugin);
+
+    // A host that does not expose clap.webview/3 must not be told that the
+    // host-owned WebView GUI API is available. Native platform APIs remain the
+    // shared adapter's responsibility and are intentionally not asserted here.
+    const auto *nonWebviewPlugin =
+        factory->create_plugin(factory, &kHostWithoutWebview, kGainPluginId);
+    if (!nonWebviewPlugin)
+        return 27;
+    if (!nonWebviewPlugin->init(nonWebviewPlugin)) {
+        nonWebviewPlugin->destroy(nonWebviewPlugin);
+        return 28;
+    }
+
+    const auto *nonWebviewGui = static_cast<const clap_plugin_gui_t *>(
+        nonWebviewPlugin->get_extension(nonWebviewPlugin, CLAP_EXT_GUI));
+    const char *unsupportedPreferredApi = nullptr;
+    bool unsupportedFloating = false;
+    if (!nonWebviewGui ||
+        nonWebviewGui->is_api_supported(nonWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false) ||
+        nonWebviewGui->get_preferred_api(nonWebviewPlugin,
+                                         &unsupportedPreferredApi,
+                                         &unsupportedFloating) ||
+        nonWebviewGui->create(nonWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain advertised host-owned WebView GUI without host clap.webview/3 support\n";
+        nonWebviewPlugin->destroy(nonWebviewPlugin);
+        return 29;
+    }
+
+    nonWebviewPlugin->destroy(nonWebviewPlugin);
     return 0;
 }
