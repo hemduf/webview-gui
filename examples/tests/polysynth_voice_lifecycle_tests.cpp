@@ -9,9 +9,9 @@
 
 namespace {
 
-using webview_gui::examples::polysynth::ScheduledNoteEvent;
 using webview_gui::examples::polysynth::VoiceIdentity;
 using webview_gui::examples::polysynth::VoiceLifecycle;
+using webview_gui::examples::polysynth::VoiceLifecycleEvent;
 using webview_gui::examples::polysynth::VoiceStage;
 
 struct InputEvents {
@@ -70,12 +70,12 @@ struct InputEvents {
 };
 
 struct VoiceCapture {
-    void operator()(const ScheduledNoteEvent &event) noexcept {
+    void operator()(const VoiceLifecycleEvent &event) noexcept {
         if (count < events.size())
             events[count++] = event;
     }
 
-    std::array<ScheduledNoteEvent, 16> events{};
+    std::array<VoiceLifecycleEvent, 24> events{};
     std::size_t count = 0;
 };
 
@@ -85,7 +85,7 @@ struct NoteEndCapture {
             events[count++] = event;
     }
 
-    std::array<clap_event_note_t, 16> events{};
+    std::array<clap_event_note_t, 24> events{};
     std::size_t count = 0;
 };
 
@@ -144,9 +144,12 @@ int main() {
         return 2;
     }
 
+    const auto firstGeneration = lifecycle.generation(0);
+    const auto secondGeneration = lifecycle.generation(1);
     if (voices.count != 2 || noteEnds.count != 0 || lifecycle.activeCount() != 2 ||
-        lifecycle.stage(0) != VoiceStage::Held || lifecycle.stage(1) != VoiceStage::Held) {
-        std::cerr << "NOTE_ON did not establish two held voices without premature NOTE_END\n";
+        lifecycle.stage(0) != VoiceStage::Held || lifecycle.stage(1) != VoiceStage::Held ||
+        firstGeneration == 0 || secondGeneration == 0 || firstGeneration == secondGeneration) {
+        std::cerr << "NOTE_ON did not establish two independently generated held voices\n";
         return 3;
     }
 
@@ -157,13 +160,13 @@ int main() {
     }
 
     if (lifecycle.stage(0) != VoiceStage::Releasing || lifecycle.activeCount() != 2 ||
-        noteEnds.count != 0) {
-        std::cerr << "NOTE_OFF retired the voice or emitted NOTE_END before envelope completion\n";
+        noteEnds.count != 0 || lifecycle.generation(0) != firstGeneration) {
+        std::cerr << "NOTE_OFF retired the voice or changed generation before envelope completion\n";
         return 5;
     }
 
-    if (!lifecycle.completeRelease(0, 6, noteEnds) || lifecycle.activeCount() != 1 ||
-        lifecycle.stage(0) != VoiceStage::Inactive ||
+    if (!lifecycle.completeRelease(0, firstGeneration, 6, noteEnds) ||
+        lifecycle.activeCount() != 1 || lifecycle.stage(0) != VoiceStage::Inactive ||
         !expectNoteEnd(noteEnds, 0, 6, 100, 0, 1, 60, "release completion")) {
         std::cerr << "release completion did not retire exactly one concrete voice\n";
         return 6;
@@ -191,18 +194,22 @@ int main() {
         !lifecycle.process(&duplicates.input, 4, voices, noteEnds)) {
         return 9;
     }
+    const auto duplicateGeneration0 = lifecycle.generation(0);
+    const auto duplicateGeneration1 = lifecycle.generation(1);
     if (lifecycle.stage(0) != VoiceStage::Releasing ||
-        lifecycle.stage(1) != VoiceStage::Releasing || lifecycle.activeCount() != 2) {
-        std::cerr << "wildcard NOTE_OFF did not put both duplicate identities into release\n";
+        lifecycle.stage(1) != VoiceStage::Releasing || lifecycle.activeCount() != 2 ||
+        duplicateGeneration0 == duplicateGeneration1) {
+        std::cerr << "wildcard NOTE_OFF did not preserve two distinct voice generations\n";
         return 10;
     }
-    if (!lifecycle.completeRelease(1, 3, noteEnds) || lifecycle.activeCount() != 1 ||
-        lifecycle.stage(0) != VoiceStage::Releasing ||
+    if (!lifecycle.completeRelease(1, duplicateGeneration1, 3, noteEnds) ||
+        lifecycle.activeCount() != 1 || lifecycle.stage(0) != VoiceStage::Releasing ||
         lifecycle.stage(1) != VoiceStage::Inactive) {
         std::cerr << "slot-specific release retired the wrong duplicate identity\n";
         return 11;
     }
-    if (!lifecycle.completeRelease(0, 3, noteEnds) || lifecycle.activeCount() != 0)
+    if (!lifecycle.completeRelease(0, duplicateGeneration0, 3, noteEnds) ||
+        lifecycle.activeCount() != 0)
         return 12;
 
     // Deterministic stealing is an immediate termination of the replaced host
@@ -222,17 +229,63 @@ int main() {
 
     VoiceIdentity remaining{};
     if (stealingVoices.count != 2 || stealingEnds.count != 1 ||
+        stealingVoices.events[0].generation == stealingVoices.events[1].generation ||
         !expectNoteEnd(stealingEnds, 0, 3, 300, 0, 3, 60, "voice steal") ||
         lifecycle.activeCount() != 1 || lifecycle.stage(0) != VoiceStage::Held ||
         !lifecycle.voiceIdentity(0, remaining) || !sameIdentity(remaining, 301, 0, 3, 72)) {
-        std::cerr << "voice stealing did not terminate the old host identity and retain the new one\n";
+        std::cerr << "voice stealing did not terminate the old generation and retain the new one\n";
         return 15;
+    }
+
+    // Review regression: an envelope completion belongs to one concrete voice
+    // generation, not merely a slot or tuple. With note_id == -1 a successor may
+    // have the exact same CLAP identity. A stale completion from the stolen voice
+    // must never retire that successor after it subsequently enters release.
+    lifecycle.reset();
+    if (!lifecycle.configure(1))
+        return 16;
+    VoiceCapture staleVoices;
+    NoteEndCapture staleEnds;
+    InputEvents oldVoice;
+    if (!oldVoice.pushNote(0, CLAP_EVENT_NOTE_ON, -1, 0, 4, 65) ||
+        !oldVoice.pushNote(1, CLAP_EVENT_NOTE_OFF, -1, 0, 4, 65) ||
+        !lifecycle.process(&oldVoice.input, 4, staleVoices, staleEnds)) {
+        return 17;
+    }
+    const auto staleGeneration = lifecycle.generation(0);
+
+    InputEvents successor;
+    if (!successor.pushNote(2, CLAP_EVENT_NOTE_ON, -1, 0, 4, 65) ||
+        !successor.pushNote(3, CLAP_EVENT_NOTE_OFF, -1, 0, 4, 65) ||
+        !lifecycle.process(&successor.input, 4, staleVoices, staleEnds)) {
+        return 18;
+    }
+    const auto successorGeneration = lifecycle.generation(0);
+    const auto endCountBeforeStaleCompletion = staleEnds.count;
+    if (staleGeneration == 0 || successorGeneration == 0 ||
+        staleGeneration == successorGeneration || lifecycle.stage(0) != VoiceStage::Releasing) {
+        std::cerr << "voice reuse did not establish a distinct releasing successor generation\n";
+        return 19;
+    }
+
+    if (lifecycle.completeRelease(0, staleGeneration, 4, staleEnds) ||
+        lifecycle.activeCount() != 1 || lifecycle.stage(0) != VoiceStage::Releasing ||
+        staleEnds.count != endCountBeforeStaleCompletion) {
+        std::cerr << "stale envelope completion retired a reused voice generation\n";
+        return 20;
+    }
+
+    if (!lifecycle.completeRelease(0, successorGeneration, 4, staleEnds) ||
+        lifecycle.activeCount() != 0 || lifecycle.stage(0) != VoiceStage::Inactive ||
+        staleEnds.count != endCountBeforeStaleCompletion + 1) {
+        std::cerr << "current envelope completion did not retire its own voice generation\n";
+        return 21;
     }
 
     lifecycle.reset();
     if (lifecycle.activeCount() != 0 || lifecycle.stage(0) != VoiceStage::Inactive) {
         std::cerr << "voice lifecycle reset leaked active or releasing state\n";
-        return 16;
+        return 22;
     }
 
     return 0;
