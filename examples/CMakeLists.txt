@@ -284,6 +284,12 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
     )
     FetchContent_MakeAvailable(webview_gui_example_clap_wrapper)
 
+    if(APPLE)
+        include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiClapWrapperMacOSPatch.cmake")
+        webview_gui_apply_clap_wrapper_macos_string_patch(
+            "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/detail/clap/mac_helpers.mm")
+    endif()
+
     # clap-wrapper must reuse the already-pinned CLAP target instead of creating
     # or downloading a second SDK. Avoid forcing any clap-wrapper cache knobs here
     # so an embedding project keeps ownership of its global wrapper configuration.
