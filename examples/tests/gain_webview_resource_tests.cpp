@@ -13,7 +13,19 @@
 
 namespace {
 
-const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) { return nullptr; }
+bool CLAP_ABI hostWebviewSend(const clap_host_t *, const void *, uint32_t) {
+    return true;
+}
+
+const clap_host_webview_t kHostWebview{
+    hostWebviewSend,
+};
+
+const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *id) {
+    if (id && std::strcmp(id, CLAP_EXT_WEBVIEW) == 0)
+        return &kHostWebview;
+    return nullptr;
+}
 void CLAP_ABI hostRequestRestart(const clap_host_t *) {}
 void CLAP_ABI hostRequestProcess(const clap_host_t *) {}
 void CLAP_ABI hostRequestCallback(const clap_host_t *) {}
@@ -165,6 +177,65 @@ int main() {
         plugin->destroy(plugin);
         return 13;
     }
+
+    // The Gain editor uses the shared ClapWebviewGui adapter. Headless CI tests
+    // only the host-owned CLAP WebView path here; Cocoa/HWND/X11 attachment is
+    // qualified by the framework's dedicated platform lifecycle tests.
+    const auto *gui = static_cast<const clap_plugin_gui_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_GUI));
+    if (!gui) {
+        std::cerr << "Gain must expose clap.gui through ClapWebviewGui\n";
+        plugin->destroy(plugin);
+        return 14;
+    }
+
+    if (!gui->is_api_supported(plugin, CLAP_WINDOW_API_WEBVIEW, false) ||
+        gui->is_api_supported(plugin, CLAP_WINDOW_API_WEBVIEW, true)) {
+        std::cerr << "Gain clap.gui did not negotiate embedded WebView correctly\n";
+        plugin->destroy(plugin);
+        return 15;
+    }
+
+    const char *preferredApi = nullptr;
+    bool isFloating = true;
+    if (!gui->get_preferred_api(plugin, &preferredApi, &isFloating) ||
+        !preferredApi || std::strcmp(preferredApi, CLAP_WINDOW_API_WEBVIEW) != 0 ||
+        isFloating) {
+        std::cerr << "Gain clap.gui did not prefer the embedded WebView API\n";
+        plugin->destroy(plugin);
+        return 16;
+    }
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
+        std::cerr << "Gain clap.gui did not expose the expected initial logical size\n";
+        plugin->destroy(plugin);
+        return 17;
+    }
+
+    if (gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, true) ||
+        !gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui create() did not enforce embedded WebView semantics\n";
+        plugin->destroy(plugin);
+        return 18;
+    }
+
+    if (!gui->can_resize(plugin) || !gui->set_size(plugin, 640, 360) ||
+        !gui->get_size(plugin, &width, &height) || width != 640 || height != 360) {
+        std::cerr << "Gain clap.gui logical resize contract failed\n";
+        gui->destroy(plugin);
+        plugin->destroy(plugin);
+        return 19;
+    }
+
+    gui->destroy(plugin);
+    if (!gui->create(plugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain clap.gui could not be recreated after destroy()\n";
+        plugin->destroy(plugin);
+        return 20;
+    }
+    gui->destroy(plugin);
 
     plugin->destroy(plugin);
     return 0;
