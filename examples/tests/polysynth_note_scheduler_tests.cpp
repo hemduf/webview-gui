@@ -228,10 +228,27 @@ int main() {
         return 14;
     }
 
+    // CLAP process events use offsets inside the current block. An event at
+    // frames_count has no corresponding sample and must not be scheduled or
+    // mutate the allocator; accepting it could later produce an invalid output
+    // NOTE_END at the same out-of-range offset.
+    scheduler.reset();
+    if (!scheduler.configure(1))
+        return 15;
+    InputEvents blockEndEvent;
+    if (!blockEndEvent.pushNote(4, CLAP_EVENT_NOTE_ON, 400, 0, 3, 69))
+        return 16;
+    Capture blockEndCapture;
+    if (scheduler.process(&blockEndEvent.input, 4, blockEndCapture) ||
+        blockEndCapture.count != 0 || scheduler.activeCount() != 0) {
+        std::cerr << "scheduler accepted an event at the invalid frames_count offset\n";
+        return 17;
+    }
+
     scheduler.reset();
     if (scheduler.activeCount() != 0) {
         std::cerr << "scheduler reset leaked active voice identities\n";
-        return 15;
+        return 18;
     }
 
     return 0;
