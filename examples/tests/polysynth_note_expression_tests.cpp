@@ -242,6 +242,19 @@ bool matchesOneOfTwoVolumeExpression(const RenderResult &audio,
     }
     return true;
 }
+
+bool matchesPostFilterVolumeExpression(const RenderResult &reference,
+                                       const RenderResult &expressed,
+                                       std::uint32_t expressionFrame,
+                                       float targetGain) noexcept {
+    for (std::uint32_t frame = 0; frame < reference.left.size(); ++frame) {
+        const float gain = frame < expressionFrame ? 1.0f : targetGain;
+        if (std::fabs(expressed.left[frame] - reference.left[frame] * gain) > 1.0e-5f ||
+            std::fabs(expressed.right[frame] - reference.right[frame] * gain) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
 }
 
 int main() {
@@ -376,6 +389,30 @@ int main() {
         !matchesOneOfTwoVolumeExpression(volumeAudio, 8, 60.0, 0.5)) {
         std::cerr << "targeted VOLUME note expression was not sample-accurate or leaked across voices\n";
         return 18;
+    }
+
+    ParameterVoiceEngine filteredReference;
+    ParameterVoiceEngine filteredExpression;
+    if (!configure(filteredReference) || !configure(filteredExpression) ||
+        !filteredReference.setFilter(1200.0f, 0.5f) ||
+        !filteredExpression.setFilter(1200.0f, 0.5f))
+        return 19;
+
+    InputEvents filteredReferenceEvents;
+    filteredReferenceEvents.pushNote(0, 101, 60);
+    RenderResult filteredReferenceAudio;
+    InputEvents filteredExpressionEvents;
+    filteredExpressionEvents.pushNote(0, 101, 60);
+    filteredExpressionEvents.pushVolume(8, 0.5, 101);
+    RenderResult filteredExpressionAudio;
+    if (!render(filteredReference, filteredReferenceEvents, filteredReferenceAudio) ||
+        !render(filteredExpression, filteredExpressionEvents, filteredExpressionAudio) ||
+        !matchesPostFilterVolumeExpression(filteredReferenceAudio,
+                                           filteredExpressionAudio,
+                                           8,
+                                           0.5f)) {
+        std::cerr << "VOLUME note expression was applied inside the voice filter instead of at the sample-accurate voice output\n";
+        return 20;
     }
 
     return 0;
