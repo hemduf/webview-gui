@@ -89,7 +89,7 @@ struct InputEvents {
 };
 
 struct Entry {
-    std::uint16_t type = 0;
+    std::uint32_t type = 0;
     std::uint32_t time = 0;
     std::int32_t noteId = -1;
 };
@@ -128,7 +128,8 @@ int main() {
         const auto type = event.kind == ScheduledNoteKind::NoteOn
                               ? CLAP_EVENT_NOTE_ON
                               : CLAP_EVENT_NOTE_OFF;
-        sequence[sequenceCount++] = {type, event.time, event.identity.noteId};
+        sequence[sequenceCount++] = {static_cast<std::uint32_t>(type), event.time,
+                                     event.identity.noteId};
     };
 
     if (!scheduler.processWithBoundariesAndEvents(
