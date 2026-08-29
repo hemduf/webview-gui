@@ -24,6 +24,9 @@ set(WEBVIEW_GUI_EXAMPLES_CLAP_REVISION
 set(WEBVIEW_GUI_EXAMPLES_CLAP_HELPERS_REVISION
     "c35dd4906bd8efbb900cb2b89e680fed463cc8b1" CACHE STRING
     "Pinned free-audio/clap-helpers revision")
+set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION
+    "1cca996e96f29ab2be7ae9f8cfe532bbc92e1dd6" CACHE STRING
+    "Pinned free-audio/clap-wrapper revision")
 
 set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(webview_gui_example_clap
@@ -94,3 +97,34 @@ target_compile_features(webview_gui_example_skeleton_tests PRIVATE cxx_std_17)
 
 add_test(NAME webview_gui_examples_skeleton_factory
     COMMAND webview_gui_example_skeleton_tests)
+
+# #28 only prepares the pinned native wrapper integration point. Concrete VST3,
+# AU and standalone products are owned by #34, and WCLAP remains on the
+# repository-owned #30 packaging path rather than clap-wrapper's WCLAP helper.
+if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
+    set(CLAP_WRAPPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
+    set(CLAP_SDK_ROOT "${webview_gui_example_clap_SOURCE_DIR}" CACHE PATH
+        "CLAP SDK shared by the examples and clap-wrapper" FORCE)
+
+    FetchContent_Declare(webview_gui_example_clap_wrapper
+        GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
+        GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
+    )
+    FetchContent_MakeAvailable(webview_gui_example_clap_wrapper)
+
+    if(NOT COMMAND target_add_vst3_wrapper
+       OR NOT COMMAND target_add_auv2_wrapper
+       OR NOT COMMAND target_add_auv3_wrapper
+       OR NOT COMMAND target_add_standalone_wrapper)
+        message(FATAL_ERROR
+            "Pinned clap-wrapper revision does not expose the expected native wrapper API")
+    endif()
+
+    add_test(NAME webview_gui_examples_wrapper_foundation
+        COMMAND ${CMAKE_COMMAND}
+            "-DWRAPPER_REVISION=${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}"
+            "-DWRAPPER_SOURCE_DIR=${webview_gui_example_clap_wrapper_SOURCE_DIR}"
+            "-DCLAP_SOURCE_DIR=${webview_gui_example_clap_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/tests/wrapper_foundation_contract.cmake")
+endif()
