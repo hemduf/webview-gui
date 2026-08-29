@@ -266,6 +266,7 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     )
     target_link_libraries(webview_gui_example_gain_native_gui_tests PRIVATE
         webview_gui_example_gain_clap_core
+        webview-gui
     )
     target_compile_features(webview_gui_example_gain_native_gui_tests PRIVATE cxx_std_17)
 
