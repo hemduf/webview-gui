@@ -28,6 +28,9 @@ static_assert(std::atomic<bool>::is_always_lock_free,
               "Bypass parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "Gain state handoff revision must be lock-free on supported targets");
+static_assert(sizeof(float) == sizeof(uint32_t), "Gain meter requires a 32-bit float");
+static_assert(std::numeric_limits<float>::is_iec559,
+              "Gain meter requires IEEE-754 single precision");
 static_assert(sizeof(double) == sizeof(uint64_t), "Gain state requires a 64-bit double");
 static_assert(std::numeric_limits<double>::is_iec559,
               "Gain state requires IEEE-754 double precision");
@@ -62,6 +65,7 @@ constexpr const char kEditorScriptMime[] = "text/javascript; charset=utf-8";
 constexpr uint32_t kEditorWidth = 480;
 constexpr uint32_t kEditorHeight = 320;
 constexpr std::size_t kUiParameterMessageSize = 16;
+constexpr std::size_t kUiMeterMessageSize = 16;
 constexpr uint8_t kUiGainParameter = 1;
 constexpr uint8_t kUiBypassParameter = 2;
 constexpr const char kEditorHtml[] = R"html(<!doctype html>
@@ -134,6 +138,8 @@ function requestSync() {
 const gain = document.getElementById("gain");
 const gainValue = document.getElementById("gain-value");
 const bypass = document.getElementById("bypass");
+const meterLeft = document.getElementById("meter-left");
+const meterRight = document.getElementById("meter-right");
 let gainGestureOpen = false;
 
 function beginGain() {
@@ -150,12 +156,25 @@ function endGain() {
     gainGestureOpen = false;
 }
 
-function applyParameterSync(data) {
+function applyUiSync(data) {
     if (!(data instanceof ArrayBuffer) || data.byteLength !== 16)
         return;
     const bytes = new Uint8Array(data);
-    if (bytes[0] !== 0x57 || bytes[1] !== 0x56 ||
-        bytes[2] !== 0x55 || bytes[3] !== 0x31 ||
+    if (bytes[0] !== 0x57 || bytes[1] !== 0x56)
+        return;
+
+    if (bytes[2] === 0x4d && bytes[3] === 0x31) {
+        const view = new DataView(data);
+        const left = view.getFloat32(4, true);
+        const right = view.getFloat32(8, true);
+        if (!Number.isFinite(left) || !Number.isFinite(right) || left < 0 || right < 0)
+            return;
+        meterLeft.value = String(Math.min(left, 1));
+        meterRight.value = String(Math.min(right, 1));
+        return;
+    }
+
+    if (bytes[2] !== 0x55 || bytes[3] !== 0x31 ||
         bytes[5] !== 0 || bytes[6] !== 0 || bytes[7] !== 0)
         return;
     const value = new DataView(data).getFloat64(8, true);
@@ -169,7 +188,7 @@ function applyParameterSync(data) {
     }
 }
 
-window.addEventListener("message", event => applyParameterSync(event.data));
+window.addEventListener("message", event => applyUiSync(event.data));
 requestSync();
 setInterval(requestSync, 33);
 
@@ -233,6 +252,24 @@ std::array<uint8_t, kUiParameterMessageSize> encodeUiParameterMessage(uint8_t pa
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     storeU64Le(message.data() + 8, bits);
+    return message;
+}
+
+std::array<uint8_t, kUiMeterMessageSize> encodeUiMeterMessage(
+    const GainMeterSnapshot &snapshot) noexcept {
+    std::array<uint8_t, kUiMeterMessageSize> message{};
+    message[0] = 0x57;
+    message[1] = 0x56;
+    message[2] = 0x4d;
+    message[3] = 0x31;
+
+    uint32_t leftBits = 0;
+    uint32_t rightBits = 0;
+    std::memcpy(&leftBits, &snapshot.leftPeak, sizeof(leftBits));
+    std::memcpy(&rightBits, &snapshot.rightPeak, sizeof(rightBits));
+    storeU32Le(message.data() + 4, leftBits);
+    storeU32Le(message.data() + 8, rightBits);
+    storeU32Le(message.data() + 12, snapshot.sequence);
     return message;
 }
 
@@ -397,7 +434,7 @@ protected:
             const auto *bytes = static_cast<const uint8_t *>(buffer);
             if (bytes[0] == 0x57 && bytes[1] == 0x56 &&
                 bytes[2] == 0x51 && bytes[3] == 0x31)
-                return sendParameterSnapshotToWebview();
+                return sendUiSnapshotToWebview();
         }
         return guiParameterBridge_.receive(guiCreated_, buffer, size);
     }
@@ -433,6 +470,7 @@ protected:
             return false;
         }
 
+        lastMeterSequenceSent_ = 0u;
         guiCreated_ = true;
         hostOwnedWebviewGui_ = hostOwnedWebview;
         return true;
@@ -441,6 +479,7 @@ protected:
     void guiDestroy() noexcept override {
         guiParameterBridge_.closeOpenGestures();
         gui_.destroy();
+        lastMeterSequenceSent_ = 0u;
         guiCreated_ = false;
         hostOwnedWebviewGui_ = false;
     }
@@ -685,6 +724,23 @@ private:
         return gainSent && bypassSent;
     }
 
+    bool sendMeterSnapshotToWebview() const noexcept {
+        GainMeterSnapshot snapshot{};
+        if (!processor_.tryReadMeter(snapshot) || snapshot.sequence == lastMeterSequenceSent_)
+            return true;
+
+        const auto message = encodeUiMeterMessage(snapshot);
+        if (!gui_.send(message.data(), message.size()))
+            return false;
+
+        lastMeterSequenceSent_ = snapshot.sequence;
+        return true;
+    }
+
+    bool sendUiSnapshotToWebview() const noexcept {
+        return sendParameterSnapshotToWebview() && sendMeterSnapshotToWebview();
+    }
+
     void applyPendingLoadedState() noexcept {
         const auto revision = loadedStateRevision_.load(std::memory_order_acquire);
         if (revision == appliedLoadedStateRevision_)
@@ -728,6 +784,7 @@ private:
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};
+    mutable uint32_t lastMeterSequenceSent_ = 0u;
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
     std::atomic<float> gainDbSnapshot_{0.0f};
