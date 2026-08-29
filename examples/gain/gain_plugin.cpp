@@ -57,6 +57,8 @@ constexpr uint32_t kStateVersion = 1;
 constexpr std::size_t kStateSize = 24;
 constexpr const char kEditorUri[] = "/index.html";
 constexpr const char kEditorMime[] = "text/html; charset=utf-8";
+constexpr const char kEditorScriptUri[] = "/gain.js";
+constexpr const char kEditorScriptMime[] = "text/javascript; charset=utf-8";
 constexpr uint32_t kEditorWidth = 480;
 constexpr uint32_t kEditorHeight = 320;
 constexpr const char kEditorHtml[] = R"html(<!doctype html>
@@ -64,7 +66,7 @@ constexpr const char kEditorHtml[] = R"html(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src data:">
 <title>webview-gui Gain</title>
 <style>
 :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171717; color: #f2f2f2; }
@@ -89,11 +91,76 @@ small { opacity: .7; }
 <label>L<meter id="meter-left" min="0" max="1" value="0"></meter></label>
 <label>R<meter id="meter-right" min="0" max="1" value="0"></meter></label>
 </section>
-<small>Interactive CLAP parameter messaging is enabled by the next integration slice.</small>
+<small>Edits are sent as live CLAP parameter gestures through the WebView bridge.</small>
 </main>
+<script src="gain.js" defer></script>
 </body>
 </html>
 )html";
+
+constexpr const char kEditorScript[] = R"js((() => {
+"use strict";
+
+const KIND_BEGIN = 1;
+const KIND_VALUE = 2;
+const KIND_END = 3;
+const PARAM_GAIN = 1;
+const PARAM_BYPASS = 2;
+
+function encode(kind, parameter, value = 0) {
+    const buffer = new ArrayBuffer(16);
+    const bytes = new Uint8Array(buffer);
+    bytes.set([0x57, 0x56, 0x47, 0x31]);
+    bytes[4] = kind;
+    bytes[5] = parameter;
+    new DataView(buffer).setFloat64(8, value, true);
+    return buffer;
+}
+
+function send(kind, parameter, value = 0) {
+    window.parent.postMessage(encode(kind, parameter, value), "*");
+}
+
+const gain = document.getElementById("gain");
+const gainValue = document.getElementById("gain-value");
+const bypass = document.getElementById("bypass");
+let gainGestureOpen = false;
+
+function beginGain() {
+    if (gainGestureOpen)
+        return;
+    send(KIND_BEGIN, PARAM_GAIN);
+    gainGestureOpen = true;
+}
+
+function endGain() {
+    if (!gainGestureOpen)
+        return;
+    send(KIND_END, PARAM_GAIN);
+    gainGestureOpen = false;
+}
+
+gain.addEventListener("pointerdown", beginGain);
+gain.addEventListener("input", () => {
+    beginGain();
+    const value = Number(gain.value);
+    if (!Number.isFinite(value))
+        return;
+    send(KIND_VALUE, PARAM_GAIN, value);
+    gainValue.textContent = `${value.toFixed(2)} dB`;
+});
+gain.addEventListener("change", endGain);
+gain.addEventListener("pointerup", endGain);
+gain.addEventListener("pointercancel", endGain);
+gain.addEventListener("blur", endGain);
+
+bypass.addEventListener("change", () => {
+    send(KIND_BEGIN, PARAM_BYPASS);
+    send(KIND_VALUE, PARAM_BYPASS, bypass.checked ? 1 : 0);
+    send(KIND_END, PARAM_BYPASS);
+});
+})());
+)js";
 
 bool copyText(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -255,14 +322,27 @@ protected:
                             char *mime,
                             uint32_t mimeCapacity,
                             const clap_ostream_t *dataStream) override {
-        if (!path || std::strcmp(path, kEditorUri) != 0 || !dataStream || !dataStream->write)
-            return false;
-        if (!copyExactText(mime, mimeCapacity, kEditorMime))
+        if (!path || !dataStream || !dataStream->write)
             return false;
 
-        return writeAll(dataStream,
-                        reinterpret_cast<const uint8_t *>(kEditorHtml),
-                        sizeof(kEditorHtml) - 1u);
+        const char *resourceMime = nullptr;
+        const uint8_t *resourceData = nullptr;
+        std::size_t resourceSize = 0;
+        if (std::strcmp(path, kEditorUri) == 0) {
+            resourceMime = kEditorMime;
+            resourceData = reinterpret_cast<const uint8_t *>(kEditorHtml);
+            resourceSize = sizeof(kEditorHtml) - 1u;
+        } else if (std::strcmp(path, kEditorScriptUri) == 0) {
+            resourceMime = kEditorScriptMime;
+            resourceData = reinterpret_cast<const uint8_t *>(kEditorScript);
+            resourceSize = sizeof(kEditorScript) - 1u;
+        } else {
+            return false;
+        }
+
+        if (!copyExactText(mime, mimeCapacity, resourceMime))
+            return false;
+        return writeAll(dataStream, resourceData, resourceSize);
     }
 
     bool webviewReceive(const void *buffer, uint32_t size) const noexcept override {
