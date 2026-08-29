@@ -206,7 +206,7 @@ public:
 protected:
     bool init() noexcept override {
         gui_.init();
-        return gui_.setSize(kEditorWidth, kEditorHeight);
+        return true;
     }
 
     clap_process_status process(const clap_process_t *processData) noexcept override {
@@ -269,7 +269,13 @@ protected:
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
-        return gui_.create(api, isFloating);
+        if (!gui_.create(api, isFloating))
+            return false;
+        if (!gui_.setSize(kEditorWidth, kEditorHeight)) {
+            gui_.destroy();
+            return false;
+        }
+        return true;
     }
 
     void guiDestroy() noexcept override { gui_.destroy(); }
