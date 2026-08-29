@@ -14,6 +14,9 @@ using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
 constexpr clap_id kFineTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
+constexpr double kPi = 3.1415926535897932384626433832795;
+constexpr double kTwoPi = 2.0 * kPi;
+constexpr double kSampleRate = 48000.0;
 
 struct InputEvents {
     InputEvents() noexcept {
@@ -23,6 +26,8 @@ struct InputEvents {
     }
 
     bool pushNote(std::uint32_t time, std::int32_t noteId, std::int16_t key) noexcept {
+        if (count >= headers.size())
+            return false;
         auto &event = notes[count];
         event = {};
         event.header.size = sizeof(event);
@@ -38,7 +43,15 @@ struct InputEvents {
         return true;
     }
 
-    bool pushMod(std::uint32_t time, clap_id paramId, double amount) noexcept {
+    bool pushMod(std::uint32_t time,
+                 clap_id paramId,
+                 double amount,
+                 std::int32_t noteId = -1,
+                 std::int16_t portIndex = -1,
+                 std::int16_t channel = -1,
+                 std::int16_t key = -1) noexcept {
+        if (count >= headers.size())
+            return false;
         auto &event = mods[count];
         event = {};
         event.header.size = sizeof(event);
@@ -46,16 +59,18 @@ struct InputEvents {
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_MOD;
         event.param_id = paramId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
         event.amount = amount;
         headers[count++] = &event.header;
         return true;
     }
 
     bool pushValue(std::uint32_t time, clap_id paramId, double value) noexcept {
+        if (count >= headers.size())
+            return false;
         auto &event = values[count];
         event = {};
         event.header.size = sizeof(event);
@@ -86,10 +101,10 @@ struct InputEvents {
         return index < self.count ? self.headers[index] : nullptr;
     }
 
-    std::array<clap_event_note_t, 8> notes{};
-    std::array<clap_event_param_mod_t, 8> mods{};
-    std::array<clap_event_param_value_t, 8> values{};
-    std::array<const clap_event_header_t *, 8> headers{};
+    std::array<clap_event_note_t, 16> notes{};
+    std::array<clap_event_param_mod_t, 16> mods{};
+    std::array<clap_event_param_value_t, 16> values{};
+    std::array<const clap_event_header_t *, 16> headers{};
     std::uint32_t count = 0;
     clap_input_events_t input{};
 };
@@ -99,9 +114,7 @@ struct RenderResult {
     std::array<float, 32> right{};
 };
 
-bool render(ParameterVoiceEngine &engine,
-            InputEvents &events,
-            RenderResult &result) noexcept {
+bool render(ParameterVoiceEngine &engine, InputEvents &events, RenderResult &result) noexcept {
     auto noteEnd = [](const clap_event_note_t &) noexcept {};
     return engine.process(&events.input,
                           static_cast<std::uint32_t>(result.left.size()),
@@ -120,8 +133,59 @@ bool sameAudio(const RenderResult &a, const RenderResult &b) noexcept {
 }
 
 bool configure(ParameterVoiceEngine &engine) noexcept {
-    return engine.configure(4, 48000.0, 16) &&
+    return engine.configure(4, kSampleRate, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
+
+double phaseIncrement(std::int16_t key) noexcept {
+    const double semitones = static_cast<double>(key - 69);
+    return (440.0 * std::exp2(semitones / 12.0)) / kSampleRate;
+}
+
+double wrappedPhase(double phase) noexcept {
+    phase -= std::floor(phase);
+    return phase;
+}
+
+bool matchesSingleVoiceRetune(const RenderResult &audio,
+                              std::uint32_t retuneFrame,
+                              std::int16_t initialKey,
+                              std::int16_t retunedKey) noexcept {
+    const double initialIncrement = phaseIncrement(initialKey);
+    const double retunedIncrement = phaseIncrement(retunedKey);
+    for (std::uint32_t frame = 0; frame < audio.left.size(); ++frame) {
+        const double phase = frame < retuneFrame
+                                 ? 0.25 + static_cast<double>(frame) * initialIncrement
+                                 : 0.25 + static_cast<double>(retuneFrame) * initialIncrement +
+                                       static_cast<double>(frame - retuneFrame) * retunedIncrement;
+        const auto expected = static_cast<float>(std::sin(wrappedPhase(phase) * kTwoPi));
+        if (std::fabs(audio.left[frame] - expected) > 1.0e-5f ||
+            std::fabs(audio.right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
+
+bool matchesTargetedRetune(const RenderResult &audio,
+                           std::uint32_t retuneFrame,
+                           std::int16_t initialKey,
+                           std::int16_t retunedKey) noexcept {
+    const double initialIncrement = phaseIncrement(initialKey);
+    const double retunedIncrement = phaseIncrement(retunedKey);
+    for (std::uint32_t frame = 0; frame < audio.left.size(); ++frame) {
+        const double plainPhase = 0.25 + static_cast<double>(frame) * initialIncrement;
+        const double targetedPhase = frame < retuneFrame
+                                         ? plainPhase
+                                         : 0.25 + static_cast<double>(retuneFrame) * initialIncrement +
+                                               static_cast<double>(frame - retuneFrame) * retunedIncrement;
+        const auto expected = static_cast<float>(
+            std::sin(wrappedPhase(plainPhase) * kTwoPi) +
+            std::sin(wrappedPhase(targetedPhase) * kTwoPi));
+        if (std::fabs(audio.left[frame] - expected) > 1.0e-5f ||
+            std::fabs(audio.right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
 }
 }
 
@@ -143,7 +207,7 @@ int main() {
     modulationEvents.pushNote(0, 2, 60);
     RenderResult modulationAudio;
     if (!render(modulated, modulationEvents, modulationAudio)) {
-        std::cerr << "parameter engine rejected a valid PARAM_MOD event stream\n";
+        std::cerr << "ParameterVoiceEngine rejected a valid PARAM_MOD event stream\n";
         return 3;
     }
 
@@ -188,6 +252,46 @@ int main() {
         !sameAudio(plainAudio, resetAudio)) {
         std::cerr << "reset retained ephemeral modulation\n";
         return 9;
+    }
+
+    ParameterVoiceEngine midBlock;
+    if (!configure(midBlock))
+        return 10;
+    InputEvents midBlockEvents;
+    midBlockEvents.pushNote(0, 10, 60);
+    midBlockEvents.pushMod(8, kFineTuneId, 100.0);
+    RenderResult midBlockAudio;
+    if (!render(midBlock, midBlockEvents, midBlockAudio) ||
+        !matchesSingleVoiceRetune(midBlockAudio, 8, 60, 61)) {
+        std::cerr << "mid-block PARAM_MOD was not applied at its exact sample boundary\n";
+        return 11;
+    }
+
+    ParameterVoiceEngine targeted;
+    if (!configure(targeted))
+        return 12;
+    InputEvents targetedEvents;
+    targetedEvents.pushNote(0, 11, 60);
+    targetedEvents.pushNote(0, 12, 60);
+    targetedEvents.pushMod(8, kFineTuneId, 100.0, 11, 0, 0, 60);
+    RenderResult targetedAudio;
+    if (!render(targeted, targetedEvents, targetedAudio) ||
+        !matchesTargetedRetune(targetedAudio, 8, 60, 61)) {
+        std::cerr << "targeted PARAM_MOD leaked across overlapping voices or was quantized\n";
+        return 13;
+    }
+
+    ParameterVoiceEngine sameSample;
+    if (!configure(sameSample))
+        return 14;
+    InputEvents sameSampleEvents;
+    sameSampleEvents.pushNote(0, 21, 60);
+    sameSampleEvents.pushMod(0, kFineTuneId, 100.0, 21, 0, 0, 60);
+    RenderResult sameSampleAudio;
+    if (!render(sameSample, sameSampleEvents, sameSampleAudio) ||
+        !matchesSingleVoiceRetune(sameSampleAudio, 0, 60, 61)) {
+        std::cerr << "same-sample NOTE_ON then targeted PARAM_MOD did not affect the first sample\n";
+        return 15;
     }
 
     return 0;
