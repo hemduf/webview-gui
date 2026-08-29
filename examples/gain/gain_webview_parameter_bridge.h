@@ -68,15 +68,14 @@ public:
 
     void drain(const clap_output_events_t *out, GainEventProcessor &processor) noexcept {
         if (!out || !out->try_push) {
-            if (hasPending())
-                schedulePending();
+            reschedulePendingIfInactive();
             return;
         }
 
         Command command{};
         while (peek(command)) {
             if (!emit(out, command)) {
-                schedulePending();
+                reschedulePendingIfInactive();
                 return;
             }
 
@@ -180,6 +179,15 @@ private:
 
         if (host_ && host_->request_process)
             host_->request_process(host_);
+    }
+
+    void reschedulePendingIfInactive() const noexcept {
+        // Active drain() is reached from the audio-thread process path. The
+        // command stays in this bounded queue and the Gain plug-in returns
+        // CLAP_PROCESS_CONTINUE, so the next process block is the retry point.
+        // Only inactive flush handling needs an explicit host wake-up here.
+        if (!active_.load(std::memory_order_acquire) && hasPending())
+            schedulePending();
     }
 
     [[nodiscard]] bool hasPending() const noexcept {
