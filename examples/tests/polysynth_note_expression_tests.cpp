@@ -46,7 +46,9 @@ struct InputEvents {
     bool pushTuning(std::uint32_t time,
                     double semitones,
                     std::int32_t noteId,
-                    std::int16_t key = 60) noexcept {
+                    std::int16_t key = 60,
+                    std::int16_t portIndex = 0,
+                    std::int16_t channel = 0) noexcept {
         if (count >= headers.size())
             return false;
         auto &event = expressions[count];
@@ -57,8 +59,8 @@ struct InputEvents {
         event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
         event.expression_id = CLAP_NOTE_EXPRESSION_TUNING;
         event.note_id = noteId;
-        event.port_index = 0;
-        event.channel = 0;
+        event.port_index = portIndex;
+        event.channel = channel;
         event.key = key;
         event.value = semitones;
         headers[count++] = &event.header;
@@ -123,6 +125,15 @@ bool render(ParameterVoiceEngine &engine, InputEvents &events, RenderResult &res
                           result.left.data(),
                           result.right.data(),
                           noteEnd);
+}
+
+bool sameAudio(const RenderResult &a, const RenderResult &b) noexcept {
+    for (std::size_t frame = 0; frame < a.left.size(); ++frame) {
+        if (std::fabs(a.left[frame] - b.left[frame]) > 1.0e-5f ||
+            std::fabs(a.right[frame] - b.right[frame]) > 1.0e-5f)
+            return false;
+    }
+    return true;
 }
 
 double incrementForKey(double key) noexcept {
@@ -233,6 +244,48 @@ int main() {
         !matchesRetune(expressionBeforeNoteAudio, 0, 60.0, 61.0)) {
         std::cerr << "same-sample expression before NOTE_ON missed the generated voice\n";
         return 8;
+    }
+
+    // A wildcard expression can already match a sounding voice and still needs
+    // to affect a later NOTE_ON at the same sample. Same-sample semantics must
+    // therefore not depend on whether the expression happened to match an
+    // existing generation when it was first received.
+    ParameterVoiceEngine wildcardBeforeNote;
+    ParameterVoiceEngine wildcardAfterNote;
+    if (!configure(wildcardBeforeNote) || !configure(wildcardAfterNote))
+        return 9;
+
+    InputEvents wildcardBeforeEvents;
+    wildcardBeforeEvents.pushNote(0, 71, 60);
+    wildcardBeforeEvents.pushTuning(8, 1.0, -1);
+    wildcardBeforeEvents.pushNote(8, 72, 60);
+    RenderResult wildcardBeforeAudio;
+
+    InputEvents wildcardAfterEvents;
+    wildcardAfterEvents.pushNote(0, 71, 60);
+    wildcardAfterEvents.pushNote(8, 72, 60);
+    wildcardAfterEvents.pushTuning(8, 1.0, -1);
+    RenderResult wildcardAfterAudio;
+
+    if (!render(wildcardBeforeNote, wildcardBeforeEvents, wildcardBeforeAudio) ||
+        !render(wildcardAfterNote, wildcardAfterEvents, wildcardAfterAudio) ||
+        !sameAudio(wildcardBeforeAudio, wildcardAfterAudio)) {
+        std::cerr << "same-sample wildcard expression missed a later NOTE_ON after matching an existing voice\n";
+        return 10;
+    }
+
+    // Note-expression addressing uses the same wildcard tuple constraints as
+    // note/voice addressing. Malformed channel values must fail closed rather
+    // than being retained as unreachable pending state.
+    ParameterVoiceEngine invalidAddress;
+    if (!configure(invalidAddress))
+        return 11;
+    InputEvents invalidAddressEvents;
+    invalidAddressEvents.pushTuning(0, 1.0, -1, 60, 0, 16);
+    RenderResult invalidAddressAudio;
+    if (render(invalidAddress, invalidAddressEvents, invalidAddressAudio)) {
+        std::cerr << "invalid NOTE_EXPRESSION channel was accepted\n";
+        return 12;
     }
 
     return 0;
