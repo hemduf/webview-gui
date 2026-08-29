@@ -13,6 +13,7 @@ on:
       - 'examples/tests/gain_meter_tests.cpp'
       - 'examples/tests/gain_clap_adapter_tests.cpp'
       - 'examples/tests/gain_webview_resource_tests.cpp'
+      - 'examples/tests/gain_webview_param_tests.cpp'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/gain-core.yml'
   workflow_dispatch:
@@ -55,10 +56,10 @@ jobs:
       - name: Build Gain CLAP and tests
         run: >-
           cmake --build build-gain-core
-          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_meter_tests webview_gui_example_gain_clap_tests webview_gui_example_gain_webview_resource_tests
+          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_meter_tests webview_gui_example_gain_clap_tests webview_gui_example_gain_webview_resource_tests webview_gui_example_gain_webview_param_tests
           --config Debug --parallel
 
       - name: Run Gain tests
         run: >-
           ctest --test-dir build-gain-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|webview_resource)$'
+          --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|webview_resource|webview_param)$'
