@@ -145,16 +145,25 @@ private:
     [[nodiscard]] bool canSchedule() const noexcept {
         if (active_.load(std::memory_order_acquire))
             return host_ && host_->request_process;
-        return hostParams_ && hostParams_->request_flush;
+        if (hostParams_ && hostParams_->request_flush)
+            return true;
+        return host_ && host_->request_process;
     }
 
     void schedulePending() const noexcept {
         if (active_.load(std::memory_order_acquire)) {
             if (host_ && host_->request_process)
                 host_->request_process(host_);
-        } else if (hostParams_ && hostParams_->request_flush) {
-            hostParams_->request_flush(host_);
+            return;
         }
+
+        if (hostParams_ && hostParams_->request_flush) {
+            hostParams_->request_flush(host_);
+            return;
+        }
+
+        if (host_ && host_->request_process)
+            host_->request_process(host_);
     }
 
     [[nodiscard]] bool hasPending() const noexcept {
