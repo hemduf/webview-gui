@@ -48,6 +48,11 @@ public:
         return allocator_.voiceIdentity(index, identity);
     }
 
+    bool retireVoice(VoiceAllocator::VoiceIndex index,
+                     const VoiceIdentity &identity) noexcept {
+        return allocator_.releaseAt(index, identity);
+    }
+
     template <typename Sink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
