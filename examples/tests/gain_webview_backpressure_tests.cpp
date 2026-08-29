@@ -79,18 +79,27 @@ struct OutputEvents {
     std::vector<std::vector<uint8_t>> bytes;
 };
 
+bool isBalancedGesture(const OutputEvents &output) {
+    if (output.bytes.size() < 2)
+        return false;
+    const auto *first = output.header(0);
+    const auto *last = output.header(output.bytes.size() - 1);
+    return first && first->type == CLAP_EVENT_PARAM_GESTURE_BEGIN &&
+           last && last->type == CLAP_EVENT_PARAM_GESTURE_END;
+}
+
 } // namespace
 
 int main() {
     using namespace webview_gui::examples::gain;
 
-    GainWebviewParameterBridge bridge;
-    GainEventProcessor processor;
-    bridge.init(&kHost);
-
     const auto begin = makeUiMessage(kUiGestureBegin, kUiGain);
     const auto value = makeUiMessage(kUiValue, kUiGain, -6.0);
     const auto end = makeUiMessage(kUiGestureEnd, kUiGain);
+
+    GainWebviewParameterBridge bridge;
+    GainEventProcessor processor;
+    bridge.init(&kHost);
 
     if (!bridge.receive(true, begin.data(), begin.size())) {
         std::cerr << "WebView gesture begin was rejected unexpectedly\n";
@@ -123,10 +132,7 @@ int main() {
         return 4;
     }
 
-    const auto *first = output.header(0);
-    const auto *last = output.header(output.bytes.size() - 1);
-    if (!first || first->type != CLAP_EVENT_PARAM_GESTURE_BEGIN ||
-        !last || last->type != CLAP_EVENT_PARAM_GESTURE_END) {
+    if (!isBalancedGesture(output)) {
         std::cerr << "Saturated WebView gesture did not remain balanced\n";
         return 5;
     }
@@ -134,6 +140,31 @@ int main() {
     if (std::fabs(processor.processor().gainDb() + 6.0) > 1.0e-6) {
         std::cerr << "Accepted WebView values were not applied while draining\n";
         return 6;
+    }
+
+    // GUI destruction ends the WebView's ability to deliver further messages.
+    // Any gesture accepted before teardown therefore needs a synthetic matching
+    // end queued by the plug-in side, using the reservation established above.
+    GainWebviewParameterBridge teardownBridge;
+    GainEventProcessor teardownProcessor;
+    teardownBridge.init(&kHost);
+    if (!teardownBridge.receive(true, begin.data(), begin.size()) ||
+        !teardownBridge.receive(true, value.data(), value.size())) {
+        std::cerr << "WebView teardown fixture could not open a gesture\n";
+        return 7;
+    }
+
+    teardownBridge.closeOpenGestures();
+
+    OutputEvents teardownOutput;
+    teardownBridge.drain(&teardownOutput.events, teardownProcessor);
+    if (teardownOutput.bytes.size() != 3 || !isBalancedGesture(teardownOutput)) {
+        std::cerr << "WebView teardown did not close the accepted CLAP gesture\n";
+        return 8;
+    }
+    if (std::fabs(teardownProcessor.processor().gainDb() + 6.0) > 1.0e-6) {
+        std::cerr << "WebView teardown changed accepted parameter value semantics\n";
+        return 9;
     }
 
     return 0;
