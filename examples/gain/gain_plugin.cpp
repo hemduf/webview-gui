@@ -25,7 +25,7 @@ using GainBase = clap::helpers::Plugin<
 static_assert(std::atomic<float>::is_always_lock_free,
               "Gain parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<bool>::is_always_lock_free,
-              "Bypass/UI flags must be lock-free on supported targets");
+              "Bypass parameter snapshots must be lock-free on supported targets");
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "Gain state handoff revision must be lock-free on supported targets");
 static_assert(sizeof(double) == sizeof(uint64_t), "Gain state requires a 64-bit double");
@@ -109,6 +109,9 @@ const KIND_VALUE = 2;
 const KIND_END = 3;
 const PARAM_GAIN = 1;
 const PARAM_BYPASS = 2;
+const syncRequest = new ArrayBuffer(4);
+const bytes = new Uint8Array(syncRequest);
+bytes.set([0x57, 0x56, 0x51, 0x31]);
 
 function encode(kind, parameter, value = 0) {
     const buffer = new ArrayBuffer(16);
@@ -122,6 +125,10 @@ function encode(kind, parameter, value = 0) {
 
 function send(kind, parameter, value = 0) {
     window.parent.postMessage(encode(kind, parameter, value), "*");
+}
+
+function requestSync() {
+    window.parent.postMessage(syncRequest, "*");
 }
 
 const gain = document.getElementById("gain");
@@ -163,6 +170,8 @@ function applyParameterSync(data) {
 }
 
 window.addEventListener("message", event => applyParameterSync(event.data));
+requestSync();
+setInterval(requestSync, 33);
 
 gain.addEventListener("pointerdown", beginGain);
 gain.addEventListener("input", () => {
@@ -215,16 +224,16 @@ void storeU64Le(uint8_t *destination, uint64_t value) noexcept {
 
 std::array<uint8_t, kUiParameterMessageSize> encodeUiParameterMessage(uint8_t parameter,
                                                                       double value) noexcept {
-    std::array<uint8_t, kUiParameterMessageSize> bytes{};
-    bytes[0] = 0x57;
-    bytes[1] = 0x56;
-    bytes[2] = 0x55;
-    bytes[3] = 0x31;
-    bytes[4] = parameter;
+    std::array<uint8_t, kUiParameterMessageSize> message{};
+    message[0] = 0x57;
+    message[1] = 0x56;
+    message[2] = 0x55;
+    message[3] = 0x31;
+    message[4] = parameter;
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
-    storeU64Le(bytes.data() + 8, bits);
-    return bytes;
+    storeU64Le(message.data() + 8, bits);
+    return message;
 }
 
 uint32_t loadU32Le(const uint8_t *source) noexcept {
@@ -336,21 +345,6 @@ protected:
         return CLAP_PROCESS_CONTINUE;
     }
 
-    void onMainThread() noexcept override {
-        uiCallbackPending_.store(false, std::memory_order_release);
-        if (!guiCreated_ || !uiVisible_.load(std::memory_order_acquire))
-            return;
-
-        const auto gainMessage = encodeUiParameterMessage(
-            kUiGainParameter,
-            static_cast<double>(gainDbSnapshot_.load(std::memory_order_relaxed)));
-        const auto bypassMessage = encodeUiParameterMessage(
-            kUiBypassParameter,
-            bypassSnapshot_.load(std::memory_order_relaxed) ? 1.0 : 0.0);
-        (void)gui_.send(gainMessage.data(), gainMessage.size());
-        (void)gui_.send(bypassMessage.data(), bypassMessage.size());
-    }
-
     bool enableDraftExtensions() const noexcept override { return true; }
     bool implementsWebview() const noexcept override { return true; }
 
@@ -399,6 +393,12 @@ protected:
     }
 
     bool webviewReceive(const void *buffer, uint32_t size) const noexcept override {
+        if (guiCreated_ && buffer && size == 4) {
+            const auto *bytes = static_cast<const uint8_t *>(buffer);
+            if (bytes[0] == 0x57 && bytes[1] == 0x56 &&
+                bytes[2] == 0x51 && bytes[3] == 0x31)
+                return sendParameterSnapshotToWebview();
+        }
         return guiParameterBridge_.receive(guiCreated_, buffer, size);
     }
 
@@ -439,7 +439,6 @@ protected:
     }
 
     void guiDestroy() noexcept override {
-        uiVisible_.store(false, std::memory_order_release);
         guiParameterBridge_.closeOpenGestures();
         gui_.destroy();
         guiCreated_ = false;
@@ -453,21 +452,13 @@ protected:
     bool guiShow() noexcept override {
         if (!guiCreated_)
             return false;
-        const bool shown = hostOwnedWebviewGui_ ? true : gui_.show();
-        if (!shown)
-            return false;
-        uiVisible_.store(true, std::memory_order_release);
-        requestUiParameterSync();
-        return true;
+        return hostOwnedWebviewGui_ ? true : gui_.show();
     }
 
     bool guiHide() noexcept override {
         if (!guiCreated_)
             return false;
-        const bool hidden = hostOwnedWebviewGui_ ? true : gui_.hide();
-        if (hidden)
-            uiVisible_.store(false, std::memory_order_release);
-        return hidden;
+        return hostOwnedWebviewGui_ ? true : gui_.hide();
     }
 
     bool guiGetSize(uint32_t *width, uint32_t *height) noexcept override {
@@ -540,7 +531,8 @@ protected:
         pendingLoadedGainDb_.store(gain, std::memory_order_relaxed);
         pendingLoadedBypass_.store(bypassed, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
-        publishParameterSnapshots(gain, bypassed);
+        gainDbSnapshot_.store(gain, std::memory_order_relaxed);
+        bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
         return true;
     }
 
@@ -681,23 +673,16 @@ protected:
     }
 
 private:
-    void requestUiParameterSync() noexcept {
-        if (!host_ || !host_->request_callback ||
-            !uiVisible_.load(std::memory_order_acquire))
-            return;
-        bool expected = false;
-        if (uiCallbackPending_.compare_exchange_strong(expected,
-                                                       true,
-                                                       std::memory_order_acq_rel,
-                                                       std::memory_order_relaxed))
-            host_->request_callback(host_);
-    }
-
-    void publishParameterSnapshots(float gain, bool bypassed) noexcept {
-        const auto previousGain = gainDbSnapshot_.exchange(gain, std::memory_order_relaxed);
-        const auto previousBypass = bypassSnapshot_.exchange(bypassed, std::memory_order_relaxed);
-        if (previousGain != gain || previousBypass != bypassed)
-            requestUiParameterSync();
+    bool sendParameterSnapshotToWebview() const noexcept {
+        const auto gainMessage = encodeUiParameterMessage(
+            kUiGainParameter,
+            static_cast<double>(gainDbSnapshot_.load(std::memory_order_relaxed)));
+        const auto bypassMessage = encodeUiParameterMessage(
+            kUiBypassParameter,
+            bypassSnapshot_.load(std::memory_order_relaxed) ? 1.0 : 0.0);
+        const bool gainSent = gui_.send(gainMessage.data(), gainMessage.size());
+        const bool bypassSent = gui_.send(bypassMessage.data(), bypassMessage.size());
+        return gainSent && bypassSent;
     }
 
     void applyPendingLoadedState() noexcept {
@@ -713,13 +698,16 @@ private:
     }
 
     void syncParameterSnapshotsFromProcessor() noexcept {
-        publishParameterSnapshots(static_cast<float>(processor_.processor().gainDb()),
-                                  processor_.processor().bypassed());
+        gainDbSnapshot_.store(static_cast<float>(processor_.processor().gainDb()),
+                              std::memory_order_relaxed);
+        bypassSnapshot_.store(processor_.processor().bypassed(), std::memory_order_relaxed);
     }
 
     void restoreSnapshotsFromPendingState() noexcept {
-        publishParameterSnapshots(pendingLoadedGainDb_.load(std::memory_order_relaxed),
-                                  pendingLoadedBypass_.load(std::memory_order_relaxed));
+        gainDbSnapshot_.store(pendingLoadedGainDb_.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
+        bypassSnapshot_.store(pendingLoadedBypass_.load(std::memory_order_relaxed),
+                              std::memory_order_relaxed);
     }
 
     void syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
@@ -742,8 +730,6 @@ private:
     mutable GainWebviewParameterBridge guiParameterBridge_{};
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
-    std::atomic<bool> uiVisible_{false};
-    std::atomic<bool> uiCallbackPending_{false};
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
 
