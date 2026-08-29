@@ -21,9 +21,19 @@ const clap_host_webview_t kHostWebview{
     hostWebviewSend,
 };
 
+const clap_host_webview_t kBrokenHostWebview{
+    nullptr,
+};
+
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *id) {
     if (id && std::strcmp(id, CLAP_EXT_WEBVIEW) == 0)
         return &kHostWebview;
+    return nullptr;
+}
+
+const void *CLAP_ABI hostGetBrokenExtension(const clap_host_t *, const char *id) {
+    if (id && std::strcmp(id, CLAP_EXT_WEBVIEW) == 0)
+        return &kBrokenHostWebview;
     return nullptr;
 }
 
@@ -56,6 +66,19 @@ const clap_host_t kHostWithoutWebview{
     "https://github.com/hemduf/webview-gui",
     "0.1.0",
     hostGetNoExtension,
+    hostRequestRestart,
+    hostRequestProcess,
+    hostRequestCallback,
+};
+
+const clap_host_t kHostWithBrokenWebview{
+    CLAP_VERSION,
+    nullptr,
+    "webview-gui Gain incomplete WebView host tests",
+    "webview-gui",
+    "https://github.com/hemduf/webview-gui",
+    "0.1.0",
+    hostGetBrokenExtension,
     hostRequestRestart,
     hostRequestProcess,
     hostRequestCallback,
@@ -327,7 +350,38 @@ int main() {
         nonWebviewPlugin->destroy(nonWebviewPlugin);
         return 29;
     }
-
     nonWebviewPlugin->destroy(nonWebviewPlugin);
+
+    // A non-null host extension with a missing send callback is still an
+    // incomplete host-owned WebView path and must fail negotiation exactly like
+    // a missing extension. This protects against advertising a GUI that cannot
+    // deliver plugin-to-WebView messages.
+    const auto *brokenWebviewPlugin =
+        factory->create_plugin(factory, &kHostWithBrokenWebview, kGainPluginId);
+    if (!brokenWebviewPlugin)
+        return 30;
+    if (!brokenWebviewPlugin->init(brokenWebviewPlugin)) {
+        brokenWebviewPlugin->destroy(brokenWebviewPlugin);
+        return 31;
+    }
+
+    const auto *brokenWebviewGui = static_cast<const clap_plugin_gui_t *>(
+        brokenWebviewPlugin->get_extension(brokenWebviewPlugin, CLAP_EXT_GUI));
+    const char *brokenPreferredApi = nullptr;
+    bool brokenFloating = false;
+    if (!brokenWebviewGui ||
+        brokenWebviewGui->is_api_supported(brokenWebviewPlugin,
+                                           CLAP_WINDOW_API_WEBVIEW,
+                                           false) ||
+        brokenWebviewGui->get_preferred_api(brokenWebviewPlugin,
+                                            &brokenPreferredApi,
+                                            &brokenFloating) ||
+        brokenWebviewGui->create(brokenWebviewPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
+        std::cerr << "Gain advertised host-owned WebView GUI with a missing host send callback\n";
+        brokenWebviewPlugin->destroy(brokenWebviewPlugin);
+        return 32;
+    }
+
+    brokenWebviewPlugin->destroy(brokenWebviewPlugin);
     return 0;
 }
