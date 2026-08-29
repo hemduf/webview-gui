@@ -79,6 +79,22 @@ struct OutputEvents {
     std::vector<std::vector<uint8_t>> bytes;
 };
 
+struct RejectingOutputEvents {
+    RejectingOutputEvents() : events{this, tryPush} {}
+
+    static bool CLAP_ABI tryPush(const clap_output_events_t *events,
+                                 const clap_event_header_t *event) {
+        if (!events || !events->ctx || !event)
+            return false;
+        auto &self = *static_cast<RejectingOutputEvents *>(events->ctx);
+        ++self.attempts;
+        return false;
+    }
+
+    clap_output_events_t events;
+    uint32_t attempts = 0;
+};
+
 bool isBalancedGesture(const OutputEvents &output) {
     if (output.bytes.size() < 2)
         return false;
@@ -165,6 +181,41 @@ int main() {
     if (std::fabs(teardownProcessor.processor().gainDb() + 6.0) > 1.0e-6) {
         std::cerr << "WebView teardown changed accepted parameter value semantics\n";
         return 9;
+    }
+
+    // Active drain() runs from clap_plugin.process() on the audio thread. If the
+    // host output event queue applies backpressure, retaining the bounded command
+    // for the next process block is sufficient: this plug-in returns CONTINUE.
+    // The RT drain itself must not call a host scheduling callback.
+    GainWebviewParameterBridge realtimeBridge;
+    GainEventProcessor realtimeProcessor;
+    realtimeBridge.init(&kHost);
+    realtimeBridge.setActive(true);
+    if (!realtimeBridge.receive(true, begin.data(), begin.size()) ||
+        !realtimeBridge.receive(true, value.data(), value.size()) ||
+        !realtimeBridge.receive(true, end.data(), end.size())) {
+        std::cerr << "RT backpressure fixture could not queue a complete gesture\n";
+        return 10;
+    }
+
+    gRequestProcessCount = 0;
+    RejectingOutputEvents rejectingOutput;
+    realtimeBridge.drain(&rejectingOutput.events, realtimeProcessor);
+    if (rejectingOutput.attempts != 1) {
+        std::cerr << "RT drain did not stop after the first rejected output event\n";
+        return 11;
+    }
+    if (gRequestProcessCount != 0) {
+        std::cerr << "RT drain called host request_process after output backpressure\n";
+        return 12;
+    }
+
+    OutputEvents recoveredOutput;
+    realtimeBridge.drain(&recoveredOutput.events, realtimeProcessor);
+    if (recoveredOutput.bytes.size() != 3 || !isBalancedGesture(recoveredOutput) ||
+        std::fabs(realtimeProcessor.processor().gainDb() + 6.0) > 1.0e-6) {
+        std::cerr << "RT backpressure did not preserve the pending gesture for the next block\n";
+        return 13;
     }
 
     return 0;
