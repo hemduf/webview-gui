@@ -71,8 +71,22 @@ bool checkWaveformTextContract() {
         }
     }
 
+    // CLAP stepped parameters convert in-range doubles to integers using a cast
+    // (equivalent to truncation) before interpreting the stepped value.
+    constexpr std::array<ExpectedWaveform, 2> steppedInputs{{
+        {0.5, "Sine"},
+        {1.9, "Saw"},
+    }};
+    for (const auto &item : steppedInputs) {
+        const char *name = waveformNameForValue(item.value);
+        if (!name || std::strcmp(name, item.name) != 0) {
+            std::cerr << "waveform stepped value-to-text truncation mismatch\n";
+            return false;
+        }
+    }
+
     for (double invalid : {-1.0,
-                           0.5,
+                           2.0001,
                            3.0,
                            std::numeric_limits<double>::infinity(),
                            std::numeric_limits<double>::quiet_NaN()}) {
