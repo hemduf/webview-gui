@@ -3,6 +3,7 @@
 
 #include <clap/clap.h>
 #include <clap/ext/audio-ports.h>
+#include <clap/ext/note-name.h>
 #include <clap/ext/note-ports.h>
 #include <clap/ext/params.h>
 #include <clap/ext/remote-controls.h>
@@ -240,6 +241,38 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         return false;
 
     return true;
+}
+
+bool checkNoteNames(const clap_plugin_t *plugin) {
+    const auto *noteNames = static_cast<const clap_plugin_note_name_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_NOTE_NAME));
+    if (!noteNames || !noteNames->count || !noteNames->get ||
+        noteNames->count(plugin) != 128u)
+        return false;
+
+    struct ExpectedName {
+        std::uint32_t index;
+        const char *name;
+    };
+    constexpr std::array<ExpectedName, 5> expected{{
+        {0u, "C-1"},
+        {1u, "C#-1"},
+        {60u, "C4"},
+        {69u, "A4"},
+        {127u, "G9"},
+    }};
+
+    for (const auto &item : expected) {
+        clap_note_name_t noteName{};
+        if (!noteNames->get(plugin, item.index, &noteName) ||
+            noteName.port != 0 || noteName.channel != -1 ||
+            noteName.key != static_cast<std::int16_t>(item.index) ||
+            std::strcmp(noteName.name, item.name) != 0)
+            return false;
+    }
+
+    clap_note_name_t outOfRange{};
+    return !noteNames->get(plugin, 128u, &outOfRange);
 }
 
 const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
@@ -499,8 +532,8 @@ int main() {
     }
 
     const auto *params = checkParams(plugin);
-    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !params ||
-        !checkRemoteControls(plugin, params) ||
+    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !checkNoteNames(plugin) ||
+        !params || !checkRemoteControls(plugin, params) ||
         plugin->get_extension(plugin, "clap.example.unimplemented") != nullptr) {
         plugin->destroy(plugin);
         return 5;
