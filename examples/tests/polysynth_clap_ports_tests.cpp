@@ -1,8 +1,10 @@
 #include "polysynth_plugin.h"
+#include "polysynth_parameters.h"
 
 #include <clap/clap.h>
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/note-ports.h>
+#include <clap/ext/params.h>
 
 #include <array>
 #include <cmath>
@@ -10,6 +12,12 @@
 #include <cstring>
 
 namespace {
+
+using webview_gui::examples::polysynth::ParameterSlot;
+
+constexpr clap_id kFineTuneId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FineTuning);
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) {
     return nullptr;
@@ -43,7 +51,7 @@ struct InputEvents {
                   std::uint32_t time,
                   std::int32_t noteId,
                   std::int16_t key) noexcept {
-        if (count >= notes.size())
+        if (count >= headers.size())
             return false;
         auto &event = notes[count];
         event = {};
@@ -56,8 +64,26 @@ struct InputEvents {
         event.channel = 0;
         event.key = key;
         event.velocity = 1.0;
-        headers[count] = &event.header;
-        ++count;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool pushValue(std::uint32_t time, clap_id paramId, double value) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = values[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = paramId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        headers[count++] = &event.header;
         return true;
     }
 
@@ -75,8 +101,9 @@ struct InputEvents {
         return index < self.count ? self.headers[index] : nullptr;
     }
 
-    std::array<clap_event_note_t, 4> notes{};
-    std::array<const clap_event_header_t *, 4> headers{};
+    std::array<clap_event_note_t, 6> notes{};
+    std::array<clap_event_param_value_t, 6> values{};
+    std::array<const clap_event_header_t *, 6> headers{};
     std::uint32_t count = 0;
     clap_input_events_t input{};
 };
@@ -104,6 +131,53 @@ struct OutputEvents {
 
     std::array<clap_event_note_t, 4> notes{};
     std::uint32_t count = 0;
+    clap_output_events_t output{};
+};
+
+struct FlushInputEvents {
+    explicit FlushInputEvents(double value) noexcept {
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kFineTuneId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
+        return events && events->ctx ? 1u : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
+                                                    std::uint32_t index) noexcept {
+        if (!events || !events->ctx || index != 0)
+            return nullptr;
+        return &static_cast<const FlushInputEvents *>(events->ctx)->event.header;
+    }
+
+    clap_event_param_value_t event{};
+    clap_input_events_t input{};
+};
+
+struct RejectingOutputEvents {
+    RejectingOutputEvents() noexcept {
+        output.ctx = this;
+        output.try_push = tryPush;
+    }
+
+    static bool CLAP_ABI tryPush(const clap_output_events_t *,
+                                 const clap_event_header_t *) noexcept {
+        return false;
+    }
+
     clap_output_events_t output{};
 };
 
@@ -154,7 +228,59 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
     return true;
 }
 
-bool checkProcessBridge(const clap_plugin_t *plugin) {
+const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
+    const auto *params = static_cast<const clap_plugin_params_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+    if (!params || !params->count || !params->get_info || !params->get_value ||
+        !params->value_to_text || !params->text_to_value || !params->flush)
+        return nullptr;
+
+    // This bounded increment advertises only Fine Tune because it is the first
+    // parameter whose global and polyphonic process paths are fully implemented.
+    // Additional internal parameter slots must not become host-visible merely
+    // because metadata exists for them.
+    if (params->count(plugin) != 1)
+        return nullptr;
+
+    const auto *spec = webview_gui::examples::polysynth::parameterSpecForId(kFineTuneId);
+    if (!spec)
+        return nullptr;
+
+    clap_param_info_t info{};
+    if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
+        info.flags != spec->flags || info.min_value != -100.0 ||
+        info.max_value != 100.0 || info.default_value != 0.0 ||
+        std::strcmp(info.name, "Fine Tune") != 0 ||
+        std::strcmp(info.module, "Oscillator") != 0)
+        return nullptr;
+
+    double value = -1.0;
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+        return nullptr;
+
+    char text[32]{};
+    double parsed = 0.0;
+    if (!params->value_to_text(plugin, kFineTuneId, 12.5, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kFineTuneId, text, &parsed) ||
+        std::fabs(parsed - 12.5) > 1.0e-6)
+        return nullptr;
+
+    RejectingOutputEvents output;
+    FlushInputEvents setFifty(50.0);
+    params->flush(plugin, &setFifty.input, &output.output);
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 50.0)
+        return nullptr;
+
+    FlushInputEvents restoreZero(0.0);
+    params->flush(plugin, &restoreZero.input, &output.output);
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+        return nullptr;
+
+    return params;
+}
+
+bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t *params) {
     constexpr std::uint32_t kFrames = 16;
     std::array<float, kFrames> left{};
     std::array<float, kFrames> right{};
@@ -165,7 +291,8 @@ bool checkProcessBridge(const clap_plugin_t *plugin) {
     outputBuffer.channel_count = static_cast<std::uint32_t>(channels.size());
 
     InputEvents inputEvents;
-    if (!inputEvents.pushNote(CLAP_EVENT_NOTE_ON, 4, 701, 69) ||
+    if (!inputEvents.pushValue(0, kFineTuneId, 25.0) ||
+        !inputEvents.pushNote(CLAP_EVENT_NOTE_ON, 4, 701, 69) ||
         !inputEvents.pushNote(CLAP_EVENT_NOTE_CHOKE, 8, 701, 69))
         return false;
 
@@ -209,6 +336,11 @@ bool checkProcessBridge(const clap_plugin_t *plugin) {
             return false;
     }
 
+    double hostVisibleValue = 0.0;
+    if (!params || !params->get_value(plugin, kFineTuneId, &hostVisibleValue) ||
+        hostVisibleValue != 25.0)
+        return false;
+
     if (outputEvents.count != 1)
         return false;
     const auto &noteEnd = outputEvents.notes[0];
@@ -242,7 +374,8 @@ int main() {
         return 4;
     }
 
-    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) ||
+    const auto *params = checkParams(plugin);
+    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !params ||
         plugin->get_extension(plugin, "clap.example.unimplemented") != nullptr) {
         plugin->destroy(plugin);
         return 5;
@@ -258,7 +391,7 @@ int main() {
         return 7;
     }
 
-    const bool processOk = checkProcessBridge(plugin);
+    const bool processOk = checkProcessBridge(plugin, params);
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
