@@ -80,14 +80,48 @@ struct InputEvents {
 }
 
 int main() {
+    auto noteEnd = [](const clap_event_note_t &) noexcept {};
+
+    // Hosts and validation tools can send semantically invalid expression values
+    // while fuzzing robustness. The event header is structurally valid, so the
+    // plug-in must ignore the unsupported statement rather than fail the entire
+    // real-time process block with CLAP_PROCESS_ERROR.
+    ParameterVoiceEngine robustnessEngine;
+    if (!robustnessEngine.configure(4, 48000.0, 16) ||
+        !robustnessEngine.setAmpEnvelope(0, 0, 1.0f, 16))
+        return 1;
+
+    InputEvents invalidSemanticExpression;
+    if (!invalidSemanticExpression.pushNote(0, 901, 60) ||
+        !invalidSemanticExpression.pushTuning(1, 128.0, 901, 60))
+        return 2;
+
+    std::array<float, 16> robustnessLeft{};
+    std::array<float, 16> robustnessRight{};
+    if (!robustnessEngine.process(&invalidSemanticExpression.input,
+                                  static_cast<std::uint32_t>(robustnessLeft.size()),
+                                  robustnessLeft.data(),
+                                  robustnessRight.data(),
+                                  noteEnd)) {
+        std::cerr << "semantically invalid note expression failed the process block\n";
+        return 3;
+    }
+    for (std::size_t frame = 0; frame < robustnessLeft.size(); ++frame) {
+        if (!std::isfinite(robustnessLeft[frame]) ||
+            !std::isfinite(robustnessRight[frame])) {
+            std::cerr << "semantic note-expression robustness produced non-finite audio\n";
+            return 4;
+        }
+    }
+
     ParameterVoiceEngine engine;
     if (!engine.configure(4, 48000.0, 16) ||
         !engine.setAmpEnvelope(0, 0, 1.0f, 16))
-        return 1;
+        return 5;
 
     InputEvents events;
     if (!events.pushNote(0, 301, 60))
-        return 2;
+        return 6;
 
     // Pending expression state only exists to bridge earlier same-sample events
     // into a later NOTE_ON at that same timestamp. Older timestamps must not
@@ -97,25 +131,24 @@ int main() {
     for (std::uint32_t time = 0; time < 65; ++time) {
         const double tuning = time == 64 ? 1.0 : 0.5;
         if (!events.pushTuning(time, tuning, 301, 60))
-            return 3;
+            return 7;
     }
 
     std::array<float, 96> left{};
     std::array<float, 96> right{};
-    auto noteEnd = [](const clap_event_note_t &) noexcept {};
     if (!engine.process(&events.input,
                         static_cast<std::uint32_t>(left.size()),
                         left.data(),
                         right.data(),
                         noteEnd)) {
         std::cerr << "note-expression pending cache retained expired timestamps\n";
-        return 4;
+        return 8;
     }
 
     for (std::size_t frame = 0; frame < left.size(); ++frame) {
         if (!std::isfinite(left[frame]) || !std::isfinite(right[frame])) {
             std::cerr << "long note-expression stream produced non-finite audio\n";
-            return 5;
+            return 9;
         }
     }
 
