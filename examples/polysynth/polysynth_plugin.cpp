@@ -1,6 +1,7 @@
 #include "polysynth_plugin.h"
 #include "polysynth_parameter_voice_engine.h"
 
+#include <clap/ext/state-context.h>
 #include <clap/ext/state.h>
 #include <clap/ext/voice-info.h>
 #include <clap/helpers/plugin.hh>
@@ -369,6 +370,22 @@ protected:
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
             hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
         return true;
+    }
+
+    bool implementsStateContext() const noexcept override { return true; }
+
+    bool stateContextSave(const clap_ostream_t *stream,
+                          std::uint32_t) noexcept override {
+        // PolySynth currently has no context-sensitive external resources or
+        // preset-only fields. The pinned state-context contract explicitly
+        // permits falling back to clap.state, and requires cross-context payload
+        // compatibility. Keep one authoritative versioned state format.
+        return stateSave(stream);
+    }
+
+    bool stateContextLoad(const clap_istream_t *stream,
+                          std::uint32_t) noexcept override {
+        return stateLoad(stream);
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
