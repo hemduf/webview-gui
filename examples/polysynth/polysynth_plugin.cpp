@@ -1,6 +1,7 @@
 #include "polysynth_plugin.h"
 #include "polysynth_parameter_voice_engine.h"
 
+#include <clap/ext/voice-info.h>
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
 
@@ -27,6 +28,9 @@ static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
 static_assert(std::atomic<bool>::is_always_lock_free,
               "PolySynth requires a lock-free pending parameter handoff");
+static_assert(kPolySynthDefaultVoiceCount > 0 &&
+                  kPolySynthDefaultVoiceCount <= VoiceAllocator::kMaximumVoices,
+              "PolySynth voice-info must report a valid configured voice count");
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -160,10 +164,14 @@ protected:
         // configure() starts with no active generations, so the retained base
         // value is already authoritative and no process-time replay is needed.
         pendingFineTuneFlush_.store(false, std::memory_order_release);
+        active_ = true;
         return true;
     }
 
-    void deactivate() noexcept override { engine_.reset(); }
+    void deactivate() noexcept override {
+        active_ = false;
+        engine_.reset();
+    }
 
     bool startProcessing() noexcept override { return true; }
     void stopProcessing() noexcept override {}
@@ -255,6 +263,19 @@ protected:
         info->supported_dialects = CLAP_NOTE_DIALECT_CLAP;
         info->preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
         return copyName(info->name, sizeof(info->name), "Notes In");
+    }
+
+    bool implementsVoiceInfo() const noexcept override { return true; }
+
+    bool voiceInfoGet(clap_voice_info_t *info) noexcept override {
+        if (!active_ || !info)
+            return false;
+
+        *info = {};
+        info->voice_count = static_cast<std::uint32_t>(kPolySynthDefaultVoiceCount);
+        info->voice_capacity = static_cast<std::uint32_t>(kPolySynthDefaultVoiceCount);
+        info->flags = CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
+        return true;
     }
 
     bool implementsParams() const noexcept override { return true; }
@@ -368,6 +389,7 @@ private:
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
     std::atomic<bool> pendingFineTuneFlush_{false};
+    bool active_ = false;
 };
 
 std::uint32_t CLAP_ABI factoryGetPluginCount(const clap_plugin_factory_t *) { return 1u; }
