@@ -17,9 +17,13 @@ namespace {
 
 using webview_gui::examples::polysynth::ParameterSlot;
 
+constexpr clap_id kMasterGainId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::MasterGain);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr double kHalfGainDb = -6.020599913279624;
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -140,13 +144,13 @@ struct OutputEvents {
 };
 
 struct FlushInputEvents {
-    explicit FlushInputEvents(double value) noexcept {
+    FlushInputEvents(clap_id paramId, double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
         event.header.time = 0;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kFineTuneId;
+        event.param_id = paramId;
         event.note_id = -1;
         event.port_index = -1;
         event.channel = -1;
@@ -284,10 +288,9 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Fine Tune is still the only host-facing parameter in this bounded surface,
-    // but its process() and active params.flush() paths now both preserve the
-    // qualified global and voice-addressed value/modulation semantics.
-    if (params->count(plugin) != 1)
+    // Preserve Fine Tune at stable host index 0 while expanding the published
+    // surface with global Master Gain at index 1.
+    if (params->count(plugin) != 2u)
         return nullptr;
 
     clap_param_info_t info{};
@@ -303,8 +306,23 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(info.module, "Oscillator") != 0)
         return nullptr;
 
+    clap_param_info_t masterInfo{};
+    clap_param_info_t repeatedMasterInfo{};
+    if (!params->get_info(plugin, 1, &masterInfo) || masterInfo.id != kMasterGainId ||
+        !masterInfo.cookie ||
+        !params->get_info(plugin, 1, &repeatedMasterInfo) ||
+        repeatedMasterInfo.id != masterInfo.id ||
+        repeatedMasterInfo.cookie != masterInfo.cookie ||
+        masterInfo.flags != webview_gui::examples::polysynth::kGlobalModulatableFlags ||
+        masterInfo.min_value != -60.0 || masterInfo.max_value != 12.0 ||
+        masterInfo.default_value != 0.0 ||
+        std::strcmp(masterInfo.name, "Master Gain") != 0 ||
+        std::strcmp(masterInfo.module, "Output") != 0)
+        return nullptr;
+
     double value = -1.0;
-    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kMasterGainId, &value) || value != 0.0)
         return nullptr;
 
     char text[32]{};
@@ -312,16 +330,20 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->value_to_text(plugin, kFineTuneId, 12.5, text, sizeof(text)) ||
         text[0] == '\0' ||
         !params->text_to_value(plugin, kFineTuneId, text, &parsed) ||
-        std::fabs(parsed - 12.5) > 1.0e-6)
+        std::fabs(parsed - 12.5) > 1.0e-6 ||
+        !params->value_to_text(plugin, kMasterGainId, kHalfGainDb, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kMasterGainId, text, &parsed) ||
+        std::fabs(parsed - kHalfGainDb) > 1.0e-5)
         return nullptr;
 
     RejectingOutputEvents output;
-    FlushInputEvents setFifty(50.0);
+    FlushInputEvents setFifty(kFineTuneId, 50.0);
     params->flush(plugin, &setFifty.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 50.0)
         return nullptr;
 
-    FlushInputEvents restoreZero(0.0);
+    FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
         return nullptr;
@@ -336,8 +358,8 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
     const auto *compat = static_cast<const clap_plugin_remote_controls_t *>(
         plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS_COMPAT));
     if (!remoteControls || !compat || !remoteControls->count || !remoteControls->get ||
-        !compat->count || !compat->get || remoteControls->count(plugin) != 1u ||
-        compat->count(plugin) != 1u)
+        !compat->count || !compat->get || remoteControls->count(plugin) != 2u ||
+        compat->count(plugin) != 2u)
         return false;
 
     clap_remote_controls_page_t first{};
@@ -359,8 +381,6 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         std::strcmp(compatible.page_name, first.page_name) != 0)
         return false;
 
-    // The bounded host-facing surface currently publishes Fine Tune only. A
-    // remote page must never reference an internal/unpublished parameter ID.
     if (!params || first.param_ids[0] != kFineTuneId ||
         second.param_ids[0] != kFineTuneId || compatible.param_ids[0] != kFineTuneId)
         return false;
@@ -371,9 +391,33 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
             return false;
     }
 
-    clap_param_info_t mappedInfo{};
-    return params->get_info(plugin, 0u, &mappedInfo) &&
-           mappedInfo.id == first.param_ids[0];
+    clap_remote_controls_page_t outputPage{};
+    clap_remote_controls_page_t compatibleOutputPage{};
+    if (!remoteControls->get(plugin, 1u, &outputPage) ||
+        !compat->get(plugin, 1u, &compatibleOutputPage) ||
+        outputPage.page_id == CLAP_INVALID_ID ||
+        outputPage.page_id == first.page_id ||
+        outputPage.page_id != compatibleOutputPage.page_id ||
+        outputPage.is_for_preset || compatibleOutputPage.is_for_preset ||
+        std::strcmp(outputPage.section_name, "Output") != 0 ||
+        std::strcmp(outputPage.page_name, "Performance") != 0 ||
+        std::strcmp(compatibleOutputPage.section_name, outputPage.section_name) != 0 ||
+        std::strcmp(compatibleOutputPage.page_name, outputPage.page_name) != 0 ||
+        outputPage.param_ids[0] != kMasterGainId ||
+        compatibleOutputPage.param_ids[0] != kMasterGainId)
+        return false;
+    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (outputPage.param_ids[index] != CLAP_INVALID_ID ||
+            compatibleOutputPage.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    clap_param_info_t mappedFineInfo{};
+    clap_param_info_t mappedMasterInfo{};
+    return params->get_info(plugin, 0u, &mappedFineInfo) &&
+           params->get_info(plugin, 1u, &mappedMasterInfo) &&
+           mappedFineInfo.id == first.param_ids[0] &&
+           mappedMasterInfo.id == outputPage.param_ids[0];
 }
 
 bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
@@ -404,7 +448,7 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     // already active generation when rendering resumes at the next sample.
     plugin->stop_processing(plugin);
     RejectingOutputEvents flushOutput;
-    FlushInputEvents retune(100.0);
+    FlushInputEvents retune(kFineTuneId, 100.0);
     params->flush(plugin, &retune.input, &flushOutput.output);
     if (!plugin->start_processing(plugin))
         return false;
@@ -513,6 +557,47 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
            noteEnd.channel == 0 && noteEnd.key == 69;
 }
 
+bool checkMasterGainProcess(const clap_plugin_t *plugin,
+                            const clap_plugin_params_t *params) {
+    constexpr std::uint32_t kFrames = 8;
+    std::array<float, kFrames> left{};
+    std::array<float, kFrames> right{};
+    std::array<float *, 2> channels{left.data(), right.data()};
+    clap_audio_buffer_t output{};
+    output.data32 = channels.data();
+    output.channel_count = 2;
+
+    InputEvents events;
+    if (!events.pushValue(0, kFineTuneId, 0.0) ||
+        !events.pushNote(CLAP_EVENT_NOTE_ON, 0, 901, 69) ||
+        !events.pushValue(4, kMasterGainId, kHalfGainDb))
+        return false;
+
+    OutputEvents outputEvents;
+    clap_process_t process{};
+    process.frames_count = kFrames;
+    process.audio_outputs = &output;
+    process.audio_outputs_count = 1;
+    process.in_events = &events.input;
+    process.out_events = &outputEvents.output;
+    if (plugin->process(plugin, &process) == CLAP_PROCESS_ERROR || outputEvents.count != 0)
+        return false;
+
+    const double increment = phaseIncrement(69, 0.0);
+    for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
+        const float gain = frame < 4 ? 1.0f : 0.5f;
+        const auto expected = static_cast<float>(std::sin(
+            wrappedPhase(0.25 + static_cast<double>(frame) * increment) * kTwoPi) * gain);
+        if (std::fabs(left[frame] - expected) > 1.0e-5f ||
+            std::fabs(right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+
+    double hostVisibleGain = 0.0;
+    return params && params->get_value(plugin, kMasterGainId, &hostVisibleGain) &&
+           std::fabs(hostVisibleGain - kHalfGainDb) <= 1.0e-5;
+}
+
 } // namespace
 
 int main() {
@@ -564,7 +649,7 @@ int main() {
     }
 
     RejectingOutputEvents resetOutput;
-    FlushInputEvents restoreZero(0.0);
+    FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &resetOutput.output);
 
     if (!plugin->activate(plugin, kSampleRate, 1, 128)) {
@@ -578,8 +663,9 @@ int main() {
     }
 
     const bool processOk = checkProcessBridge(plugin, params);
+    const bool masterGainOk = processOk && checkMasterGainProcess(plugin, params);
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
-    return processOk ? 0 : 11;
+    return masterGainOk ? 0 : 11;
 }
