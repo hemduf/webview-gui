@@ -296,30 +296,39 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS));
     const auto *compat = static_cast<const clap_plugin_remote_controls_t *>(
         plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS_COMPAT));
-    if (!remoteControls || remoteControls != compat || !remoteControls->count ||
-        !remoteControls->get || remoteControls->count(plugin) != 1u)
+    if (!remoteControls || !compat || !remoteControls->count || !remoteControls->get ||
+        !compat->count || !compat->get || remoteControls->count(plugin) != 1u ||
+        compat->count(plugin) != 1u)
         return false;
 
     clap_remote_controls_page_t first{};
     clap_remote_controls_page_t second{};
+    clap_remote_controls_page_t compatible{};
     if (!remoteControls->get(plugin, 0u, &first) ||
-        !remoteControls->get(plugin, 0u, &second))
+        !remoteControls->get(plugin, 0u, &second) ||
+        !compat->get(plugin, 0u, &compatible))
         return false;
 
     if (first.page_id == CLAP_INVALID_ID || first.page_id != second.page_id ||
-        first.is_for_preset || second.is_for_preset ||
+        first.page_id != compatible.page_id || first.is_for_preset ||
+        second.is_for_preset || compatible.is_for_preset ||
         std::strcmp(first.section_name, "Oscillator") != 0 ||
-        std::strcmp(first.page_name, "Tuning") != 0)
+        std::strcmp(second.section_name, first.section_name) != 0 ||
+        std::strcmp(compatible.section_name, first.section_name) != 0 ||
+        std::strcmp(first.page_name, "Tuning") != 0 ||
+        std::strcmp(second.page_name, first.page_name) != 0 ||
+        std::strcmp(compatible.page_name, first.page_name) != 0)
         return false;
 
     // The bounded host-facing surface currently publishes Fine Tune only. A
     // remote page must never reference an internal/unpublished parameter ID.
     if (!params || first.param_ids[0] != kFineTuneId ||
-        second.param_ids[0] != kFineTuneId)
+        second.param_ids[0] != kFineTuneId || compatible.param_ids[0] != kFineTuneId)
         return false;
     for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (first.param_ids[index] != CLAP_INVALID_ID ||
-            second.param_ids[index] != CLAP_INVALID_ID)
+            second.param_ids[index] != CLAP_INVALID_ID ||
+            compatible.param_ids[index] != CLAP_INVALID_ID)
             return false;
     }
 
