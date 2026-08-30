@@ -37,9 +37,10 @@ bool checkAudioPorts(const clap_plugin_t *plugin) {
     if (audioPorts->count(plugin, true) != 0 || audioPorts->count(plugin, false) != 1)
         return false;
 
+    // Once count() reports zero, asking get() for index 0 is host misuse under
+    // CLAP. Probe only valid indices so the test itself obeys the ABI contract.
     clap_audio_port_info_t info{};
-    if (audioPorts->get(plugin, 0, true, &info) ||
-        !audioPorts->get(plugin, 0, false, &info))
+    if (!audioPorts->get(plugin, 0, false, &info))
         return false;
     if (info.id != webview_gui::examples::polysynth::kPolySynthAudioOutputPortId ||
         (info.flags & CLAP_AUDIO_PORT_IS_MAIN) == 0 ||
@@ -47,8 +48,6 @@ bool checkAudioPorts(const clap_plugin_t *plugin) {
         std::strcmp(info.port_type, CLAP_PORT_STEREO) != 0 ||
         info.in_place_pair != CLAP_INVALID_ID ||
         std::strcmp(info.name, "Stereo Out") != 0)
-        return false;
-    if (audioPorts->get(plugin, 1, false, &info))
         return false;
     return true;
 }
@@ -59,9 +58,9 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
     if (!notePorts || !notePorts->count || !notePorts->get)
         return false;
 
-    // This bounded shell consumes native CLAP notes but does not yet emit
-    // NOTE_END through a clap_process_t output event list. Do not advertise a
-    // note output until that contract is implemented and tested.
+    // The shell exposes the instrument's native CLAP note input topology. A
+    // note output is intentionally deferred until the subsequent process/NOTE_END
+    // increment can supply a real host output-event contract.
     if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 0)
         return false;
 
@@ -71,11 +70,6 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         input.supported_dialects != CLAP_NOTE_DIALECT_CLAP ||
         input.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
         std::strcmp(input.name, "Notes In") != 0)
-        return false;
-
-    clap_note_port_info_t output{};
-    if (notePorts->get(plugin, 0, false, &output) ||
-        notePorts->get(plugin, 1, true, &input))
         return false;
     return true;
 }
