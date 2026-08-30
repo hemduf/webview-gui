@@ -1,6 +1,7 @@
 #include "polysynth_plugin.h"
 #include "polysynth_parameter_voice_engine.h"
 
+#include <clap/ext/note-name.h>
 #include <clap/ext/remote-controls.h>
 #include <clap/ext/state-context.h>
 #include <clap/ext/state.h>
@@ -437,6 +438,29 @@ protected:
         info->supported_dialects = CLAP_NOTE_DIALECT_CLAP;
         info->preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
         return copyName(info->name, sizeof(info->name), "Notes In");
+    }
+
+    bool implementsNoteName() const noexcept override { return true; }
+
+    std::uint32_t noteNameCount() noexcept override { return 128u; }
+
+    bool noteNameGet(std::uint32_t index, clap_note_name *noteName) noexcept override {
+        if (!noteName || index >= 128u)
+            return false;
+
+        static constexpr const char *kPitchClasses[] = {
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+        *noteName = {};
+        noteName->port = 0;
+        noteName->key = static_cast<std::int16_t>(index);
+        noteName->channel = -1;
+        const int octave = static_cast<int>(index / 12u) - 1;
+        const int written = std::snprintf(noteName->name,
+                                          sizeof(noteName->name),
+                                          "%s%d",
+                                          kPitchClasses[index % 12u],
+                                          octave);
+        return written >= 0 && static_cast<std::size_t>(written) < sizeof(noteName->name);
     }
 
     bool implementsVoiceInfo() const noexcept override { return true; }
