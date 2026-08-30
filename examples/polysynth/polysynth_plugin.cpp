@@ -92,9 +92,10 @@ const clap_plugin_descriptor_t kDescriptor{
 };
 
 constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-constexpr std::uint32_t kStateVersion = 3u;
+constexpr std::uint32_t kStateVersion = 4u;
 constexpr std::size_t kLegacyStateSize = 24u;
-constexpr std::size_t kStateSize = 28u;
+constexpr std::size_t kStateV3Size = 28u;
+constexpr std::size_t kStateSize = 32u;
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -174,7 +175,8 @@ bool readAll(const clap_istream_t *stream,
 
 std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
                                                   float masterGainDb,
-                                                  std::uint32_t waveform) noexcept {
+                                                  std::uint32_t waveform,
+                                                  std::int32_t coarseTuneSemitones) noexcept {
     std::array<std::uint8_t, kStateSize> bytes{};
     std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
     storeU32Le(bytes.data() + 8, kStateVersion);
@@ -187,6 +189,10 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
     std::memcpy(&masterGainBits, &masterGainDb, sizeof(masterGainBits));
     storeU32Le(bytes.data() + 20, masterGainBits);
     storeU32Le(bytes.data() + 24, waveform);
+
+    std::uint32_t coarseTuneBits = 0;
+    std::memcpy(&coarseTuneBits, &coarseTuneSemitones, sizeof(coarseTuneBits));
+    storeU32Le(bytes.data() + 28, coarseTuneBits);
     return bytes;
 }
 
@@ -194,14 +200,16 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
                  std::size_t encodedSize,
                  double &fineTuneCents,
                  float &masterGainDb,
-                 std::uint32_t &waveform) noexcept {
+                 std::uint32_t &waveform,
+                 std::int32_t &coarseTuneSemitones) noexcept {
     if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
         return false;
 
     const auto version = loadU32Le(bytes.data() + 8);
     if (version < 1u || version > kStateVersion)
         return false;
-    const auto expectedSize = version < 3u ? kLegacyStateSize : kStateSize;
+    const auto expectedSize = version < 3u ? kLegacyStateSize
+                                           : (version == 3u ? kStateV3Size : kStateSize);
     if (encodedSize != expectedSize)
         return false;
 
@@ -213,6 +221,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
         return false;
 
     waveform = 0u;
+    coarseTuneSemitones = 0;
     if (version == 1u) {
         if (bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
             return false;
@@ -233,9 +242,18 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
 
     waveform = loadU32Le(bytes.data() + 24);
     const auto *waveformSpec = parameterSpecForId(kHostWaveformParameterId);
-    return waveformSpec &&
-           static_cast<double>(waveform) >= waveformSpec->minValue &&
-           static_cast<double>(waveform) <= waveformSpec->maxValue;
+    if (!waveformSpec || static_cast<double>(waveform) < waveformSpec->minValue ||
+        static_cast<double>(waveform) > waveformSpec->maxValue)
+        return false;
+    if (version == 3u)
+        return true;
+
+    const auto coarseTuneBits = loadU32Le(bytes.data() + 28);
+    std::memcpy(&coarseTuneSemitones, &coarseTuneBits, sizeof(coarseTuneSemitones));
+    const auto *coarseTuneSpec = parameterSpecForId(kHostCoarseTuneParameterId);
+    return coarseTuneSpec &&
+           static_cast<double>(coarseTuneSemitones) >= coarseTuneSpec->minValue &&
+           static_cast<double>(coarseTuneSemitones) <= coarseTuneSpec->maxValue;
 }
 
 struct NoteEndOutputSink {
@@ -258,7 +276,8 @@ struct PendingParameterStateInput {
     bool prepare(const clap_input_events_t *newHostInput,
                  float fineTuneCents,
                  float masterGainDb,
-                 std::uint32_t waveform) noexcept {
+                 std::uint32_t waveform,
+                 std::int32_t coarseTuneSemitones) noexcept {
         hostInput = newHostInput;
         hostCount = 0;
         valid = true;
@@ -266,6 +285,7 @@ struct PendingParameterStateInput {
         prepareEvent(events[0], kHostFineTuneParameterId, fineTuneCents);
         prepareEvent(events[1], kHostMasterGainParameterId, masterGainDb);
         prepareEvent(events[2], kHostWaveformParameterId, waveform);
+        prepareEvent(events[3], kHostCoarseTuneParameterId, coarseTuneSemitones);
 
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
@@ -316,7 +336,7 @@ struct PendingParameterStateInput {
     }
 
     const clap_input_events_t *hostInput = nullptr;
-    std::array<clap_event_param_value_t, 3> events{};
+    std::array<clap_event_param_value_t, 4> events{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
     bool valid = false;
@@ -390,7 +410,8 @@ protected:
                     processData->in_events,
                     hostFineTuneCents_.load(std::memory_order_acquire),
                     hostMasterGainDb_.load(std::memory_order_acquire),
-                    hostWaveform_.load(std::memory_order_acquire)))
+                    hostWaveform_.load(std::memory_order_acquire),
+                    hostCoarseTuneSemitones_.load(std::memory_order_acquire)))
                 return CLAP_PROCESS_ERROR;
             inputEvents = &pendingInput.input;
         }
@@ -425,7 +446,8 @@ protected:
         const auto bytes = encodeState(
             static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)),
             hostMasterGainDb_.load(std::memory_order_relaxed),
-            hostWaveform_.load(std::memory_order_relaxed));
+            hostWaveform_.load(std::memory_order_relaxed),
+            hostCoarseTuneSemitones_.load(std::memory_order_relaxed));
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -441,10 +463,17 @@ protected:
             return false;
 
         std::size_t encodedSize = kLegacyStateSize;
-        if (version == kStateVersion) {
+        if (version >= 3u) {
             if (!readAll(stream,
                          bytes.data() + kLegacyStateSize,
-                         kStateSize - kLegacyStateSize))
+                         kStateV3Size - kLegacyStateSize))
+                return false;
+            encodedSize = kStateV3Size;
+        }
+        if (version >= 4u) {
+            if (!readAll(stream,
+                         bytes.data() + kStateV3Size,
+                         kStateSize - kStateV3Size))
                 return false;
             encodedSize = kStateSize;
         }
@@ -457,21 +486,31 @@ protected:
         double fineTuneCents = 0.0;
         float masterGainDb = 0.0f;
         std::uint32_t waveform = 0u;
-        if (!decodeState(bytes, encodedSize, fineTuneCents, masterGainDb, waveform))
+        std::int32_t coarseTuneSemitones = 0;
+        if (!decodeState(bytes,
+                         encodedSize,
+                         fineTuneCents,
+                         masterGainDb,
+                         waveform,
+                         coarseTuneSemitones))
             return false;
 
         const auto fineTune = static_cast<float>(fineTuneCents);
         const bool parameterValueChanged =
             hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune ||
             hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb ||
-            hostWaveform_.load(std::memory_order_relaxed) != waveform;
+            hostWaveform_.load(std::memory_order_relaxed) != waveform ||
+            hostCoarseTuneSemitones_.load(std::memory_order_relaxed) != coarseTuneSemitones;
 
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         pendingLoadedWaveform_.store(waveform, std::memory_order_relaxed);
+        pendingLoadedCoarseTuneSemitones_.store(coarseTuneSemitones,
+                                                std::memory_order_relaxed);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         hostWaveform_.store(waveform, std::memory_order_relaxed);
+        hostCoarseTuneSemitones_.store(coarseTuneSemitones, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
@@ -828,6 +867,9 @@ private:
             hostWaveform_.store(
                 pendingLoadedWaveform_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostCoarseTuneSemitones_.store(
+                pendingLoadedCoarseTuneSemitones_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
             return true;
         }
 
@@ -857,6 +899,9 @@ private:
             hostWaveform_.store(
                 pendingLoadedWaveform_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostCoarseTuneSemitones_.store(
+                pendingLoadedCoarseTuneSemitones_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
         }
         return true;
     }
@@ -871,6 +916,7 @@ private:
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
+    std::atomic<std::int32_t> pendingLoadedCoarseTuneSemitones_{0};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
