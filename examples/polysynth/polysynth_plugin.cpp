@@ -1,10 +1,13 @@
 #include "polysynth_plugin.h"
 #include "polysynth_parameter_voice_engine.h"
 
+#include <clap/ext/state.h>
 #include <clap/ext/voice-info.h>
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <cmath>
@@ -28,6 +31,12 @@ static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
 static_assert(std::atomic<bool>::is_always_lock_free,
               "PolySynth requires a lock-free pending parameter handoff");
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+              "PolySynth state handoff revision must be lock-free");
+static_assert(sizeof(double) == sizeof(std::uint64_t),
+              "PolySynth state requires a 64-bit double");
+static_assert(std::numeric_limits<double>::is_iec559,
+              "PolySynth state requires IEEE-754 double precision");
 static_assert(kPolySynthDefaultVoiceCount > 0 &&
                   kPolySynthDefaultVoiceCount <= VoiceAllocator::kMaximumVoices,
               "PolySynth voice-info must report a valid configured voice count");
@@ -52,6 +61,10 @@ const clap_plugin_descriptor_t kDescriptor{
     kFeatures,
 };
 
+constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
+constexpr std::uint32_t kStateVersion = 1u;
+constexpr std::size_t kStateSize = 24u;
+
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
         return false;
@@ -64,6 +77,87 @@ bool isGlobalParameterAddress(const clap_event_param_value_t &event) noexcept {
            event.channel == -1 && event.key == -1;
 }
 
+void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
+    for (unsigned i = 0; i < 4; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+void storeU64Le(std::uint8_t *destination, std::uint64_t value) noexcept {
+    for (unsigned i = 0; i < 8; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+std::uint32_t loadU32Le(const std::uint8_t *source) noexcept {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<std::uint32_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+std::uint64_t loadU64Le(const std::uint8_t *source) noexcept {
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value |= static_cast<std::uint64_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+bool writeAll(const clap_ostream_t *stream,
+              const std::uint8_t *data,
+              std::size_t size) noexcept {
+    if (!stream || !stream->write || (!data && size != 0))
+        return false;
+
+    std::size_t offset = 0;
+    while (offset < size) {
+        const auto written = stream->write(stream, data + offset, size - offset);
+        if (written <= 0 || static_cast<std::uint64_t>(written) > size - offset)
+            return false;
+        offset += static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+bool readAll(const clap_istream_t *stream,
+             std::uint8_t *data,
+             std::size_t size) noexcept {
+    if (!stream || !stream->read || (!data && size != 0))
+        return false;
+
+    std::size_t offset = 0;
+    while (offset < size) {
+        const auto read = stream->read(stream, data + offset, size - offset);
+        if (read <= 0 || static_cast<std::uint64_t>(read) > size - offset)
+            return false;
+        offset += static_cast<std::size_t>(read);
+    }
+    return true;
+}
+
+std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents) noexcept {
+    std::array<std::uint8_t, kStateSize> bytes{};
+    std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
+    storeU32Le(bytes.data() + 8, kStateVersion);
+
+    std::uint64_t fineTuneBits = 0;
+    std::memcpy(&fineTuneBits, &fineTuneCents, sizeof(fineTuneBits));
+    storeU64Le(bytes.data() + 12, fineTuneBits);
+    return bytes;
+}
+
+bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
+                 double &fineTuneCents) noexcept {
+    if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()) ||
+        loadU32Le(bytes.data() + 8) != kStateVersion ||
+        bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
+        return false;
+
+    const auto fineTuneBits = loadU64Le(bytes.data() + 12);
+    std::memcpy(&fineTuneCents, &fineTuneBits, sizeof(fineTuneCents));
+    const auto *spec = parameterSpecForId(kHostFineTuneParameterId);
+    return spec && std::isfinite(fineTuneCents) &&
+           fineTuneCents >= spec->minValue && fineTuneCents <= spec->maxValue;
+}
+
 struct NoteEndOutputSink {
     const clap_output_events_t *events = nullptr;
     bool ok = true;
@@ -74,10 +168,10 @@ struct NoteEndOutputSink {
     }
 };
 
-// params.flush() has no sample offsets, but when the plug-in is activated a
-// flushed base value must still reach already-running voices before rendering
-// resumes. Prepend one fixed sample-zero PARAM_VALUE to the next process block;
-// host-provided sample-zero events remain later in the stream and therefore win.
+// params.flush() and state.load() have no sample offsets, but retained base
+// values must still reach already-running voices before rendering resumes.
+// Prepend one fixed sample-zero PARAM_VALUE to the next process block; host
+// sample-zero automation remains later in the stream and therefore wins.
 struct PendingFineTuneInput {
     PendingFineTuneInput() noexcept {
         input.ctx = this;
@@ -143,12 +237,18 @@ struct PendingFineTuneInput {
 class PolySynthPlugin final : public PolySynthBase {
 public:
     explicit PolySynthPlugin(const clap_host_t *host)
-        : PolySynthBase(&kDescriptor, host) {}
+        : PolySynthBase(&kDescriptor, host), host_(host) {}
 
     ~PolySynthPlugin() override = default;
 
 protected:
-    bool init() noexcept override { return true; }
+    bool init() noexcept override {
+        if (host_ && host_->get_extension) {
+            hostParams_ = static_cast<const clap_host_params_t *>(
+                host_->get_extension(host_, CLAP_EXT_PARAMS));
+        }
+        return true;
+    }
 
     bool activate(double sampleRate,
                   std::uint32_t minFrameCount,
@@ -164,6 +264,7 @@ protected:
         // configure() starts with no active generations, so the retained base
         // value is already authoritative and no process-time replay is needed.
         pendingFineTuneFlush_.store(false, std::memory_order_release);
+        appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
         active_ = true;
         return true;
     }
@@ -193,11 +294,14 @@ protected:
         // every frame, hence neither channel can be advertised as constant.
         output.constant_mask = 0;
 
+        const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+        const bool replayLoadedState = loadedRevision != appliedLoadedStateRevision_;
         const bool replayFlushedValue =
             pendingFineTuneFlush_.load(std::memory_order_acquire);
+        const bool replayRetainedValue = replayLoadedState || replayFlushedValue;
         const clap_input_events_t *inputEvents = processData->in_events;
         PendingFineTuneInput pendingInput;
-        if (replayFlushedValue) {
+        if (replayRetainedValue) {
             if (!pendingInput.prepare(
                     processData->in_events,
                     hostFineTuneCents_.load(std::memory_order_acquire)))
@@ -211,20 +315,58 @@ protected:
                                               output.data32[0],
                                               output.data32[1],
                                               noteEndSink);
-        if (engineOk && replayFlushedValue)
-            pendingFineTuneFlush_.store(false, std::memory_order_release);
         if (!engineOk || !noteEndSink.ok)
             return CLAP_PROCESS_ERROR;
 
-        // Publish a lock-free block-boundary snapshot for main-thread get_value().
-        // The DSP/event adapter remains the authority for sample-accurate changes;
-        // this mirror never feeds the audio path and therefore cannot quantize it.
-        double fineTune = 0.0;
-        if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune))
+        if (replayFlushedValue)
+            pendingFineTuneFlush_.store(false, std::memory_order_release);
+        if (replayLoadedState)
+            appliedLoadedStateRevision_ = loadedRevision;
+
+        // Publish a block-boundary host snapshot without overwriting a newer
+        // concurrent main-thread state.load(). The DSP/event adapter remains the
+        // authority for sample-accurate changes; this mirror never feeds audio.
+        if (!syncFineTuneSnapshotPreservingConcurrentStateLoad())
             return CLAP_PROCESS_ERROR;
-        hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_release);
 
         return CLAP_PROCESS_CONTINUE;
+    }
+
+    bool implementsState() const noexcept override { return true; }
+
+    bool stateSave(const clap_ostream_t *stream) noexcept override {
+        const auto bytes = encodeState(
+            static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)));
+        return writeAll(stream, bytes.data(), bytes.size());
+    }
+
+    bool stateLoad(const clap_istream_t *stream) noexcept override {
+        std::array<std::uint8_t, kStateSize> bytes{};
+        if (!readAll(stream, bytes.data(), bytes.size()))
+            return false;
+
+        std::uint8_t trailing = 0;
+        const auto trailingRead = stream->read(stream, &trailing, 1);
+        if (trailingRead != 0)
+            return false;
+
+        double fineTuneCents = 0.0;
+        if (!decodeState(bytes, fineTuneCents))
+            return false;
+
+        const auto fineTune = static_cast<float>(fineTuneCents);
+        const bool parameterValueChanged =
+            hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune;
+
+        // Keep a dedicated pending copy plus revision so an audio-thread snapshot
+        // publication cannot overwrite a state load which arrived concurrently.
+        pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
+        hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+
+        if (parameterValueChanged && hostParams_ && hostParams_->rescan)
+            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        return true;
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
@@ -389,9 +531,37 @@ protected:
     }
 
 private:
+    bool syncFineTuneSnapshotPreservingConcurrentStateLoad() noexcept {
+        const auto revisionBefore = loadedStateRevision_.load(std::memory_order_acquire);
+        if (revisionBefore != appliedLoadedStateRevision_) {
+            hostFineTuneCents_.store(
+                pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+            return true;
+        }
+
+        double fineTune = 0.0;
+        if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune))
+            return false;
+        hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
+
+        const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
+        if (revisionAfter != revisionBefore) {
+            hostFineTuneCents_.store(
+                pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+        }
+        return true;
+    }
+
+    const clap_host_t *host_ = nullptr;
+    const clap_host_params_t *hostParams_ = nullptr;
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
     std::atomic<bool> pendingFineTuneFlush_{false};
+    std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
+    std::atomic<std::uint32_t> loadedStateRevision_{0u};
+    std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
 };
 
