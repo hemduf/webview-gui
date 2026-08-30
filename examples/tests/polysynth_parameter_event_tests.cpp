@@ -12,11 +12,14 @@ namespace {
 using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
+constexpr clap_id kMasterGainId =
+    1000u + static_cast<unsigned>(ParameterSlot::MasterGain);
 constexpr clap_id kFineTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
+constexpr double kHalfGainDb = -6.020599913279624;
 
 struct InputEvents {
     InputEvents() noexcept {
@@ -187,6 +190,24 @@ bool matchesTargetedRetune(const RenderResult &audio,
     }
     return true;
 }
+
+bool matchesMasterGainStep(const RenderResult &audio,
+                           std::uint32_t gainFrame,
+                           float beforeGain,
+                           float afterGain,
+                           std::int16_t key) noexcept {
+    const double increment = phaseIncrement(key);
+    for (std::uint32_t frame = 0; frame < audio.left.size(); ++frame) {
+        const auto gain = frame < gainFrame ? beforeGain : afterGain;
+        const auto sample = static_cast<float>(std::sin(
+            wrappedPhase(0.25 + static_cast<double>(frame) * increment) * kTwoPi));
+        const auto expected = sample * gain;
+        if (std::fabs(audio.left[frame] - expected) > 1.0e-5f ||
+            std::fabs(audio.right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
 }
 
 int main() {
@@ -292,6 +313,53 @@ int main() {
         !matchesSingleVoiceRetune(sameSampleAudio, 0, 60, 61)) {
         std::cerr << "same-sample NOTE_ON then targeted PARAM_MOD did not affect the first sample\n";
         return 15;
+    }
+
+    ParameterVoiceEngine gainValue;
+    if (!configure(gainValue))
+        return 16;
+    InputEvents gainValueEvents;
+    gainValueEvents.pushNote(0, 31, 60);
+    gainValueEvents.pushValue(8, kMasterGainId, kHalfGainDb);
+    RenderResult gainValueAudio;
+    if (!render(gainValue, gainValueEvents, gainValueAudio) ||
+        !matchesMasterGainStep(gainValueAudio, 8, 1.0f, 0.5f, 60)) {
+        std::cerr << "Master Gain PARAM_VALUE was not applied at its exact sample boundary\n";
+        return 16;
+    }
+    if (!gainValue.parameterBaseValue(kMasterGainId, baseValue) ||
+        std::fabs(baseValue - kHalfGainDb) > 1.0e-9) {
+        std::cerr << "Master Gain PARAM_VALUE was not retained as the host-visible base\n";
+        return 17;
+    }
+
+    ParameterVoiceEngine gainMod;
+    if (!configure(gainMod))
+        return 18;
+    InputEvents gainModEvents;
+    gainModEvents.pushValue(0, kMasterGainId, kHalfGainDb);
+    gainModEvents.pushNote(0, 32, 60);
+    gainModEvents.pushMod(8, kMasterGainId, -kHalfGainDb);
+    RenderResult gainModAudio;
+    if (!render(gainMod, gainModEvents, gainModAudio) ||
+        !matchesMasterGainStep(gainModAudio, 8, 0.5f, 1.0f, 60)) {
+        std::cerr << "Master Gain PARAM_MOD was not composed sample-accurately with its base\n";
+        return 19;
+    }
+    if (!gainMod.parameterBaseValue(kMasterGainId, baseValue) ||
+        std::fabs(baseValue - kHalfGainDb) > 1.0e-9) {
+        std::cerr << "Master Gain PARAM_MOD overwrote the host-visible base value\n";
+        return 20;
+    }
+
+    gainMod.reset();
+    InputEvents gainResetEvents;
+    gainResetEvents.pushNote(0, 33, 60);
+    RenderResult gainResetAudio;
+    if (!render(gainMod, gainResetEvents, gainResetAudio) ||
+        !matchesMasterGainStep(gainResetAudio, 0, 0.5f, 0.5f, 60)) {
+        std::cerr << "reset did not clear Master Gain modulation while retaining its base\n";
+        return 21;
     }
 
     return 0;
