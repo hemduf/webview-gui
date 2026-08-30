@@ -247,20 +247,45 @@ int main() {
         }
     }
 
+    // REVIEW RED: every individual CLAP value below is legal. With the documented
+    // multiplicative mapping the effective post-filter gain is 4 * 1 * 2 = 8.
+    // The internal voice contract must not retain VOLUME's narrower external cap.
+    ParameterVoiceEngine maximumEngine;
+    if (!configure(maximumEngine, 1))
+        return 22;
+    InputEvents maximumEvents;
+    if (!maximumEvents.pushNote(0, 1451, 69) ||
+        !maximumEvents.pushExpression(0, 4.0, 1451, 69, CLAP_NOTE_EXPRESSION_VOLUME) ||
+        !maximumEvents.pushExpression(0, 1.0, 1451, 69, CLAP_NOTE_EXPRESSION_EXPRESSION) ||
+        !maximumEvents.pushExpression(0, 1.0, 1451, 69))
+        return 23;
+    Buffer maximumLeft{};
+    Buffer maximumRight{};
+    if (!render(maximumEngine, maximumEvents, maximumLeft, maximumRight)) {
+        std::cerr << "maximum legal PRESSURE/VOLUME/EXPRESSION composition was rejected\n";
+        return 24;
+    }
+    for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
+        if (!nearlyEqual(maximumLeft[frame], baselineLeft[frame] * 8.0f, 8.0e-5f)) {
+            std::cerr << "maximum legal PRESSURE composition was clipped or mis-scaled\n";
+            return 25;
+        }
+    }
+
     // The pinned CLAP domain is [0, 1]. Reject invalid input before it can poison
     // the fixed per-voice RT state.
     ParameterVoiceEngine invalidEngine;
     if (!configure(invalidEngine, 1))
-        return 22;
+        return 26;
     InputEvents invalidEvents;
     if (!invalidEvents.pushNote(0, 1501, 69) ||
         !invalidEvents.pushExpression(1, 1.01, 1501, 69))
-        return 23;
+        return 27;
     Buffer invalidLeft{};
     Buffer invalidRight{};
     if (render(invalidEngine, invalidEvents, invalidLeft, invalidRight)) {
         std::cerr << "out-of-range PRESSURE was accepted\n";
-        return 24;
+        return 28;
     }
 
     return 0;
