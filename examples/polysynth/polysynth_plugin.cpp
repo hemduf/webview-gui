@@ -34,6 +34,11 @@ constexpr clap_id kHostWaveformParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform);
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr std::array<clap_id, 3> kPublishedHostParameterIds{{
+    kHostFineTuneParameterId,
+    kHostMasterGainParameterId,
+    kHostWaveformParameterId,
+}};
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
 constexpr clap_id kPerformanceRemoteControlsPageId = 0x3201u;
 constexpr std::uint32_t kPolySynthReleaseTailSamples = 64u;
@@ -82,8 +87,9 @@ const clap_plugin_descriptor_t kDescriptor{
 };
 
 constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-constexpr std::uint32_t kStateVersion = 2u;
-constexpr std::size_t kStateSize = 24u;
+constexpr std::uint32_t kStateVersion = 3u;
+constexpr std::size_t kLegacyStateSize = 24u;
+constexpr std::size_t kStateSize = 28u;
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -100,9 +106,9 @@ bool isGlobalParameterAddress(std::int32_t noteId,
 }
 
 bool isPublishedHostParameter(clap_id id) noexcept {
-    return id == kHostFineTuneParameterId ||
-           id == kHostMasterGainParameterId ||
-           id == kHostWaveformParameterId;
+    return std::find(kPublishedHostParameterIds.begin(),
+                     kPublishedHostParameterIds.end(),
+                     id) != kPublishedHostParameterIds.end();
 }
 
 void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
@@ -162,7 +168,8 @@ bool readAll(const clap_istream_t *stream,
 }
 
 std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
-                                                  float masterGainDb) noexcept {
+                                                  float masterGainDb,
+                                                  std::uint32_t waveform) noexcept {
     std::array<std::uint8_t, kStateSize> bytes{};
     std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
     storeU32Le(bytes.data() + 8, kStateVersion);
@@ -174,17 +181,23 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
     std::uint32_t masterGainBits = 0;
     std::memcpy(&masterGainBits, &masterGainDb, sizeof(masterGainBits));
     storeU32Le(bytes.data() + 20, masterGainBits);
+    storeU32Le(bytes.data() + 24, waveform);
     return bytes;
 }
 
 bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
+                 std::size_t encodedSize,
                  double &fineTuneCents,
-                 float &masterGainDb) noexcept {
+                 float &masterGainDb,
+                 std::uint32_t &waveform) noexcept {
     if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
         return false;
 
     const auto version = loadU32Le(bytes.data() + 8);
-    if (version != 1u && version != kStateVersion)
+    if (version < 1u || version > kStateVersion)
+        return false;
+    const auto expectedSize = version < 3u ? kLegacyStateSize : kStateSize;
+    if (encodedSize != expectedSize)
         return false;
 
     const auto fineTuneBits = loadU64Le(bytes.data() + 12);
@@ -194,6 +207,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
         fineTuneCents < fineTuneSpec->minValue || fineTuneCents > fineTuneSpec->maxValue)
         return false;
 
+    waveform = 0u;
     if (version == 1u) {
         if (bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
             return false;
@@ -204,9 +218,19 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     const auto masterGainBits = loadU32Le(bytes.data() + 20);
     std::memcpy(&masterGainDb, &masterGainBits, sizeof(masterGainDb));
     const auto *masterGainSpec = parameterSpecForId(kHostMasterGainParameterId);
-    return masterGainSpec && std::isfinite(masterGainDb) &&
-           static_cast<double>(masterGainDb) >= masterGainSpec->minValue &&
-           static_cast<double>(masterGainDb) <= masterGainSpec->maxValue;
+    if (!masterGainSpec || !std::isfinite(masterGainDb) ||
+        static_cast<double>(masterGainDb) < masterGainSpec->minValue ||
+        static_cast<double>(masterGainDb) > masterGainSpec->maxValue)
+        return false;
+
+    if (version == 2u)
+        return true;
+
+    waveform = loadU32Le(bytes.data() + 24);
+    const auto *waveformSpec = parameterSpecForId(kHostWaveformParameterId);
+    return waveformSpec &&
+           static_cast<double>(waveform) >= waveformSpec->minValue &&
+           static_cast<double>(waveform) <= waveformSpec->maxValue;
 }
 
 struct NoteEndOutputSink {
@@ -220,8 +244,8 @@ struct NoteEndOutputSink {
 };
 
 // state.load() has no sample offset, but retained base values must still reach
-// already-running voices/output state before rendering resumes. Prepend both
-// fixed sample-zero PARAM_VALUE events to the next process block. Host sample-zero
+// already-running voices/output state before rendering resumes. Prepend fixed
+// sample-zero PARAM_VALUE events to the next process block. Host sample-zero
 // automation remains later in the stable event stream and therefore wins.
 struct PendingParameterStateInput {
     PendingParameterStateInput() noexcept {
@@ -232,13 +256,15 @@ struct PendingParameterStateInput {
 
     bool prepare(const clap_input_events_t *newHostInput,
                  float fineTuneCents,
-                 float masterGainDb) noexcept {
+                 float masterGainDb,
+                 std::uint32_t waveform) noexcept {
         hostInput = newHostInput;
         hostCount = 0;
         valid = true;
 
         prepareEvent(events[0], kHostFineTuneParameterId, fineTuneCents);
         prepareEvent(events[1], kHostMasterGainParameterId, masterGainDb);
+        prepareEvent(events[2], kHostWaveformParameterId, waveform);
 
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
@@ -252,7 +278,7 @@ struct PendingParameterStateInput {
 
     static void prepareEvent(clap_event_param_value_t &event,
                              clap_id paramId,
-                             float value) noexcept {
+                             double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
         event.header.time = 0;
@@ -263,7 +289,7 @@ struct PendingParameterStateInput {
         event.port_index = -1;
         event.channel = -1;
         event.key = -1;
-        event.value = static_cast<double>(value);
+        event.value = value;
     }
 
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *inputEvents) noexcept {
@@ -289,7 +315,7 @@ struct PendingParameterStateInput {
     }
 
     const clap_input_events_t *hostInput = nullptr;
-    std::array<clap_event_param_value_t, 2> events{};
+    std::array<clap_event_param_value_t, 3> events{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
     bool valid = false;
@@ -366,7 +392,8 @@ protected:
             if (!pendingInput.prepare(
                     processData->in_events,
                     hostFineTuneCents_.load(std::memory_order_acquire),
-                    hostMasterGainDb_.load(std::memory_order_acquire)))
+                    hostMasterGainDb_.load(std::memory_order_acquire),
+                    hostWaveform_.load(std::memory_order_acquire)))
                 return CLAP_PROCESS_ERROR;
             inputEvents = &pendingInput.input;
         }
@@ -405,14 +432,30 @@ protected:
     bool stateSave(const clap_ostream_t *stream) noexcept override {
         const auto bytes = encodeState(
             static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)),
-            hostMasterGainDb_.load(std::memory_order_relaxed));
+            hostMasterGainDb_.load(std::memory_order_relaxed),
+            hostWaveform_.load(std::memory_order_relaxed));
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
     bool stateLoad(const clap_istream_t *stream) noexcept override {
         std::array<std::uint8_t, kStateSize> bytes{};
-        if (!readAll(stream, bytes.data(), bytes.size()))
+        if (!readAll(stream, bytes.data(), kLegacyStateSize))
             return false;
+
+        if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
+            return false;
+        const auto version = loadU32Le(bytes.data() + 8);
+        if (version < 1u || version > kStateVersion)
+            return false;
+
+        std::size_t encodedSize = kLegacyStateSize;
+        if (version == kStateVersion) {
+            if (!readAll(stream,
+                         bytes.data() + kLegacyStateSize,
+                         kStateSize - kLegacyStateSize))
+                return false;
+            encodedSize = kStateSize;
+        }
 
         std::uint8_t trailing = 0;
         const auto trailingRead = stream->read(stream, &trailing, 1);
@@ -421,13 +464,15 @@ protected:
 
         double fineTuneCents = 0.0;
         float masterGainDb = 0.0f;
-        if (!decodeState(bytes, fineTuneCents, masterGainDb))
+        std::uint32_t waveform = 0u;
+        if (!decodeState(bytes, encodedSize, fineTuneCents, masterGainDb, waveform))
             return false;
 
         const auto fineTune = static_cast<float>(fineTuneCents);
         const bool parameterValueChanged =
             hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune ||
-            hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb;
+            hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb ||
+            hostWaveform_.load(std::memory_order_relaxed) != waveform;
 
         // Publish all payload snapshots before the release revision. An audio
         // thread which observes the new revision with acquire semantics must also
@@ -435,8 +480,10 @@ protected:
         // revision could otherwise replay stale state and mark it as applied.
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
+        pendingLoadedWaveform_.store(waveform, std::memory_order_relaxed);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
+        hostWaveform_.store(waveform, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
@@ -566,18 +613,16 @@ protected:
 
     bool implementsParams() const noexcept override { return true; }
 
-    std::uint32_t paramsCount() const noexcept override { return 3u; }
+    std::uint32_t paramsCount() const noexcept override {
+        return static_cast<std::uint32_t>(kPublishedHostParameterIds.size());
+    }
 
     bool paramsInfo(std::uint32_t paramIndex,
                     clap_param_info_t *info) const noexcept override {
-        if (!info || paramIndex >= paramsCount())
+        if (!info || paramIndex >= kPublishedHostParameterIds.size())
             return false;
 
-        const clap_id paramId = paramIndex == 0u
-                                    ? kHostFineTuneParameterId
-                                    : (paramIndex == 1u
-                                           ? kHostMasterGainParameterId
-                                           : kHostWaveformParameterId);
+        const clap_id paramId = kPublishedHostParameterIds[paramIndex];
         const auto *spec = parameterSpecForId(paramId);
         if (!spec)
             return false;
@@ -794,6 +839,9 @@ private:
             hostMasterGainDb_.store(
                 pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostWaveform_.store(
+                pendingLoadedWaveform_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
             return true;
         }
 
@@ -816,6 +864,9 @@ private:
             hostMasterGainDb_.store(
                 pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostWaveform_.store(
+                pendingLoadedWaveform_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
         }
         return true;
     }
@@ -828,6 +879,7 @@ private:
     std::atomic<std::uint32_t> hostWaveform_{0u};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
+    std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
