@@ -264,7 +264,7 @@ protected:
             return false;
         if (!engine_.configure(kPolySynthDefaultVoiceCount,
                                sampleRate,
-                               kPolySynthReleaseTailSamples) ||
+                               maxFrameCount) ||
             !engine_.setFineTuningCents(
                 hostFineTuneCents_.load(std::memory_order_acquire)))
             return false;
