@@ -32,12 +32,15 @@ constexpr clap_id kHostMasterGainParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::MasterGain);
 constexpr clap_id kHostWaveformParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform);
+constexpr clap_id kHostCoarseTuneParameterId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::CoarseTuning);
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
-constexpr std::array<clap_id, 3> kPublishedHostParameterIds{{
+constexpr std::array<clap_id, 4> kPublishedHostParameterIds{{
     kHostFineTuneParameterId,
     kHostMasterGainParameterId,
     kHostWaveformParameterId,
+    kHostCoarseTuneParameterId,
 }};
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
 constexpr clap_id kPerformanceRemoteControlsPageId = 0x3201u;
@@ -47,6 +50,8 @@ static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
               "PolySynth state handoff revision must be lock-free");
+static_assert(std::atomic<std::int32_t>::is_always_lock_free,
+              "PolySynth coarse-tune host snapshot must be lock-free");
 static_assert(sizeof(float) == sizeof(std::uint32_t),
               "PolySynth state requires a 32-bit float");
 static_assert(std::numeric_limits<float>::is_iec559,
@@ -243,10 +248,6 @@ struct NoteEndOutputSink {
     }
 };
 
-// state.load() has no sample offset, but retained base values must still reach
-// already-running voices/output state before rendering resumes. Prepend fixed
-// sample-zero PARAM_VALUE events to the next process block. Host sample-zero
-// automation remains later in the stable event stream and therefore wins.
 struct PendingParameterStateInput {
     PendingParameterStateInput() noexcept {
         input.ctx = this;
@@ -349,11 +350,10 @@ protected:
             !engine_.setFineTuningCents(
                 hostFineTuneCents_.load(std::memory_order_acquire)) ||
             !applyRetainedMasterGainBaseToEngine() ||
-            !applyRetainedWaveformBaseToEngine())
+            !applyRetainedWaveformBaseToEngine() ||
+            !applyRetainedCoarseTuneBaseToEngine())
             return false;
 
-        // configure() starts with no active generations and retained base values
-        // are explicitly applied above, so no process-time replay is needed.
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
         active_ = true;
         return true;
@@ -379,9 +379,6 @@ protected:
             !output.data32[0] || !output.data32[1])
             return CLAP_PROCESS_ERROR;
 
-        // The port does not advertise CLAP_AUDIO_PORT_SUPPORTS_64BITS, so the
-        // host must provide the mandatory 32-bit format. PolySynth always writes
-        // every frame, hence neither channel can be advertised as constant.
         output.constant_mask = 0;
 
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
@@ -410,9 +407,6 @@ protected:
         if (replayLoadedState)
             appliedLoadedStateRevision_ = loadedRevision;
 
-        // Publish block-boundary host snapshots without overwriting a newer
-        // concurrent main-thread state.load(). The DSP/event adapter remains the
-        // authority for sample-accurate changes; these mirrors never feed audio.
         if (!syncParameterSnapshotsPreservingConcurrentStateLoad())
             return CLAP_PROCESS_ERROR;
 
@@ -422,8 +416,6 @@ protected:
     bool implementsTail() const noexcept override { return true; }
 
     std::uint32_t tailGet() const noexcept override {
-        // The current patch has a fixed finite amplitude release and no delay,
-        // reverb, feedback, or other post-note source that can outlive it.
         return kPolySynthReleaseTailSamples;
     }
 
@@ -474,10 +466,6 @@ protected:
             hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb ||
             hostWaveform_.load(std::memory_order_relaxed) != waveform;
 
-        // Publish all payload snapshots before the release revision. An audio
-        // thread which observes the new revision with acquire semantics must also
-        // observe the matching values; publishing a host snapshot after the
-        // revision could otherwise replay stale state and mark it as applied.
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         pendingLoadedWaveform_.store(waveform, std::memory_order_relaxed);
@@ -495,10 +483,6 @@ protected:
 
     bool stateContextSave(const clap_ostream_t *stream,
                           std::uint32_t) noexcept override {
-        // PolySynth currently has no context-sensitive external resources or
-        // preset-only fields. The pinned state-context contract explicitly
-        // permits falling back to clap.state, and requires cross-context payload
-        // compatibility. Keep one authoritative versioned state format.
         return stateSave(stream);
     }
 
@@ -576,9 +560,6 @@ protected:
 
         *info = {};
         info->voice_count = static_cast<std::uint32_t>(kPolySynthDefaultVoiceCount);
-        // The current patch uses 16 voices, but the real-time allocator owns 64
-        // preallocated slots and can raise voice_count up to that capacity without
-        // allocating. CLAP explicitly distinguishes these two quantities.
         info->voice_capacity = VoiceAllocator::kMaximumVoices;
         info->flags = CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
         return true;
@@ -602,6 +583,7 @@ protected:
             page->page_id = kTuningRemoteControlsPageId;
             page->param_ids[0] = kHostFineTuneParameterId;
             page->param_ids[1] = kHostWaveformParameterId;
+            page->param_ids[2] = kHostCoarseTuneParameterId;
             return copyName(page->section_name, sizeof(page->section_name), "Oscillator") &&
                    copyName(page->page_name, sizeof(page->page_name), "Tuning");
         }
@@ -631,10 +613,6 @@ protected:
         *info = {};
         info->id = spec->id;
         info->flags = spec->flags;
-        // `kParameterSpecs` has static storage duration, so each cookie stays
-        // stable until module unload. The event path remains param-id authoritative
-        // and deliberately does not dereference host-provided cookies because CLAP
-        // permits the host to return either this exact pointer or nullptr.
         info->cookie = const_cast<void *>(static_cast<const void *>(spec));
         info->min_value = spec->minValue;
         info->max_value = spec->maxValue;
@@ -647,17 +625,18 @@ protected:
         if (!value || !isPublishedHostParameter(paramId))
             return false;
         if (paramId == kHostFineTuneParameterId) {
-            *value = static_cast<double>(
-                hostFineTuneCents_.load(std::memory_order_acquire));
+            *value = static_cast<double>(hostFineTuneCents_.load(std::memory_order_acquire));
             return true;
         }
         if (paramId == kHostWaveformParameterId) {
-            *value = static_cast<double>(
-                hostWaveform_.load(std::memory_order_acquire));
+            *value = static_cast<double>(hostWaveform_.load(std::memory_order_acquire));
             return true;
         }
-        *value = static_cast<double>(
-            hostMasterGainDb_.load(std::memory_order_acquire));
+        if (paramId == kHostCoarseTuneParameterId) {
+            *value = static_cast<double>(hostCoarseTuneSemitones_.load(std::memory_order_acquire));
+            return true;
+        }
+        *value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
         return true;
     }
 
@@ -672,6 +651,8 @@ protected:
 
         if (paramId == kHostWaveformParameterId)
             return waveformTextForValue(value, display, size);
+        if (paramId == kHostCoarseTuneParameterId)
+            return coarseTuningTextForValue(value, display, size);
 
         auto result = std::to_chars(display,
                                     display + size - 1,
@@ -698,6 +679,8 @@ protected:
             *value = parsedWaveform;
             return true;
         }
+        if (paramId == kHostCoarseTuneParameterId)
+            return coarseTuningValueFromText(display, *value);
 
         const char *end = display + std::strlen(display);
         double parsed = 0.0;
@@ -729,9 +712,7 @@ protected:
                 const auto *spec = parameterSpecForId(event.param_id);
                 if (!spec || !isPublishedHostParameter(event.param_id) ||
                     !std::isfinite(event.value) ||
-                    event.value < spec->minValue || event.value > spec->maxValue ||
-                    (event.param_id == kHostWaveformParameterId &&
-                     std::trunc(event.value) != event.value))
+                    event.value < spec->minValue || event.value > spec->maxValue)
                     continue;
 
                 const bool isGlobal = isGlobalParameterAddress(event.note_id,
@@ -739,42 +720,36 @@ protected:
                                                                 event.channel,
                                                                 event.key);
                 if (active_) {
-                    // CLAP specifies active params.flush() on the audio thread and
-                    // forbids concurrency with process(). Apply the event directly
-                    // to the same fixed-capacity adapter; no deferred queue or
-                    // cross-thread voice mutation is needed.
                     if (!engine_.applyParameterFlushEvent(*header))
                         continue;
                     if (isGlobal) {
                         if (event.param_id == kHostFineTuneParameterId) {
-                            hostFineTuneCents_.store(
-                                static_cast<float>(event.value),
-                                std::memory_order_release);
+                            hostFineTuneCents_.store(static_cast<float>(event.value),
+                                                     std::memory_order_release);
                         } else if (event.param_id == kHostWaveformParameterId) {
-                            hostWaveform_.store(
-                                static_cast<std::uint32_t>(event.value),
-                                std::memory_order_release);
+                            hostWaveform_.store(static_cast<std::uint32_t>(event.value),
+                                                std::memory_order_release);
+                        } else if (event.param_id == kHostCoarseTuneParameterId) {
+                            hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(event.value),
+                                                           std::memory_order_release);
                         } else {
-                            hostMasterGainDb_.store(
-                                static_cast<float>(event.value),
-                                std::memory_order_release);
+                            hostMasterGainDb_.store(static_cast<float>(event.value),
+                                                    std::memory_order_release);
                         }
                     }
                 } else if (isGlobal) {
-                    // Before activation there are no voice generations to target.
-                    // Retain persistent global bases for configure()/activation.
                     if (event.param_id == kHostFineTuneParameterId) {
-                        hostFineTuneCents_.store(
-                            static_cast<float>(event.value),
-                            std::memory_order_release);
+                        hostFineTuneCents_.store(static_cast<float>(event.value),
+                                                 std::memory_order_release);
                     } else if (event.param_id == kHostWaveformParameterId) {
-                        hostWaveform_.store(
-                            static_cast<std::uint32_t>(event.value),
-                            std::memory_order_release);
+                        hostWaveform_.store(static_cast<std::uint32_t>(event.value),
+                                            std::memory_order_release);
+                    } else if (event.param_id == kHostCoarseTuneParameterId) {
+                        hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(event.value),
+                                                       std::memory_order_release);
                     } else {
-                        hostMasterGainDb_.store(
-                            static_cast<float>(event.value),
-                            std::memory_order_release);
+                        hostMasterGainDb_.store(static_cast<float>(event.value),
+                                                std::memory_order_release);
                     }
                 }
                 continue;
@@ -788,10 +763,6 @@ protected:
                 if (!isPublishedHostParameter(event.param_id) ||
                     !parameterSpecForId(event.param_id) || !std::isfinite(event.amount))
                     continue;
-
-                // Modulation is transient and never changes get_value(). With no
-                // active configured engine, a modulation statement has no voice or
-                // output generation to affect and is ignored.
                 if (active_)
                     (void)engine_.applyParameterFlushEvent(*header);
             }
@@ -810,8 +781,7 @@ private:
         event.port_index = -1;
         event.channel = -1;
         event.key = -1;
-        event.value = static_cast<double>(
-            hostMasterGainDb_.load(std::memory_order_acquire));
+        event.value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
         return engine_.applyParameterFlushEvent(event.header);
     }
 
@@ -826,8 +796,23 @@ private:
         event.port_index = -1;
         event.channel = -1;
         event.key = -1;
+        event.value = static_cast<double>(hostWaveform_.load(std::memory_order_acquire));
+        return engine_.applyParameterFlushEvent(event.header);
+    }
+
+    bool applyRetainedCoarseTuneBaseToEngine() noexcept {
+        clap_event_param_value_t event{};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kHostCoarseTuneParameterId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
         event.value = static_cast<double>(
-            hostWaveform_.load(std::memory_order_acquire));
+            hostCoarseTuneSemitones_.load(std::memory_order_acquire));
         return engine_.applyParameterFlushEvent(event.header);
     }
 
@@ -849,13 +834,17 @@ private:
         double fineTune = 0.0;
         double masterGain = 0.0;
         double waveform = 0.0;
+        double coarseTune = 0.0;
         if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune) ||
             !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain) ||
-            !engine_.parameterBaseValue(kHostWaveformParameterId, waveform))
+            !engine_.parameterBaseValue(kHostWaveformParameterId, waveform) ||
+            !engine_.parameterBaseValue(kHostCoarseTuneParameterId, coarseTune))
             return false;
         hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
         hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
         hostWaveform_.store(static_cast<std::uint32_t>(waveform), std::memory_order_relaxed);
+        hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(coarseTune),
+                                      std::memory_order_relaxed);
 
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore) {
@@ -878,6 +867,7 @@ private:
     std::atomic<float> hostFineTuneCents_{0.0f};
     std::atomic<float> hostMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> hostWaveform_{0u};
+    std::atomic<std::int32_t> hostCoarseTuneSemitones_{0};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
