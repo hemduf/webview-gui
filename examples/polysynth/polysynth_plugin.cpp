@@ -30,8 +30,6 @@ constexpr clap_id kHostFineTuneParameterId =
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
-static_assert(std::atomic<bool>::is_always_lock_free,
-              "PolySynth requires a lock-free pending parameter handoff");
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
               "PolySynth state handoff revision must be lock-free");
 static_assert(sizeof(double) == sizeof(std::uint64_t),
@@ -73,9 +71,11 @@ bool copyName(char *destination, std::size_t capacity, const char *text) noexcep
     return written >= 0 && static_cast<std::size_t>(written) < capacity;
 }
 
-bool isGlobalParameterAddress(const clap_event_param_value_t &event) noexcept {
-    return event.note_id == -1 && event.port_index == -1 &&
-           event.channel == -1 && event.key == -1;
+bool isGlobalParameterAddress(std::int32_t noteId,
+                              std::int16_t portIndex,
+                              std::int16_t channel,
+                              std::int16_t key) noexcept {
+    return noteId == -1 && portIndex == -1 && channel == -1 && key == -1;
 }
 
 void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
@@ -169,10 +169,10 @@ struct NoteEndOutputSink {
     }
 };
 
-// params.flush() and state.load() have no sample offsets, but retained base
-// values must still reach already-running voices before rendering resumes.
-// Prepend one fixed sample-zero PARAM_VALUE to the next process block; host
-// sample-zero automation remains later in the stream and therefore wins.
+// state.load() has no sample offset, but a retained base value must still reach
+// already-running voices before rendering resumes. Prepend one fixed sample-zero
+// PARAM_VALUE to the next process block; host sample-zero automation remains later
+// in the stream and therefore wins.
 struct PendingFineTuneInput {
     PendingFineTuneInput() noexcept {
         input.ctx = this;
@@ -264,7 +264,6 @@ protected:
 
         // configure() starts with no active generations, so the retained base
         // value is already authoritative and no process-time replay is needed.
-        pendingFineTuneFlush_.store(false, std::memory_order_release);
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
         active_ = true;
         return true;
@@ -297,12 +296,9 @@ protected:
 
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
         const bool replayLoadedState = loadedRevision != appliedLoadedStateRevision_;
-        const bool replayFlushedValue =
-            pendingFineTuneFlush_.load(std::memory_order_acquire);
-        const bool replayRetainedValue = replayLoadedState || replayFlushedValue;
         const clap_input_events_t *inputEvents = processData->in_events;
         PendingFineTuneInput pendingInput;
-        if (replayRetainedValue) {
+        if (replayLoadedState) {
             if (!pendingInput.prepare(
                     processData->in_events,
                     hostFineTuneCents_.load(std::memory_order_acquire)))
@@ -319,8 +315,6 @@ protected:
         if (!engineOk || !noteEndSink.ok)
             return CLAP_PROCESS_ERROR;
 
-        if (replayFlushedValue)
-            pendingFineTuneFlush_.store(false, std::memory_order_release);
         if (replayLoadedState)
             appliedLoadedStateRevision_ = loadedRevision;
 
@@ -457,11 +451,10 @@ protected:
 
         *info = {};
         info->id = spec->id;
-        // The process adapter already supports polyphonic value/modulation
-        // addressing, but this first plugin-facing increment deliberately
-        // advertises base automation only. The per-note/modulation flags are
-        // enabled only once params.flush has an equivalent non-process handoff.
-        info->flags = kBaseAutomatableFlags;
+        // Fine Tune now has equivalent process() and active params.flush()
+        // handling for global and voice-addressed PARAM_VALUE/PARAM_MOD events,
+        // so the capability flags may match the already-qualified parameter model.
+        info->flags = spec->flags;
         info->cookie = nullptr;
         info->min_value = spec->minValue;
         info->max_value = spec->maxValue;
@@ -524,28 +517,60 @@ protected:
         for (std::uint32_t index = 0; index < count; ++index) {
             const auto *header = in->get(in, index);
             if (!header || header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
-                header->type != CLAP_EVENT_PARAM_VALUE ||
-                header->size < sizeof(clap_event_param_value_t))
+                header->size < sizeof(clap_event_header_t))
                 continue;
 
-            const auto &event =
-                *reinterpret_cast<const clap_event_param_value_t *>(header);
-            const auto *spec = parameterSpecForId(event.param_id);
-            if (!spec || event.param_id != kHostFineTuneParameterId ||
-                !isGlobalParameterAddress(event) || !std::isfinite(event.value) ||
-                event.value < spec->minValue || event.value > spec->maxValue)
+            if (header->type == CLAP_EVENT_PARAM_VALUE) {
+                if (header->size < sizeof(clap_event_param_value_t))
+                    continue;
+                const auto &event =
+                    *reinterpret_cast<const clap_event_param_value_t *>(header);
+                const auto *spec = parameterSpecForId(event.param_id);
+                if (!spec || event.param_id != kHostFineTuneParameterId ||
+                    !std::isfinite(event.value) ||
+                    event.value < spec->minValue || event.value > spec->maxValue)
+                    continue;
+
+                const bool isGlobal = isGlobalParameterAddress(event.note_id,
+                                                                event.port_index,
+                                                                event.channel,
+                                                                event.key);
+                if (active_) {
+                    // CLAP specifies active params.flush() on the audio thread and
+                    // forbids concurrency with process(). Apply the event directly
+                    // to the same fixed-capacity adapter; no deferred queue or
+                    // cross-thread voice mutation is needed.
+                    if (!engine_.applyParameterFlushEvent(*header))
+                        continue;
+                    if (isGlobal)
+                        hostFineTuneCents_.store(
+                            static_cast<float>(event.value),
+                            std::memory_order_release);
+                } else if (isGlobal) {
+                    // Before activation there are no voice generations to target.
+                    // Retain only the persistent global base for configure().
+                    hostFineTuneCents_.store(
+                        static_cast<float>(event.value),
+                        std::memory_order_release);
+                }
                 continue;
+            }
 
-            const auto fineTune = static_cast<float>(event.value);
-            hostFineTuneCents_.store(fineTune, std::memory_order_release);
+            if (header->type == CLAP_EVENT_PARAM_MOD) {
+                if (header->size < sizeof(clap_event_param_mod_t))
+                    continue;
+                const auto &event =
+                    *reinterpret_cast<const clap_event_param_mod_t *>(header);
+                if (event.param_id != kHostFineTuneParameterId ||
+                    !parameterSpecForId(event.param_id) || !std::isfinite(event.amount))
+                    continue;
 
-            // flush() is never concurrent with process(). The default setter is
-            // enough before activation, but active generations need the event
-            // adapter's voice-local update. Queue one fixed sample-zero replay
-            // for the next process call; any host sample-zero event comes later
-            // and overrides this retained flush value deterministically.
-            (void)engine_.setFineTuningCents(fineTune);
-            pendingFineTuneFlush_.store(true, std::memory_order_release);
+                // Modulation is transient and never changes get_value(). With no
+                // active voices/configured engine, an inactive targeted or global
+                // modulation statement has no generation to affect and is ignored.
+                if (active_)
+                    (void)engine_.applyParameterFlushEvent(*header);
+            }
         }
     }
 
@@ -577,7 +602,6 @@ private:
     const clap_host_params_t *hostParams_ = nullptr;
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
-    std::atomic<bool> pendingFineTuneFlush_{false};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
