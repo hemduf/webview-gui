@@ -224,7 +224,7 @@ int main() {
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     if (!params || !params->count || !params->get_info || !params->get_value ||
-        !params->flush || params->count(plugin) != 1) {
+        !params->flush || params->count(plugin) != 2u) {
         plugin->destroy(plugin);
         return 4;
     }
