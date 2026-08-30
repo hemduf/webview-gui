@@ -75,8 +75,17 @@ struct NoteEndOutputSink {
 // resumes. Prepend one fixed sample-zero PARAM_VALUE to the next process block;
 // host-provided sample-zero events remain later in the stream and therefore win.
 struct PendingFineTuneInput {
-    PendingFineTuneInput(const clap_input_events_t *hostInput, float value) noexcept
-        : hostInput(hostInput) {
+    PendingFineTuneInput() noexcept {
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    bool prepare(const clap_input_events_t *newHostInput, float value) noexcept {
+        hostInput = newHostInput;
+        hostCount = 0;
+        valid = true;
+
         event = {};
         event.header.size = sizeof(event);
         event.header.time = 0;
@@ -89,10 +98,6 @@ struct PendingFineTuneInput {
         event.key = -1;
         event.value = static_cast<double>(value);
 
-        input.ctx = this;
-        input.size = size;
-        input.get = get;
-
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
         else if (hostInput)
@@ -100,6 +105,7 @@ struct PendingFineTuneInput {
 
         if (hostCount == std::numeric_limits<std::uint32_t>::max())
             valid = false;
+        return valid;
     }
 
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
@@ -127,7 +133,7 @@ struct PendingFineTuneInput {
     clap_event_param_value_t event{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
-    bool valid = true;
+    bool valid = false;
 };
 
 class PolySynthPlugin final : public PolySynthBase {
@@ -181,14 +187,15 @@ protected:
 
         const bool replayFlushedValue =
             pendingFineTuneFlush_.load(std::memory_order_acquire);
-        PendingFineTuneInput pendingInput{
-            processData->in_events,
-            hostFineTuneCents_.load(std::memory_order_acquire)};
-        if (replayFlushedValue && !pendingInput.valid)
-            return CLAP_PROCESS_ERROR;
-
-        const clap_input_events_t *inputEvents =
-            replayFlushedValue ? &pendingInput.input : processData->in_events;
+        const clap_input_events_t *inputEvents = processData->in_events;
+        PendingFineTuneInput pendingInput;
+        if (replayFlushedValue) {
+            if (!pendingInput.prepare(
+                    processData->in_events,
+                    hostFineTuneCents_.load(std::memory_order_acquire)))
+                return CLAP_PROCESS_ERROR;
+            inputEvents = &pendingInput.input;
+        }
 
         NoteEndOutputSink noteEndSink{processData->out_events};
         const bool engineOk = engine_.process(inputEvents,
