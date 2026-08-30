@@ -235,21 +235,18 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // This bounded increment advertises only Fine Tune because it is the first
-    // parameter whose global and polyphonic process paths are fully implemented.
-    // Additional internal parameter slots must not become host-visible merely
-    // because metadata exists for them.
+    // This bounded increment exposes the first host-facing base-value contract
+    // only. Fine Tune already has a sample-accurate polyphonic process path, but
+    // per-note/modulation flags remain intentionally unadvertised until the
+    // non-process flush handoff can preserve those semantics too.
     if (params->count(plugin) != 1)
-        return nullptr;
-
-    const auto *spec = webview_gui::examples::polysynth::parameterSpecForId(kFineTuneId);
-    if (!spec)
         return nullptr;
 
     clap_param_info_t info{};
     if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
-        info.flags != spec->flags || info.min_value != -100.0 ||
-        info.max_value != 100.0 || info.default_value != 0.0 ||
+        info.flags != webview_gui::examples::polysynth::kBaseAutomatableFlags ||
+        info.min_value != -100.0 || info.max_value != 100.0 ||
+        info.default_value != 0.0 ||
         std::strcmp(info.name, "Fine Tune") != 0 ||
         std::strcmp(info.module, "Oscillator") != 0)
         return nullptr;
