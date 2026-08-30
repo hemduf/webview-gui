@@ -154,13 +154,32 @@ private:
                event.key >= -1 && event.key <= 127;
     }
 
-    void clearTransientExpressionState() noexcept {
+    void clearPendingExpressionEntries() noexcept {
         for (auto &entry : pendingTuningExpressions_)
             entry = {};
         for (auto &entry : pendingVolumeExpressions_)
             entry = {};
         for (auto &entry : pendingPanExpressions_)
             entry = {};
+    }
+
+    void clearTransientExpressionState() noexcept {
+        clearPendingExpressionEntries();
+        pendingExpressionTime_ = 0;
+        pendingExpressionTimeValid_ = false;
+    }
+
+    // Pending note-expression state only bridges events which share one sample
+    // timestamp. Once the ordered CLAP stream advances, retaining older entries
+    // wastes bounded RT capacity and can reject otherwise valid event streams.
+    // Clear the fixed caches once per timestamp transition while preserving all
+    // expressions at the current sample for a later NOTE_ON at that same sample.
+    void prepareTransientExpressionTime(std::uint32_t time) noexcept {
+        if (pendingExpressionTimeValid_ && pendingExpressionTime_ == time)
+            return;
+        clearPendingExpressionEntries();
+        pendingExpressionTime_ = time;
+        pendingExpressionTimeValid_ = true;
     }
 
     bool storePendingTuning(const clap_event_note_expression_t &event) noexcept {
@@ -294,6 +313,8 @@ private:
         const auto index = event.voiceIndex;
         if (index >= capacity() || event.kind != ScheduledNoteKind::NoteOn)
             return false;
+
+        prepareTransientExpressionTime(event.time);
 
         if (!polyphonicState_.startVoice(index, event.identity))
             return false;
@@ -447,6 +468,7 @@ private:
                 return false;
             const auto &event =
                 *reinterpret_cast<const clap_event_note_expression_t *>(&header);
+            prepareTransientExpressionTime(event.header.time);
             switch (event.expression_id) {
                 case CLAP_NOTE_EXPRESSION_TUNING:
                     return applyTuningExpression(event);
@@ -520,6 +542,8 @@ private:
         pendingVolumeExpressions_{};
     std::array<PendingPanExpression, VoiceAllocator::kMaximumVoices>
         pendingPanExpressions_{};
+    std::uint32_t pendingExpressionTime_ = 0;
+    bool pendingExpressionTimeValid_ = false;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
