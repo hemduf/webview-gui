@@ -19,6 +19,7 @@ using webview_gui::examples::polysynth::parameterSpecForId;
 using webview_gui::examples::polysynth::parameterSlotForId;
 using webview_gui::examples::polysynth::supportsPolyphonicAddressing;
 using webview_gui::examples::polysynth::waveformNameForValue;
+using webview_gui::examples::polysynth::waveformTextForValue;
 using webview_gui::examples::polysynth::waveformValueFromName;
 
 constexpr std::uint32_t kPolyAutomationFlags =
@@ -114,6 +115,63 @@ bool checkWaveformTextContract() {
 
     return true;
 }
+
+bool checkWaveformDisplayBufferContract() {
+    struct DisplayCase {
+        double value;
+        const char *expected;
+    };
+    constexpr std::array<DisplayCase, 4> cases{{
+        {0.0, "Sine"},
+        {0.5, "Sine"},
+        {1.9, "Saw"},
+        {2.0, "Square"},
+    }};
+
+    for (const auto &item : cases) {
+        std::array<char, CLAP_NAME_SIZE> display{};
+        if (!waveformTextForValue(item.value,
+                                  display.data(),
+                                  static_cast<std::uint32_t>(display.size())) ||
+            std::strcmp(display.data(), item.expected) != 0) {
+            std::cerr << "waveform CLAP display-buffer formatting mismatch\n";
+            return false;
+        }
+    }
+
+    std::array<char, 7> exactSquare{{'x', 'x', 'x', 'x', 'x', 'x', 'x'}};
+    if (!waveformTextForValue(2.0,
+                              exactSquare.data(),
+                              static_cast<std::uint32_t>(exactSquare.size())) ||
+        std::strcmp(exactSquare.data(), "Square") != 0) {
+        std::cerr << "waveform exact-size CLAP display buffer was rejected\n";
+        return false;
+    }
+
+    std::array<char, 6> tooSmall{{'k', 'e', 'e', 'p', '!', '\0'}};
+    const auto originalTooSmall = tooSmall;
+    if (waveformTextForValue(2.0,
+                             tooSmall.data(),
+                             static_cast<std::uint32_t>(tooSmall.size())) ||
+        tooSmall != originalTooSmall) {
+        std::cerr << "waveform short display buffer unexpectedly succeeded or mutated output\n";
+        return false;
+    }
+
+    std::array<char, 8> invalidValue{{'u', 'n', 'c', 'h', 'a', 'n', 'g', 'e'}};
+    const auto originalInvalidValue = invalidValue;
+    if (waveformTextForValue(std::numeric_limits<double>::quiet_NaN(),
+                             invalidValue.data(),
+                             static_cast<std::uint32_t>(invalidValue.size())) ||
+        invalidValue != originalInvalidValue ||
+        waveformTextForValue(0.0, nullptr, CLAP_NAME_SIZE) ||
+        waveformTextForValue(0.0, invalidValue.data(), 0u)) {
+        std::cerr << "invalid waveform CLAP display request was not rejected atomically\n";
+        return false;
+    }
+
+    return true;
+}
 }
 
 int main() {
@@ -194,6 +252,9 @@ int main() {
 
     if (!checkWaveformTextContract())
         return 9;
+
+    if (!checkWaveformDisplayBufferContract())
+        return 10;
 
     return 0;
 }
