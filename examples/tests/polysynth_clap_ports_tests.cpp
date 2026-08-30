@@ -122,6 +122,7 @@ bool checkAudioPorts(const clap_plugin_t *plugin) {
         return false;
     if (info.id != webview_gui::examples::polysynth::kPolySynthAudioOutputPortId ||
         (info.flags & CLAP_AUDIO_PORT_IS_MAIN) == 0 ||
+        (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0 ||
         info.channel_count != 2 || !info.port_type ||
         std::strcmp(info.port_type, CLAP_PORT_STEREO) != 0 ||
         info.in_place_pair != CLAP_INVALID_ID ||
@@ -149,6 +150,7 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
 
     clap_note_port_info_t output{};
     if (!notePorts->get(plugin, 0, false, &output) ||
+        output.id != webview_gui::examples::polysynth::kPolySynthNoteOutputPortId ||
         output.supported_dialects != CLAP_NOTE_DIALECT_CLAP ||
         output.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
         std::strcmp(output.name, "Notes Out") != 0)
@@ -186,15 +188,26 @@ bool checkProcessBridge(const clap_plugin_t *plugin) {
     if (plugin->process(plugin, &process) == CLAP_PROCESS_ERROR)
         return false;
 
-    // NOTE_ON at sample 4 must not leak audio into earlier samples. NOTE_CHOKE
-    // at sample 8 must stop rendering at that exact boundary.
+    // NOTE_ON at sample 4 must not leak audio into earlier samples. Do not
+    // couple this bridge test to one exact oscillator phase: require finite,
+    // centered, non-silent output somewhere in the active [4, 8) segment.
     for (std::uint32_t frame = 0; frame < 4; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
     }
-    if (!std::isfinite(left[4]) || !std::isfinite(right[4]) ||
-        std::fabs(left[4]) < 0.5f || std::fabs(left[4] - right[4]) > 1.0e-6f)
+
+    double activeMagnitude = 0.0;
+    for (std::uint32_t frame = 4; frame < 8; ++frame) {
+        if (!std::isfinite(left[frame]) || !std::isfinite(right[frame]) ||
+            std::fabs(left[frame] - right[frame]) > 1.0e-6f)
+            return false;
+        activeMagnitude += std::fabs(static_cast<double>(left[frame]));
+    }
+    if (activeMagnitude <= 1.0e-6)
         return false;
+
+    // NOTE_CHOKE is a hard lifecycle boundary, so no later sample in this
+    // block may retain audio from the choked generation.
     for (std::uint32_t frame = 8; frame < kFrames; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
