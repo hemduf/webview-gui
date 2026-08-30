@@ -44,6 +44,16 @@ bool copyName(char *destination, std::size_t capacity, const char *text) noexcep
     return written >= 0 && static_cast<std::size_t>(written) < capacity;
 }
 
+struct NoteEndOutputSink {
+    const clap_output_events_t *events = nullptr;
+    bool ok = true;
+
+    void operator()(const clap_event_note_t &event) noexcept {
+        if (!events || !events->try_push || !events->try_push(events, &event.header))
+            ok = false;
+    }
+};
+
 class PolySynthPlugin final : public PolySynthBase {
 public:
     explicit PolySynthPlugin(const clap_host_t *host)
@@ -69,6 +79,34 @@ protected:
     void stopProcessing() noexcept override {}
     void reset() noexcept override { engine_.reset(); }
 
+    clap_process_status process(const clap_process_t *processData) noexcept override {
+        if (!processData || processData->frames_count == 0 ||
+            processData->audio_inputs_count != 0 ||
+            processData->audio_outputs_count != 1 || !processData->audio_outputs)
+            return CLAP_PROCESS_ERROR;
+
+        auto &output = processData->audio_outputs[0];
+        if (output.channel_count != 2 || !output.data32 || output.data64 ||
+            !output.data32[0] || !output.data32[1])
+            return CLAP_PROCESS_ERROR;
+
+        // The port does not advertise CLAP_AUDIO_PORT_SUPPORTS_64BITS, so the
+        // host must provide the mandatory 32-bit format. PolySynth always writes
+        // every frame, hence neither channel can be advertised as constant.
+        output.constant_mask = 0;
+
+        NoteEndOutputSink noteEndSink{processData->out_events};
+        if (!engine_.process(processData->in_events,
+                             processData->frames_count,
+                             output.data32[0],
+                             output.data32[1],
+                             noteEndSink) ||
+            !noteEndSink.ok)
+            return CLAP_PROCESS_ERROR;
+
+        return CLAP_PROCESS_CONTINUE;
+    }
+
     bool implementsAudioPorts() const noexcept override { return true; }
 
     std::uint32_t audioPortsCount(bool isInput) const noexcept override {
@@ -91,20 +129,18 @@ protected:
 
     bool implementsNotePorts() const noexcept override { return true; }
 
-    std::uint32_t notePortsCount(bool isInput) const noexcept override {
-        return isInput ? 1u : 0u;
-    }
+    std::uint32_t notePortsCount(bool) const noexcept override { return 1u; }
 
     bool notePortsInfo(std::uint32_t index,
                        bool isInput,
                        clap_note_port_info_t *info) const noexcept override {
-        if (!info || !isInput || index != 0)
+        if (!info || index != 0)
             return false;
         *info = {};
-        info->id = kPolySynthNoteInputPortId;
+        info->id = isInput ? kPolySynthNoteInputPortId : kPolySynthNoteOutputPortId;
         info->supported_dialects = CLAP_NOTE_DIALECT_CLAP;
         info->preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
-        return copyName(info->name, sizeof(info->name), "Notes In");
+        return copyName(info->name, sizeof(info->name), isInput ? "Notes In" : "Notes Out");
     }
 
 private:
