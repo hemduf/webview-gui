@@ -53,38 +53,42 @@ int main() {
         return 4;
     }
 
-    // The current reference patch configures a fixed 64-sample amplitude
-    // release. Tail reporting must remain finite and match that actual release
-    // contract rather than claiming zero or an unbounded/infinite tail.
-    constexpr std::uint32_t expectedTailSamples = 64u;
-    const auto beforeActivation = tail->get(plugin);
-    if (beforeActivation != expectedTailSamples ||
-        beforeActivation >= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+    // clap-helpers correctly enforces the CLAP lifecycle rule that tail.get()
+    // is queried only while the plug-in is activated, because tail is expressed
+    // in samples and implementations may need the active sample rate.
+    if (!plugin->activate(plugin, 48000.0, 1, 64)) {
         plugin->destroy(plugin);
         return 5;
     }
 
-    if (!plugin->activate(plugin, 48000.0, 1, 64)) {
+    // The current reference patch configures a fixed 64-sample amplitude
+    // release. Tail reporting must remain finite and match that actual release
+    // contract rather than claiming zero or an unbounded/infinite tail.
+    constexpr std::uint32_t expectedTailSamples = 64u;
+    const auto tailAt48k = tail->get(plugin);
+    if (tailAt48k != expectedTailSamples ||
+        tailAt48k >= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 6;
     }
 
-    if (tail->get(plugin) != expectedTailSamples) {
-        plugin->deactivate(plugin);
+    plugin->deactivate(plugin);
+
+    // The existing envelope is intentionally configured in samples, not time.
+    // Re-activation at a different sample rate must therefore report the same
+    // finite sample count until a host-facing release-time control is added.
+    if (!plugin->activate(plugin, 96000.0, 1, 128)) {
         plugin->destroy(plugin);
         return 7;
     }
-
-    plugin->deactivate(plugin);
-
-    // Tail is a patch property, not process-history state. It must remain stable
-    // across activation/deactivation until a future host-facing release control
-    // is deliberately wired to tail.changed().
     if (tail->get(plugin) != expectedTailSamples) {
+        plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 8;
     }
 
+    plugin->deactivate(plugin);
     plugin->destroy(plugin);
     return 0;
 }
