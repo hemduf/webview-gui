@@ -91,6 +91,7 @@ jobs:
           webview_gui_example_polysynth_pressure_expression_tests
           webview_gui_example_polysynth_note_expression_stream_tests
           webview_gui_example_polysynth_clap_ports_tests
+          webview_gui_example_polysynth
           --config Debug --parallel
 
       - name: Run PolySynth core tests
