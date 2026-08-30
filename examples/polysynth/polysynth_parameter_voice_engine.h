@@ -35,6 +35,7 @@ public:
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
+        voicePressureExpressions_.fill(0.0);
         clearTransientExpressionState();
         const auto slot = fineTuneSlot();
         return polyphonicState_.setGlobalBase(slot, fineTuneBaseCents_) &&
@@ -68,6 +69,7 @@ public:
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
+        voicePressureExpressions_.fill(0.0);
         clearTransientExpressionState();
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
@@ -128,6 +130,13 @@ private:
         bool active = false;
     };
 
+    struct PendingPressureExpression {
+        VoiceIdentity address{};
+        std::uint32_t time = 0;
+        double pressure = 0.0;
+        bool active = false;
+    };
+
     struct PendingPanExpression {
         VoiceIdentity address{};
         std::uint32_t time = 0;
@@ -172,12 +181,18 @@ private:
                event.key >= -1 && event.key <= 127;
     }
 
+    static double pressureGain(double pressure) noexcept {
+        return 1.0 + pressure;
+    }
+
     void clearPendingExpressionEntries() noexcept {
         for (auto &entry : pendingTuningExpressions_)
             entry = {};
         for (auto &entry : pendingVolumeExpressions_)
             entry = {};
         for (auto &entry : pendingPerformanceExpressions_)
+            entry = {};
+        for (auto &entry : pendingPressureExpressions_)
             entry = {};
         for (auto &entry : pendingPanExpressions_)
             entry = {};
@@ -264,6 +279,28 @@ private:
             entry.address = address;
             entry.time = event.header.time;
             entry.expression = event.value;
+            entry.active = true;
+            return true;
+        }
+        return false;
+    }
+
+    bool storePendingPressure(const clap_event_note_expression_t &event) noexcept {
+        const auto address = addressFrom(event);
+        for (auto &entry : pendingPressureExpressions_) {
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
+                continue;
+            entry.pressure = event.value;
+            return true;
+        }
+
+        for (auto &entry : pendingPressureExpressions_) {
+            if (entry.active)
+                continue;
+            entry.address = address;
+            entry.time = event.header.time;
+            entry.pressure = event.value;
             entry.active = true;
             return true;
         }
@@ -359,6 +396,21 @@ private:
         return found;
     }
 
+    bool pendingPressureFor(const VoiceIdentity &identity,
+                            std::uint32_t time,
+                            double &pressure) const noexcept {
+        bool found = false;
+        pressure = 0.0;
+        for (const auto &entry : pendingPressureExpressions_) {
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
+                continue;
+            pressure = entry.pressure;
+            found = true;
+        }
+        return found;
+    }
+
     bool pendingPanFor(const VoiceIdentity &identity,
                        std::uint32_t time,
                        double &pan) const noexcept {
@@ -403,8 +455,9 @@ private:
     bool applyVoiceExpressionGain(VoiceAllocator::VoiceIndex index) noexcept {
         if (index >= capacity() || !trackedVoices_[index])
             return false;
-        const double gain =
-            voiceVolumeExpressions_[index] * voicePerformanceExpressions_[index];
+        const double gain = voiceVolumeExpressions_[index] *
+                            voicePerformanceExpressions_[index] *
+                            pressureGain(voicePressureExpressions_[index]);
         return VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(gain));
     }
 
@@ -427,6 +480,7 @@ private:
         voiceTuningExpressionSemitones_[index] = 0.0;
         voiceVolumeExpressions_[index] = 1.0;
         voicePerformanceExpressions_[index] = 1.0;
+        voicePressureExpressions_[index] = 0.0;
 
         double expressionSemitones = 0.0;
         if (pendingTuningFor(event.identity, event.time, expressionSemitones))
@@ -442,6 +496,10 @@ private:
         double performanceExpression = 1.0;
         if (pendingPerformanceFor(event.identity, event.time, performanceExpression))
             voicePerformanceExpressions_[index] = performanceExpression;
+
+        double pressure = 0.0;
+        if (pendingPressureFor(event.identity, event.time, pressure))
+            voicePressureExpressions_[index] = pressure;
 
         if (!applyVoiceExpressionGain(index))
             return false;
@@ -472,6 +530,7 @@ private:
                     voiceTuningExpressionSemitones_[index] = 0.0;
                     voiceVolumeExpressions_[index] = 1.0;
                     voicePerformanceExpressions_[index] = 1.0;
+                    voicePressureExpressions_[index] = 0.0;
                 }
                 continue;
             }
@@ -484,6 +543,7 @@ private:
                 voiceTuningExpressionSemitones_[index] = 0.0;
                 voiceVolumeExpressions_[index] = 1.0;
                 voicePerformanceExpressions_[index] = 1.0;
+                voicePressureExpressions_[index] = 0.0;
             }
         }
         return true;
@@ -578,6 +638,25 @@ private:
         return storePendingPerformance(event);
     }
 
+    bool applyPressureExpression(const clap_event_note_expression_t &event) noexcept {
+        if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
+            !validExpressionAddress(event))
+            return false;
+        if (!syncVoices())
+            return false;
+
+        const auto address = addressFrom(event);
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
+                continue;
+            voicePressureExpressions_[index] = event.value;
+            if (!applyVoiceExpressionGain(index))
+                return false;
+        }
+        return storePendingPressure(event);
+    }
+
     bool applyPanExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
@@ -639,6 +718,8 @@ private:
                     return applyPerformanceExpression(event);
                 case CLAP_NOTE_EXPRESSION_BRIGHTNESS:
                     return applyBrightnessExpression(event);
+                case CLAP_NOTE_EXPRESSION_PRESSURE:
+                    return applyPressureExpression(event);
                 default:
                     return true;
             }
@@ -701,12 +782,15 @@ private:
     std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceVolumeExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePerformanceExpressions_{};
+    std::array<double, VoiceAllocator::kMaximumVoices> voicePressureExpressions_{};
     std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
         pendingTuningExpressions_{};
     std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices>
         pendingVolumeExpressions_{};
     std::array<PendingPerformanceExpression, VoiceAllocator::kMaximumVoices>
         pendingPerformanceExpressions_{};
+    std::array<PendingPressureExpression, VoiceAllocator::kMaximumVoices>
+        pendingPressureExpressions_{};
     std::array<PendingPanExpression, VoiceAllocator::kMaximumVoices>
         pendingPanExpressions_{};
     std::array<PendingBrightnessExpression, VoiceAllocator::kMaximumVoices>
