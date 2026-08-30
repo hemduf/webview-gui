@@ -28,15 +28,22 @@ using PolySynthBase = clap::helpers::Plugin<
     clap::helpers::MisbehaviourHandler::Terminate,
     clap::helpers::CheckingLevel::Minimal>;
 
+constexpr clap_id kHostMasterGainParameterId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::MasterGain);
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
+constexpr clap_id kPerformanceRemoteControlsPageId = 0x3201u;
 constexpr std::uint32_t kPolySynthReleaseTailSamples = 64u;
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
               "PolySynth state handoff revision must be lock-free");
+static_assert(sizeof(float) == sizeof(std::uint32_t),
+              "PolySynth state requires a 32-bit float");
+static_assert(std::numeric_limits<float>::is_iec559,
+              "PolySynth state requires IEEE-754 single precision");
 static_assert(sizeof(double) == sizeof(std::uint64_t),
               "PolySynth state requires a 64-bit double");
 static_assert(std::numeric_limits<double>::is_iec559,
@@ -44,8 +51,10 @@ static_assert(std::numeric_limits<double>::is_iec559,
 static_assert(kPolySynthDefaultVoiceCount > 0 &&
                   kPolySynthDefaultVoiceCount <= VoiceAllocator::kMaximumVoices,
               "PolySynth voice-info must report a valid configured voice count");
-static_assert(kTuningRemoteControlsPageId != CLAP_INVALID_ID,
-              "PolySynth remote-controls page ID must be valid");
+static_assert(kTuningRemoteControlsPageId != CLAP_INVALID_ID &&
+                  kPerformanceRemoteControlsPageId != CLAP_INVALID_ID &&
+                  kTuningRemoteControlsPageId != kPerformanceRemoteControlsPageId,
+              "PolySynth remote-controls page IDs must be valid and unique");
 static_assert(kPolySynthReleaseTailSamples <
                   static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()),
               "PolySynth tail must remain finite under the CLAP tail contract");
@@ -71,7 +80,7 @@ const clap_plugin_descriptor_t kDescriptor{
 };
 
 constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-constexpr std::uint32_t kStateVersion = 1u;
+constexpr std::uint32_t kStateVersion = 2u;
 constexpr std::size_t kStateSize = 24u;
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
@@ -86,6 +95,10 @@ bool isGlobalParameterAddress(std::int32_t noteId,
                               std::int16_t channel,
                               std::int16_t key) noexcept {
     return noteId == -1 && portIndex == -1 && channel == -1 && key == -1;
+}
+
+bool isPublishedHostParameter(clap_id id) noexcept {
+    return id == kHostFineTuneParameterId || id == kHostMasterGainParameterId;
 }
 
 void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
@@ -144,7 +157,8 @@ bool readAll(const clap_istream_t *stream,
     return true;
 }
 
-std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents) noexcept {
+std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
+                                                  float masterGainDb) noexcept {
     std::array<std::uint8_t, kStateSize> bytes{};
     std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
     storeU32Le(bytes.data() + 8, kStateVersion);
@@ -152,21 +166,43 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents) noexcept 
     std::uint64_t fineTuneBits = 0;
     std::memcpy(&fineTuneBits, &fineTuneCents, sizeof(fineTuneBits));
     storeU64Le(bytes.data() + 12, fineTuneBits);
+
+    std::uint32_t masterGainBits = 0;
+    std::memcpy(&masterGainBits, &masterGainDb, sizeof(masterGainBits));
+    storeU32Le(bytes.data() + 20, masterGainBits);
     return bytes;
 }
 
 bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
-                 double &fineTuneCents) noexcept {
-    if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()) ||
-        loadU32Le(bytes.data() + 8) != kStateVersion ||
-        bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
+                 double &fineTuneCents,
+                 float &masterGainDb) noexcept {
+    if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
+        return false;
+
+    const auto version = loadU32Le(bytes.data() + 8);
+    if (version != 1u && version != kStateVersion)
         return false;
 
     const auto fineTuneBits = loadU64Le(bytes.data() + 12);
     std::memcpy(&fineTuneCents, &fineTuneBits, sizeof(fineTuneCents));
-    const auto *spec = parameterSpecForId(kHostFineTuneParameterId);
-    return spec && std::isfinite(fineTuneCents) &&
-           fineTuneCents >= spec->minValue && fineTuneCents <= spec->maxValue;
+    const auto *fineTuneSpec = parameterSpecForId(kHostFineTuneParameterId);
+    if (!fineTuneSpec || !std::isfinite(fineTuneCents) ||
+        fineTuneCents < fineTuneSpec->minValue || fineTuneCents > fineTuneSpec->maxValue)
+        return false;
+
+    if (version == 1u) {
+        if (bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
+            return false;
+        masterGainDb = 0.0f;
+        return true;
+    }
+
+    const auto masterGainBits = loadU32Le(bytes.data() + 20);
+    std::memcpy(&masterGainDb, &masterGainBits, sizeof(masterGainDb));
+    const auto *masterGainSpec = parameterSpecForId(kHostMasterGainParameterId);
+    return masterGainSpec && std::isfinite(masterGainDb) &&
+           static_cast<double>(masterGainDb) >= masterGainSpec->minValue &&
+           static_cast<double>(masterGainDb) <= masterGainSpec->maxValue;
 }
 
 struct NoteEndOutputSink {
@@ -179,67 +215,77 @@ struct NoteEndOutputSink {
     }
 };
 
-// state.load() has no sample offset, but a retained base value must still reach
-// already-running voices before rendering resumes. Prepend one fixed sample-zero
-// PARAM_VALUE to the next process block; host sample-zero automation remains later
-// in the stream and therefore wins.
-struct PendingFineTuneInput {
-    PendingFineTuneInput() noexcept {
+// state.load() has no sample offset, but retained base values must still reach
+// already-running voices/output state before rendering resumes. Prepend both
+// fixed sample-zero PARAM_VALUE events to the next process block. Host sample-zero
+// automation remains later in the stable event stream and therefore wins.
+struct PendingParameterStateInput {
+    PendingParameterStateInput() noexcept {
         input.ctx = this;
         input.size = size;
         input.get = get;
     }
 
-    bool prepare(const clap_input_events_t *newHostInput, float value) noexcept {
+    bool prepare(const clap_input_events_t *newHostInput,
+                 float fineTuneCents,
+                 float masterGainDb) noexcept {
         hostInput = newHostInput;
         hostCount = 0;
         valid = true;
 
-        event = {};
-        event.header.size = sizeof(event);
-        event.header.time = 0;
-        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-        event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kHostFineTuneParameterId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
-        event.value = static_cast<double>(value);
+        prepareEvent(events[0], kHostFineTuneParameterId, fineTuneCents);
+        prepareEvent(events[1], kHostMasterGainParameterId, masterGainDb);
 
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
         else if (hostInput)
             valid = false;
 
-        if (hostCount == std::numeric_limits<std::uint32_t>::max())
+        if (hostCount > std::numeric_limits<std::uint32_t>::max() - events.size())
             valid = false;
         return valid;
     }
 
-    static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
-        if (!events || !events->ctx)
-            return 0;
-        const auto &self = *static_cast<const PendingFineTuneInput *>(events->ctx);
-        return self.valid ? self.hostCount + 1u : 0u;
+    static void prepareEvent(clap_event_param_value_t &event,
+                             clap_id paramId,
+                             float value) noexcept {
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = paramId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = static_cast<double>(value);
     }
 
-    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *inputEvents) noexcept {
+        if (!inputEvents || !inputEvents->ctx)
+            return 0;
+        const auto &self = *static_cast<const PendingParameterStateInput *>(inputEvents->ctx);
+        return self.valid ? self.hostCount + static_cast<std::uint32_t>(self.events.size()) : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *inputEvents,
                                                     std::uint32_t index) noexcept {
-        if (!events || !events->ctx)
+        if (!inputEvents || !inputEvents->ctx)
             return nullptr;
-        const auto &self = *static_cast<const PendingFineTuneInput *>(events->ctx);
+        const auto &self = *static_cast<const PendingParameterStateInput *>(inputEvents->ctx);
         if (!self.valid)
             return nullptr;
-        if (index == 0)
-            return &self.event.header;
-        if (!self.hostInput || index > self.hostCount)
+        if (index < self.events.size())
+            return &self.events[index].header;
+        const auto hostIndex = index - static_cast<std::uint32_t>(self.events.size());
+        if (!self.hostInput || hostIndex >= self.hostCount)
             return nullptr;
-        return self.hostInput->get(self.hostInput, index - 1u);
+        return self.hostInput->get(self.hostInput, hostIndex);
     }
 
     const clap_input_events_t *hostInput = nullptr;
-    clap_event_param_value_t event{};
+    std::array<clap_event_param_value_t, 2> events{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
     bool valid = false;
@@ -271,11 +317,12 @@ protected:
                                sampleRate,
                                kPolySynthReleaseTailSamples) ||
             !engine_.setFineTuningCents(
-                hostFineTuneCents_.load(std::memory_order_acquire)))
+                hostFineTuneCents_.load(std::memory_order_acquire)) ||
+            !applyRetainedMasterGainBaseToEngine())
             return false;
 
-        // configure() starts with no active generations, so the retained base
-        // value is already authoritative and no process-time replay is needed.
+        // configure() starts with no active generations and both retained base
+        // values are explicitly applied above, so no process-time replay is needed.
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
         active_ = true;
         return true;
@@ -309,11 +356,12 @@ protected:
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
         const bool replayLoadedState = loadedRevision != appliedLoadedStateRevision_;
         const clap_input_events_t *inputEvents = processData->in_events;
-        PendingFineTuneInput pendingInput;
+        PendingParameterStateInput pendingInput;
         if (replayLoadedState) {
             if (!pendingInput.prepare(
                     processData->in_events,
-                    hostFineTuneCents_.load(std::memory_order_acquire)))
+                    hostFineTuneCents_.load(std::memory_order_acquire),
+                    hostMasterGainDb_.load(std::memory_order_acquire)))
                 return CLAP_PROCESS_ERROR;
             inputEvents = &pendingInput.input;
         }
@@ -330,10 +378,10 @@ protected:
         if (replayLoadedState)
             appliedLoadedStateRevision_ = loadedRevision;
 
-        // Publish a block-boundary host snapshot without overwriting a newer
+        // Publish block-boundary host snapshots without overwriting a newer
         // concurrent main-thread state.load(). The DSP/event adapter remains the
-        // authority for sample-accurate changes; this mirror never feeds audio.
-        if (!syncFineTuneSnapshotPreservingConcurrentStateLoad())
+        // authority for sample-accurate changes; these mirrors never feed audio.
+        if (!syncParameterSnapshotsPreservingConcurrentStateLoad())
             return CLAP_PROCESS_ERROR;
 
         return CLAP_PROCESS_CONTINUE;
@@ -351,7 +399,8 @@ protected:
 
     bool stateSave(const clap_ostream_t *stream) noexcept override {
         const auto bytes = encodeState(
-            static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)));
+            static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)),
+            hostMasterGainDb_.load(std::memory_order_relaxed));
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -366,19 +415,23 @@ protected:
             return false;
 
         double fineTuneCents = 0.0;
-        if (!decodeState(bytes, fineTuneCents))
+        float masterGainDb = 0.0f;
+        if (!decodeState(bytes, fineTuneCents, masterGainDb))
             return false;
 
         const auto fineTune = static_cast<float>(fineTuneCents);
         const bool parameterValueChanged =
-            hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune;
+            hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune ||
+            hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb;
 
-        // Publish both payload snapshots before the release revision. An audio
+        // Publish all payload snapshots before the release revision. An audio
         // thread which observes the new revision with acquire semantics must also
-        // observe the matching state value; publishing the host snapshot after the
-        // revision could otherwise replay stale tuning and mark it as applied.
+        // observe the matching values; publishing a host snapshot after the
+        // revision could otherwise replay stale state and mark it as applied.
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+        pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+        hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
@@ -481,43 +534,51 @@ protected:
 
     bool implementRemoteControls() const noexcept override { return true; }
 
-    std::uint32_t remoteControlsPageCount() noexcept override { return 1u; }
+    std::uint32_t remoteControlsPageCount() noexcept override { return 2u; }
 
     bool remoteControlsPageGet(std::uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override {
-        if (!page || pageIndex != 0u)
+        if (!page || pageIndex >= remoteControlsPageCount())
             return false;
 
         *page = {};
-        page->page_id = kTuningRemoteControlsPageId;
         for (auto &paramId : page->param_ids)
             paramId = CLAP_INVALID_ID;
-        page->param_ids[0] = kHostFineTuneParameterId;
         page->is_for_preset = false;
-        return copyName(page->section_name, sizeof(page->section_name), "Oscillator") &&
-               copyName(page->page_name, sizeof(page->page_name), "Tuning");
+
+        if (pageIndex == 0u) {
+            page->page_id = kTuningRemoteControlsPageId;
+            page->param_ids[0] = kHostFineTuneParameterId;
+            return copyName(page->section_name, sizeof(page->section_name), "Oscillator") &&
+                   copyName(page->page_name, sizeof(page->page_name), "Tuning");
+        }
+
+        page->page_id = kPerformanceRemoteControlsPageId;
+        page->param_ids[0] = kHostMasterGainParameterId;
+        return copyName(page->section_name, sizeof(page->section_name), "Output") &&
+               copyName(page->page_name, sizeof(page->page_name), "Performance");
     }
 
     bool implementsParams() const noexcept override { return true; }
 
-    std::uint32_t paramsCount() const noexcept override { return 1u; }
+    std::uint32_t paramsCount() const noexcept override { return 2u; }
 
     bool paramsInfo(std::uint32_t paramIndex,
                     clap_param_info_t *info) const noexcept override {
-        if (!info || paramIndex != 0)
+        if (!info || paramIndex >= paramsCount())
             return false;
 
-        const auto *spec = parameterSpecForId(kHostFineTuneParameterId);
+        const clap_id paramId = paramIndex == 0u
+                                    ? kHostFineTuneParameterId
+                                    : kHostMasterGainParameterId;
+        const auto *spec = parameterSpecForId(paramId);
         if (!spec)
             return false;
 
         *info = {};
         info->id = spec->id;
-        // Fine Tune now has equivalent process() and active params.flush()
-        // handling for global and voice-addressed PARAM_VALUE/PARAM_MOD events,
-        // so the capability flags may match the already-qualified parameter model.
         info->flags = spec->flags;
-        // `kParameterSpecs` has static storage duration, so the cookie stays
+        // `kParameterSpecs` has static storage duration, so each cookie stays
         // stable until module unload. The event path remains param-id authoritative
         // and deliberately does not dereference host-provided cookies because CLAP
         // permits the host to return either this exact pointer or nullptr.
@@ -530,10 +591,15 @@ protected:
     }
 
     bool paramsValue(clap_id paramId, double *value) noexcept override {
-        if (!value || paramId != kHostFineTuneParameterId)
+        if (!value || !isPublishedHostParameter(paramId))
             return false;
+        if (paramId == kHostFineTuneParameterId) {
+            *value = static_cast<double>(
+                hostFineTuneCents_.load(std::memory_order_acquire));
+            return true;
+        }
         *value = static_cast<double>(
-            hostFineTuneCents_.load(std::memory_order_acquire));
+            hostMasterGainDb_.load(std::memory_order_acquire));
         return true;
     }
 
@@ -542,7 +608,7 @@ protected:
                            char *display,
                            std::uint32_t size) noexcept override {
         const auto *spec = parameterSpecForId(paramId);
-        if (!spec || paramId != kHostFineTuneParameterId || !display || size == 0 ||
+        if (!spec || !isPublishedHostParameter(paramId) || !display || size == 0 ||
             !std::isfinite(value) || value < spec->minValue || value > spec->maxValue)
             return false;
 
@@ -561,7 +627,7 @@ protected:
                            const char *display,
                            double *value) noexcept override {
         const auto *spec = parameterSpecForId(paramId);
-        if (!spec || paramId != kHostFineTuneParameterId || !display || !value)
+        if (!spec || !isPublishedHostParameter(paramId) || !display || !value)
             return false;
 
         const char *end = display + std::strlen(display);
@@ -592,7 +658,7 @@ protected:
                 const auto &event =
                     *reinterpret_cast<const clap_event_param_value_t *>(header);
                 const auto *spec = parameterSpecForId(event.param_id);
-                if (!spec || event.param_id != kHostFineTuneParameterId ||
+                if (!spec || !isPublishedHostParameter(event.param_id) ||
                     !std::isfinite(event.value) ||
                     event.value < spec->minValue || event.value > spec->maxValue)
                     continue;
@@ -608,16 +674,29 @@ protected:
                     // cross-thread voice mutation is needed.
                     if (!engine_.applyParameterFlushEvent(*header))
                         continue;
-                    if (isGlobal)
+                    if (isGlobal) {
+                        if (event.param_id == kHostFineTuneParameterId) {
+                            hostFineTuneCents_.store(
+                                static_cast<float>(event.value),
+                                std::memory_order_release);
+                        } else {
+                            hostMasterGainDb_.store(
+                                static_cast<float>(event.value),
+                                std::memory_order_release);
+                        }
+                    }
+                } else if (isGlobal) {
+                    // Before activation there are no voice generations to target.
+                    // Retain persistent global bases for configure()/activation.
+                    if (event.param_id == kHostFineTuneParameterId) {
                         hostFineTuneCents_.store(
                             static_cast<float>(event.value),
                             std::memory_order_release);
-                } else if (isGlobal) {
-                    // Before activation there are no voice generations to target.
-                    // Retain only the persistent global base for configure().
-                    hostFineTuneCents_.store(
-                        static_cast<float>(event.value),
-                        std::memory_order_release);
+                    } else {
+                        hostMasterGainDb_.store(
+                            static_cast<float>(event.value),
+                            std::memory_order_release);
+                    }
                 }
                 continue;
             }
@@ -627,13 +706,13 @@ protected:
                     continue;
                 const auto &event =
                     *reinterpret_cast<const clap_event_param_mod_t *>(header);
-                if (event.param_id != kHostFineTuneParameterId ||
+                if (!isPublishedHostParameter(event.param_id) ||
                     !parameterSpecForId(event.param_id) || !std::isfinite(event.amount))
                     continue;
 
                 // Modulation is transient and never changes get_value(). With no
-                // active voices/configured engine, an inactive targeted or global
-                // modulation statement has no generation to affect and is ignored.
+                // active configured engine, a modulation statement has no voice or
+                // output generation to affect and is ignored.
                 if (active_)
                     (void)engine_.applyParameterFlushEvent(*header);
             }
@@ -641,24 +720,49 @@ protected:
     }
 
 private:
-    bool syncFineTuneSnapshotPreservingConcurrentStateLoad() noexcept {
+    bool applyRetainedMasterGainBaseToEngine() noexcept {
+        clap_event_param_value_t event{};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kHostMasterGainParameterId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = static_cast<double>(
+            hostMasterGainDb_.load(std::memory_order_acquire));
+        return engine_.applyParameterFlushEvent(event.header);
+    }
+
+    bool syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
         const auto revisionBefore = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionBefore != appliedLoadedStateRevision_) {
             hostFineTuneCents_.store(
                 pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostMasterGainDb_.store(
+                pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
             return true;
         }
 
         double fineTune = 0.0;
-        if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune))
+        double masterGain = 0.0;
+        if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune) ||
+            !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain))
             return false;
         hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
+        hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
 
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore) {
             hostFineTuneCents_.store(
                 pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+            hostMasterGainDb_.store(
+                pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
         }
         return true;
@@ -668,7 +772,9 @@ private:
     const clap_host_params_t *hostParams_ = nullptr;
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
+    std::atomic<float> hostMasterGainDb_{0.0f};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
+    std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
