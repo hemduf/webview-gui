@@ -288,13 +288,13 @@ public:
         return true;
     }
 
-    // CLAP VOLUME note expression is a per-voice linear gain in (0, 4]. Keep it
-    // independent from velocity/envelope state so expression changes are
-    // sample-accurate without rewriting ADSR levels or lifecycle state.
+    // Stores the effective post-filter note-expression gain. CLAP VOLUME itself
+    // remains validated as (0, 4] by the host-facing adapter, while composing it
+    // with CLAP EXPRESSION [0, 1] can legally produce an exact zero here.
     bool setVoiceVolumeExpression(VoiceAllocator::VoiceIndex index,
                                   float gain) noexcept {
         if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
-            !std::isfinite(gain) || gain <= 0.0f || gain > 4.0f)
+            !std::isfinite(gain) || gain < 0.0f || gain > 4.0f)
             return false;
         voices_[index].noteExpressionGain = gain;
         return true;
