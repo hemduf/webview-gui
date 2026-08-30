@@ -96,8 +96,16 @@ bool checkWaveformTextContract() {
         }
     }
 
+    constexpr std::array<const char *, 6> invalidNames{{
+        nullptr,
+        "",
+        "sine",
+        "Saw ",
+        "Triangle",
+        "1",
+    }};
     double preserved = 17.0;
-    for (const char *invalid : {nullptr, "", "sine", "Saw ", "Triangle", "1"}) {
+    for (const char *invalid : invalidNames) {
         if (waveformValueFromName(invalid, preserved) || preserved != 17.0) {
             std::cerr << "invalid waveform name unexpectedly parsed or mutated output\n";
             return false;
