@@ -289,12 +289,13 @@ public:
     }
 
     // Stores the effective post-filter note-expression gain. CLAP VOLUME itself
-    // remains validated as (0, 4] by the host-facing adapter, while composing it
-    // with CLAP EXPRESSION [0, 1] can legally produce an exact zero here.
+    // remains validated as (0, 4] by the host-facing adapter. EXPRESSION may
+    // produce exact silence, and the reference PRESSURE mapping contributes up
+    // to another 2x, so the legal composed internal range is [0, 8].
     bool setVoiceVolumeExpression(VoiceAllocator::VoiceIndex index,
                                   float gain) noexcept {
         if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
-            !std::isfinite(gain) || gain < 0.0f || gain > 4.0f)
+            !std::isfinite(gain) || gain < 0.0f || gain > 8.0f)
             return false;
         voices_[index].noteExpressionGain = gain;
         return true;
