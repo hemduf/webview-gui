@@ -358,11 +358,13 @@ protected:
         const bool parameterValueChanged =
             hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune;
 
-        // Keep a dedicated pending copy plus revision so an audio-thread snapshot
-        // publication cannot overwrite a state load which arrived concurrently.
+        // Publish both payload snapshots before the release revision. An audio
+        // thread which observes the new revision with acquire semantics must also
+        // observe the matching state value; publishing the host snapshot after the
+        // revision could otherwise replay stale tuning and mark it as applied.
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
-        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
             hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
