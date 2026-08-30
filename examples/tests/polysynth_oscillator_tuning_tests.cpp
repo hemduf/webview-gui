@@ -1,4 +1,4 @@
-#include "polysynth_voice_engine.h"
+#include "polysynth_parameter_voice_engine.h"
 
 #include <clap/clap.h>
 
@@ -12,7 +12,12 @@
 namespace {
 
 using webview_gui::examples::polysynth::OscillatorWaveform;
+using webview_gui::examples::polysynth::ParameterSlot;
+using webview_gui::examples::polysynth::ParameterVoiceEngine;
 using webview_gui::examples::polysynth::VoiceEngine;
+
+constexpr clap_id kCoarseTuneId =
+    1000u + static_cast<unsigned>(ParameterSlot::CoarseTuning);
 
 template <std::size_t Capacity = 8>
 struct InputEvents {
@@ -45,6 +50,26 @@ struct InputEvents {
         return true;
     }
 
+    bool pushValue(uint32_t time, clap_id paramId, double value) noexcept {
+        if (count >= Capacity)
+            return false;
+        auto &event = values[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = paramId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
     static uint32_t CLAP_ABI size(const clap_input_events_t *list) noexcept {
         return list && list->ctx ? static_cast<const InputEvents *>(list->ctx)->count : 0;
     }
@@ -58,6 +83,7 @@ struct InputEvents {
     }
 
     std::array<clap_event_note_t, Capacity> notes{};
+    std::array<clap_event_param_value_t, Capacity> values{};
     std::array<const clap_event_header_t *, Capacity> headers{};
     uint32_t count = 0;
     clap_input_events_t input{};
@@ -271,6 +297,42 @@ int main() {
         !sameAudio(futureLeft, referenceLeft) || !sameAudio(futureRight, referenceRight)) {
         std::cerr << "future NOTE_ON did not snapshot the new oscillator/tuning defaults\n";
         return 17;
+    }
+
+    // #32 Coarse Tune starts as a global stepped NOTE_ON default. The CLAP
+    // PARAM_VALUE must be consumed before a same-sample NOTE_ON so the new
+    // generation snapshots the requested semitone offset, while the adapter
+    // retains the base separately for later host-facing publication.
+    ParameterVoiceEngine routedCoarse;
+    VoiceEngine routedOctaveReference;
+    if (!configureReference(routedCoarse) || !configureReference(routedOctaveReference))
+        return 18;
+    InputEvents<> routedEvents;
+    if (!routedEvents.pushValue(0, kCoarseTuneId, 12.0) ||
+        !routedEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 30, 69))
+        return 19;
+    AudioBlock routedLeft{};
+    AudioBlock routedRight{};
+    if (!routedCoarse.process(&routedEvents.input,
+                              static_cast<uint32_t>(routedLeft.size()),
+                              routedLeft.data(), routedRight.data(), sink))
+        return 20;
+    AudioBlock routedReferenceLeft{};
+    AudioBlock routedReferenceRight{};
+    if (!renderNote(routedOctaveReference,
+                    31,
+                    81,
+                    routedReferenceLeft,
+                    routedReferenceRight) ||
+        !sameAudio(routedLeft, routedReferenceLeft) ||
+        !sameAudio(routedRight, routedReferenceRight)) {
+        std::cerr << "Coarse Tune PARAM_VALUE was not ordered before same-sample NOTE_ON\n";
+        return 21;
+    }
+    double routedBase = -999.0;
+    if (!routedCoarse.parameterBaseValue(kCoarseTuneId, routedBase) || routedBase != 12.0) {
+        std::cerr << "Coarse Tune PARAM_VALUE was not retained as the adapter base\n";
+        return 22;
     }
 
     return 0;
