@@ -103,7 +103,7 @@ struct FlushModEvent {
     explicit FlushModEvent(double amount) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 73; // flush() intentionally loses sample offsets.
+        event.header.time = 73;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_MOD;
         event.param_id = kFineTuneId;
@@ -136,7 +136,7 @@ struct FlushValueEvent {
     explicit FlushValueEvent(double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 91; // flush() intentionally loses sample offsets.
+        event.header.time = 91;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
         event.param_id = kFineTuneId;
@@ -224,7 +224,7 @@ int main() {
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     if (!params || !params->count || !params->get_info || !params->get_value ||
-        !params->flush || params->count(plugin) != 3u) {
+        !params->flush || params->count(plugin) != 4u) {
         plugin->destroy(plugin);
         return 4;
     }
