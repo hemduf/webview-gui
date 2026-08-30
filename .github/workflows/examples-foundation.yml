@@ -1,0 +1,99 @@
+name: Examples foundation
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    paths:
+      - 'examples/**'
+      - 'cmake/WebviewGuiClapWrapperMacOSPatch.cmake'
+      - 'CMakeLists.txt'
+      - '.github/workflows/examples-foundation.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: examples-foundation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-skeleton:
+    name: ${{ matrix.os }} example skeleton
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure standalone example foundation
+        run: >-
+          cmake
+          -S examples
+          -B build-examples
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build standalone skeleton CLAP and tests
+        run: >-
+          cmake --build build-examples
+          --target webview_gui_example_skeleton webview_gui_example_skeleton_tests
+          --config Debug --parallel
+
+      - name: Run standalone example tests
+        run: ctest --test-dir build-examples -C Debug --output-on-failure -R '^webview_gui_examples_'
+
+      - name: Configure examples through repository root
+        run: >-
+          cmake
+          -S .
+          -B build-root-examples
+          -DWEBVIEW_GUI_BUILD_EXAMPLES=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build skeleton through repository root
+        run: >-
+          cmake --build build-root-examples
+          --target webview_gui_example_skeleton webview_gui_example_skeleton_tests
+          --config Debug --parallel
+
+      - name: Run top-level example tests
+        run: ctest --test-dir build-root-examples -C Debug --output-on-failure -R '^webview_gui_examples_'
+
+      - name: Configure pinned clap-wrapper foundation
+        run: >-
+          cmake
+          -S examples
+          -B build-wrapper-foundation
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+
+      - name: Build pinned clap-wrapper shared implementation
+        run: >-
+          cmake --build build-wrapper-foundation
+          --target clap-wrapper-shared-detail
+          --config Debug --parallel
+
+      - name: Verify pinned clap-wrapper foundation
+        run: >-
+          ctest --test-dir build-wrapper-foundation -C Debug --output-on-failure
+          --no-tests=error -R '^webview_gui_examples_wrapper_foundation$'

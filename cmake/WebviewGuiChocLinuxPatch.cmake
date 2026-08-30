@@ -1,5 +1,7 @@
 include_guard(GLOBAL)
 
+include("${CMAKE_CURRENT_LIST_DIR}/WebviewGuiChocBootstrapLifecyclePatch.cmake")
+
 # Apply ownership/lifetime fixes to the pinned CHOC WebKitGTK backend without
 # modifying the submodule. Every replacement is exact and drift-checked so a
 # future CHOC update fails configuration until the patch is revalidated.
@@ -9,6 +11,8 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
     endif()
 
     file(READ "${input_file}" WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_disable_choc_automatic_resource_navigation(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
     # WebKitWebContext is a normal GObject returned with transfer-full ownership,
     # not a GInitiallyUnowned object. ref_sink() therefore adds an unmatched ref.
@@ -166,6 +170,28 @@ function(webview_gui_apply_choc_linux_lifetime_patch input_file output_file)
     string(REPLACE
         "${WEBVIEW_GUI_CHOC_INIT_SCRIPT_OLD}"
         "${WEBVIEW_GUI_CHOC_INIT_SCRIPT_NEW}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
+    # WebKitGTK custom-scheme responses support real HTTP response headers.
+    # Attach the policy there so malformed/inert HTML cannot redirect it.
+    set(WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD [=[                        soup_message_headers_append (headers, "Cache-Control", "no-store");
+                        soup_message_headers_append (headers, "Access-Control-Allow-Origin", "*");]=])
+    set(WEBVIEW_GUI_CHOC_CSP_HEADERS_NEW [=[                        soup_message_headers_append (headers, "Cache-Control", "no-store");
+                        soup_message_headers_append (headers, "Access-Control-Allow-Origin", "*");
+                        soup_message_headers_append (headers, "Content-Security-Policy",
+                                                     webview_gui::detail::pluginContentSecurityPolicy.data());]=])
+
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD}"
+        WEBVIEW_GUI_CHOC_CSP_HEADERS_OFFSET)
+    if(WEBVIEW_GUI_CHOC_CSP_HEADERS_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC Linux resource response headers changed; refusing to build without native CSP enforcement")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_OLD}"
+        "${WEBVIEW_GUI_CHOC_CSP_HEADERS_NEW}"
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 

@@ -15,10 +15,12 @@
 #	endif
 
 #	include <cassert>
+#	include <cmath>
 #	include <cstddef>
 #	include <cstdint>
 #	include <filesystem>
 #	include <fstream>
+#	include <limits>
 #	include <memory>
 #	include <optional>
 
@@ -70,12 +72,18 @@ struct WebviewGui::Impl {
 		call<void>(parent, "addSubview:", subview);
 		return call<id>(subview, "superview") == parent;
 	}
-	void setSize(double width, double height) {
-		if (!isOnGuiThread() || !webview) return;
+	bool setSize(double width, double height) {
+		if (!isOnGuiThread() || !webview
+			|| !std::isfinite(width) || !std::isfinite(height)
+			|| width < 0.0 || height < 0.0
+			|| width > static_cast<double>(std::numeric_limits<choc::objc::CGFloat>::max())
+			|| height > static_cast<double>(std::numeric_limits<choc::objc::CGFloat>::max()))
+			return false;
 		using namespace choc::objc;
 		CGRect rect{{0, 0}, {CGFloat(width), CGFloat(height)}};
 		id subview = (id)webview->getViewHandle();
 		call<void>(subview, "setFrame:", rect);
+		return true;
 	}
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
@@ -118,15 +126,15 @@ struct WebviewGui::Impl {
 		return detail::attachChildWindowToHost(static_cast<::HWND>(webview->getViewHandle()),
 										 static_cast<::HWND>(nativeParent));
 	}
-	void setSize(double width, double height) {
-		if (!isOnGuiThread() || !webview) return;
+	bool setSize(double width, double height) {
+		if (!isOnGuiThread() || !webview) return false;
 		int nativeWidth = 0;
 		int nativeHeight = 0;
 		if (!detail::tryConvertNativeHostDimension(width, nativeWidth)
 			|| !detail::tryConvertNativeHostDimension(height, nativeHeight))
-			return;
-		detail::resizeChildWindow(static_cast<::HWND>(webview->getViewHandle()),
-								 nativeWidth, nativeHeight);
+			return false;
+		return detail::resizeChildWindow(static_cast<::HWND>(webview->getViewHandle()),
+									 nativeWidth, nativeHeight);
 	}
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
@@ -161,14 +169,22 @@ struct WebviewGui::Impl {
 		const auto xid = reinterpret_cast<std::uintptr_t>(nativeParent);
 		return xembed.attach(static_cast<GtkWidget*>(webview->getViewHandle()), xid);
 	}
-	void setSize(double width, double height) {
-		if (!isOnGuiThread() || !webview) return;
+	bool setSize(double width, double height) {
+		if (!isOnGuiThread() || !webview) return false;
 		int nativeWidth = 0;
 		int nativeHeight = 0;
 		if (!detail::tryConvertNativeHostDimension(width, nativeWidth)
 			|| !detail::tryConvertNativeHostDimension(height, nativeHeight))
-			return;
-		xembed.resize(nativeWidth, nativeHeight);
+			return false;
+
+		if (xembed.plugWidget())
+			return xembed.resize(nativeWidth, nativeHeight);
+
+		auto* child = static_cast<GtkWidget*>(webview->getViewHandle());
+		if (!child || !GTK_IS_WIDGET(child))
+			return false;
+		gtk_widget_set_size_request(child, nativeWidth, nativeHeight);
+		return true;
 	}
 	void setVisible(bool visible) {
 		if (!isOnGuiThread() || !webview) return;
@@ -199,6 +215,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	options.acceptsFirstMouseClick = false;
 	options.enableDefaultClipboardKeyShortcutsInSafari = false;
 	options.transparentBackground = true;
+	options.webviewGuiDeferInitialResourceNavigation = true;
 #	if CHOC_WINDOWS
 	options.customSchemeURI = "https://choc.localhost/";
 	const std::string trustedOrigin = "https://choc.localhost";
@@ -219,15 +236,15 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		std::optional<ChocResource> chocResource;
 		if (!impl->isOnGuiThread()) return chocResource;
 
+		// Pin both inputs independently of the CHOC Options/Pimpl that owns this
+		// wrapper. ResourceGetter is allowed to destroy its WebviewGui; after the
+		// user callback begins this wrapper must touch only stack-local state.
+		auto resourceGetter = getter;
+		const auto resourcePath = path;
 		Resource resource;
-		if (!getter || !getter(path.c_str(), resource)) return chocResource;
+		if (!resourceGetter || !resourceGetter(resourcePath.c_str(), resource)) return chocResource;
 		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
-		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(path.c_str());
-
-		if (detail::startsWithASCIIInsensitive(resource.mediaType, "text/html")) {
-			if (!detail::applyPluginHTMLHardening(resource.bytes))
-				return chocResource;
-		}
+		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(resourcePath.c_str());
 
 		chocResource.emplace();
 		chocResource->data = std::move(resource.bytes);
@@ -294,6 +311,10 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 			}
 			return choc::value::Value{true};
 		});
+
+		const auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
+		if (bridgeBootstrap.empty() || !wv.addInitScript(bridgeBootstrap))
+			return;
 
 		wv.navigate(startUri);
 	};
@@ -382,8 +403,12 @@ void WebviewGui::send(const unsigned char *bytes, size_t length) {
 		+ "']==='function')window['" + functionName + "'](\"" + base64 + "\");");
 }
 
+bool WebviewGui::trySetSize(double width, double height) {
+	return impl && impl->isOnGuiThread() && impl->setSize(width, height);
+}
+
 void WebviewGui::setSize(double width, double height) {
-	if (impl && impl->isOnGuiThread()) impl->setSize(width, height);
+	(void) trySetSize(width, height);
 }
 
 void WebviewGui::setVisible(bool visible) {

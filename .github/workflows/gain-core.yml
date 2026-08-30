@@ -1,0 +1,133 @@
+name: Gain core contract
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    paths:
+      - 'examples/gain/**'
+      - 'examples/tests/gain_core_tests.cpp'
+      - 'examples/tests/gain_meter_tests.cpp'
+      - 'examples/tests/gain_clap_adapter_tests.cpp'
+      - 'examples/tests/gain_state_host_sync_tests.cpp'
+      - 'examples/tests/gain_webview_resource_tests.cpp'
+      - 'examples/tests/gain_webview_param_tests.cpp'
+      - 'examples/tests/gain_webview_backpressure_tests.cpp'
+      - 'examples/tests/gain_native_gui_contract.cmake'
+      - 'examples/tests/gain_native_gui_tests.cpp'
+      - 'examples/tests/gain_validator_ci_contract.cmake'
+      - 'examples/CMakeLists.txt'
+      - '.github/workflows/gain-core.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gain-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gain-core:
+    name: ${{ matrix.os }} Gain core
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Verify native GUI preference contract
+        run: cmake -P examples/tests/gain_native_gui_contract.cmake
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure Gain tests
+        run: >-
+          cmake
+          -S examples
+          -B build-gain-core
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build Gain CLAP and tests
+        run: >-
+          cmake --build build-gain-core
+          --target webview_gui_example_gain webview_gui_example_gain_core_tests webview_gui_example_gain_meter_tests webview_gui_example_gain_clap_tests webview_gui_example_gain_state_host_sync_tests webview_gui_example_gain_webview_resource_tests webview_gui_example_gain_webview_param_tests webview_gui_example_gain_webview_backpressure_tests webview_gui_example_gain_native_gui_tests
+          --config Debug --parallel
+
+      - name: Run Gain tests
+        run: >-
+          ctest --test-dir build-gain-core -C Debug --output-on-failure
+          --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|state_host_sync|webview_resource|webview_param|webview_backpressure|native_gui)$'
+
+      - name: Run Gain validator CI contract
+        run: >-
+          cmake
+          -DWORKFLOW_FILE="${{ github.workspace }}/.github/workflows/gain-core.yml"
+          -DEXAMPLES_CMAKE_FILE="${{ github.workspace }}/examples/CMakeLists.txt"
+          -P "${{ github.workspace }}/examples/tests/gain_validator_ci_contract.cmake"
+
+  gain-validator:
+    name: ${{ matrix.os }} Gain clap-validator
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Checkout pinned clap-validator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: free-audio/clap-validator
+          ref: 152b9823e992d782c5c1fd33bca0295478b919aa
+          path: clap-validator
+
+      - name: Print pinned clap-validator commit
+        run: git -C clap-validator rev-parse HEAD
+
+      - name: Install clap-validator Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Build pinned clap-validator
+        run: cargo +1.95.0 build --release --locked --manifest-path clap-validator/Cargo.toml
+
+      - name: Configure Gain validator build
+        run: >-
+          cmake
+          -S examples
+          -B build-gain-validator
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+          -DWEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT="${{ github.workspace }}/clap-validator"
+
+      - name: Build and validate exact Gain CLAP artifact
+        run: >-
+          cmake --build build-gain-validator
+          --target webview_gui_example_gain_validate
+          --config Debug --parallel

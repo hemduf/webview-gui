@@ -24,6 +24,16 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 
     file(READ ${WEBVIEW_GUI_CHOC_WEBVIEW_SOURCE} WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
 
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WebviewGuiChocBootstrapLifecyclePatch.cmake)
+    webview_gui_disable_choc_automatic_resource_navigation(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+    webview_gui_await_choc_windows_init_script_registration(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WebviewGuiChocWindowsResourceLifetimePatch.cmake)
+    webview_gui_apply_choc_windows_resource_lifetime_patch(
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT)
+
     # The pinned Windows backend uses std::wstring but relies on a transitive
     # standard-library include. Patch only the private build-tree copy and fail
     # closed if the pinned source drifts.
@@ -293,4 +303,15 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     pkg_check_modules(gtk3 REQUIRED gtk+-3.0 IMPORTED_TARGET)
     pkg_check_modules(webkit2 REQUIRED webkit2gtk-4.1 IMPORTED_TARGET)
     target_link_libraries(webview-gui PRIVATE PkgConfig::gtk3 PkgConfig::webkit2)
+endif()
+
+# Example dependencies and plug-in targets are strictly opt-in so normal
+# consumers keep the existing library-only configure graph unchanged.
+option(WEBVIEW_GUI_BUILD_EXAMPLES "Build the CLAP example targets" OFF)
+if(WEBVIEW_GUI_BUILD_EXAMPLES)
+    include(CTest)
+    # Enabling examples is explicit, so keep their targets in the parent IDE
+    # project as well. EXCLUDE_FROM_ALL would remove them from Visual Studio's
+    # generated solution and make `cmake --build --target` fail on Windows.
+    add_subdirectory(examples)
 endif()

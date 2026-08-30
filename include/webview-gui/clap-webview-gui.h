@@ -1,7 +1,6 @@
 #pragma once
 
 #include "clap/clap.h"
-#include "clap/ext/draft/webview.h"
 #include "webview-gui.h"
 #include "_impl/plugin_support.h"
 #include "_impl/callback_registry.h"
@@ -17,12 +16,16 @@
 
 namespace webview_gui {
 
-// Keep the existing namespace-qualified API while using the pinned CLAP SDK's
-// canonical draft WebView declarations as the ABI source of truth.
-inline constexpr const char *CLAP_EXT_WEBVIEW = ::CLAP_EXT_WEBVIEW;
-inline constexpr const char *CLAP_WINDOW_API_WEBVIEW = ::CLAP_WINDOW_API_WEBVIEW;
-using clap_plugin_webview = ::clap_plugin_webview_t;
-using clap_host_webview = ::clap_host_webview_t;
+static constexpr const char CLAP_EXT_WEBVIEW[] = "clap.webview/3";
+static constexpr const char CLAP_WINDOW_API_WEBVIEW[] = "webview";
+struct clap_plugin_webview {
+    int32_t (CLAP_ABI *get_uri)(const clap_plugin_t *plugin, char *uri, uint32_t uri_capacity);
+    bool (CLAP_ABI *get_resource)(const clap_plugin_t *plugin, const char *path, char *mime, uint32_t mime_capacity, const clap_ostream_t *stream);
+    bool (CLAP_ABI *receive)(const clap_plugin_t *plugin, const void *buffer, uint32_t size);
+};
+struct clap_host_webview {
+    bool(CLAP_ABI *send)(const clap_host_t *host, const void *buffer, uint32_t size);
+};
 
 struct ClapWebviewGui {
     clap_plugin_gui *extPluginGui = nullptr;
@@ -66,37 +69,23 @@ struct ClapWebviewGui {
 
     bool isApiSupported(const char *api, bool is_floating) {
         if (!isOnGuiThread() || !api) return false;
-        if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW))
-            return !is_floating && hasHostWebviewPath();
+        if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) return true;
         if (is_floating) return false;
         return WebviewGui::supports(clapApiToPlatform(api));
     }
 
     bool getPreferredApi(const char **api, bool *is_floating) {
         if (!isOnGuiThread() || !api || !is_floating) return false;
-
-        if (hasHostWebviewPath()) {
-            *api = CLAP_WINDOW_API_WEBVIEW;
-            *is_floating = false;
-            return true;
-        }
-
-        const auto *nativeApi = preferredNativeApi();
-        if (!nativeApi)
-            return false;
-
-        *api = nativeApi;
+        *api = CLAP_WINDOW_API_WEBVIEW;
         *is_floating = false;
         return true;
     }
 
     bool create(const char *api, bool is_floating) {
-        if (!isOnGuiThread() || !api || guiMode != GuiMode::None) return false;
+        if (!isOnGuiThread() || !api || guiCreated) return false;
         if (!std::strcmp(api, CLAP_WINDOW_API_WEBVIEW)) {
-            if (is_floating || !hasHostWebviewPath())
-                return false;
             nativePlatform = WebviewGui::NONE;
-            guiMode = GuiMode::HostWebview;
+            guiCreated = true;
             return true;
         }
         if (is_floating) return false;
@@ -171,12 +160,12 @@ struct ClapWebviewGui {
 
         nativeWebview = std::unique_ptr<WebviewGui>{ptr};
         nativePlatform = platform;
-        guiMode = GuiMode::Native;
         nativeWebview->receive = [this](const unsigned char *bytes, size_t length){
             if (isOnGuiThread() && detail::messageSizeAllowed(length)
                 && pluginWebview && pluginWebview->receive && plugin)
                 pluginWebview->receive(plugin, (const void *)bytes, uint32_t(length));
         };
+        guiCreated = true;
         return true;
     }
 
@@ -186,15 +175,10 @@ struct ClapWebviewGui {
             nativeWebview->receive = {};
         nativeWebview.reset();
         nativePlatform = WebviewGui::NONE;
-        guiMode = GuiMode::None;
+        guiCreated = false;
     }
 
-    bool setScale(double) {
-        if (!isOnGuiThread()) return false;
-        // CLAP_WINDOW_API_WEBVIEW uses logical pixels; the extension explicitly
-        // forbids set_scale() for this API.
-        return guiMode != GuiMode::HostWebview;
-    }
+    bool setScale(double) { return false; }
 
     bool getSize(uint32_t *w, uint32_t *h) {
         if (!isOnGuiThread() || !w || !h) return false;
@@ -217,25 +201,15 @@ struct ClapWebviewGui {
 
     bool setSize(uint32_t w, uint32_t h) {
         if (!isOnGuiThread()) return false;
+        if (nativeWebview && !nativeWebview->trySetSize(w, h))
+            return false;
         width = w;
         height = h;
-        if (nativeWebview) nativeWebview->setSize(w, h);
         return true;
     }
 
     bool setParent(const clap_window *window) {
-        if (!isOnGuiThread() || !window || !window->api)
-            return false;
-
-        if (guiMode == GuiMode::HostWebview) {
-            // clap.webview/3 defines this as an embedded logical-size API with
-            // a deliberately null opaque window pointer: the host owns the
-            // browser view, not the plugin/WASM module.
-            return std::strcmp(window->api, CLAP_WINDOW_API_WEBVIEW) == 0
-                && window->ptr == nullptr;
-        }
-
-        if (!nativeWebview)
+        if (!isOnGuiThread() || !nativeWebview || !window || !window->api)
             return false;
 
         void *parent = nullptr;
@@ -263,19 +237,13 @@ struct ClapWebviewGui {
     void suggestTitle(const char *) {}
 
     bool show() {
-        if (!isOnGuiThread()) return false;
-        if (guiMode == GuiMode::HostWebview)
-            return true;
-        if (!nativeWebview) return false;
+        if (!isOnGuiThread() || !nativeWebview) return false;
         nativeWebview->setVisible(true);
         return true;
     }
 
     bool hide() {
-        if (!isOnGuiThread()) return false;
-        if (guiMode == GuiMode::HostWebview)
-            return true;
-        if (!nativeWebview) return false;
+        if (!isOnGuiThread() || !nativeWebview) return false;
         nativeWebview->setVisible(false);
         return true;
     }
@@ -286,14 +254,13 @@ struct ClapWebviewGui {
             nativeWebview->send((const unsigned char *)buffer, length);
             return true;
         }
-        if (guiMode == GuiMode::HostWebview && hostWebview && hostWebview->send && host)
+        if (hostWebview && hostWebview->send && host)
             return hostWebview->send(host, buffer, uint32_t(length));
         return false;
     }
 
 #ifdef WEBVIEW_GUI_TESTING
     [[nodiscard]] bool testHasNativeWebview() const noexcept { return nativeWebview != nullptr; }
-    [[nodiscard]] bool testUsesHostWebview() const noexcept { return guiMode == GuiMode::HostWebview; }
 
     bool testDeliverNativeMessage(const void *buffer, size_t length) {
         if (!nativeWebview || !nativeWebview->receive || (!buffer && length != 0))
@@ -304,23 +271,6 @@ struct ClapWebviewGui {
 #endif
 
 private:
-    enum class GuiMode : unsigned char {
-        None,
-        HostWebview,
-        Native,
-    };
-
-    [[nodiscard]] bool hasHostWebviewPath() const noexcept {
-        return plugin != nullptr
-            && host != nullptr
-            && pluginWebview != nullptr
-            && pluginWebview->get_uri != nullptr
-            && pluginWebview->get_resource != nullptr
-            && pluginWebview->receive != nullptr
-            && hostWebview != nullptr
-            && hostWebview->send != nullptr;
-    }
-
     void initialiseCurrentIdentity() {
         uiThread.bindToCurrentThread();
         pluginWebview = nullptr;
@@ -342,7 +292,7 @@ private:
     detail::ThreadAffinity uiThread;
     std::unique_ptr<WebviewGui> nativeWebview;
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
-    GuiMode guiMode = GuiMode::None;
+    bool guiCreated = false;
 
     inline static detail::CallbackRegistry<ClapWebviewGui> pluginRegistry;
 
@@ -371,14 +321,11 @@ private:
     const char * getNativeStartUrl() {
         if (!isOnGuiThread()) return "";
         if (pluginWebview && pluginWebview->get_uri && plugin) {
-            const auto uriLength = pluginWebview->get_uri(
-                plugin, startUrlBuffer, static_cast<uint32_t>(sizeof(startUrlBuffer)));
-            if (uriLength > static_cast<int32_t>(sizeof(startUrlBuffer))) {
+            auto uriLength = pluginWebview->get_uri(plugin, startUrlBuffer, 2047);
+            if (uriLength >= 2048) {
                 std::strcpy(startUrlBuffer, "data:text/html,URI%20too%20long");
             } else if (uriLength <= 0) {
                 std::strcpy(startUrlBuffer, "data:text/html,get_uri%20error");
-            } else {
-                startUrlBuffer[sizeof(startUrlBuffer) - 1] = '\0';
             }
         } else {
             std::strcpy(startUrlBuffer, "data:text/html,no%20plugin%20webview%20ext");
@@ -406,20 +353,6 @@ private:
         if (!std::strcmp(api, CLAP_WINDOW_API_COCOA)) return WebviewGui::COCOA;
         if (!std::strcmp(api, CLAP_WINDOW_API_X11)) return WebviewGui::X11EMBED;
         return WebviewGui::NONE;
-    }
-
-    static const char *preferredNativeApi() {
-#if defined(__APPLE__)
-        if (WebviewGui::supports(WebviewGui::COCOA))
-            return CLAP_WINDOW_API_COCOA;
-#elif defined(_WIN32) || defined(_WIN64)
-        if (WebviewGui::supports(WebviewGui::HWND))
-            return CLAP_WINDOW_API_WIN32;
-#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(__wasm32__) && !defined(__wasm64__)
-        if (WebviewGui::supports(WebviewGui::X11EMBED))
-            return CLAP_WINDOW_API_X11;
-#endif
-        return nullptr;
     }
 
     const clap_plugin_webview *pluginWebview = nullptr;
@@ -477,7 +410,9 @@ private:
         return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.adjustSize(w, h); });
     }
     static bool gui_set_size(const clap_plugin *plugin, uint32_t w, uint32_t h) {
-        return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setSize(w, h); });
+        return visitSelf(plugin, [&](ClapWebviewGui& self) {
+            return self.guiCreated && self.setSize(w, h);
+        });
     }
     static bool gui_set_parent(const clap_plugin *plugin, const clap_window *window) {
         return visitSelf(plugin, [&](ClapWebviewGui& self) { return self.setParent(window); });
