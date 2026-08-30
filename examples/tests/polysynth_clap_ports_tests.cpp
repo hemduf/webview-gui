@@ -58,7 +58,11 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS));
     if (!notePorts || !notePorts->count || !notePorts->get)
         return false;
-    if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 1)
+
+    // This bounded shell consumes native CLAP notes but does not yet emit
+    // NOTE_END through a clap_process_t output event list. Do not advertise a
+    // note output until that contract is implemented and tested.
+    if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 0)
         return false;
 
     clap_note_port_info_t input{};
@@ -70,15 +74,8 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         return false;
 
     clap_note_port_info_t output{};
-    if (!notePorts->get(plugin, 0, false, &output) ||
-        output.id != webview_gui::examples::polysynth::kPolySynthNoteOutputPortId ||
-        output.supported_dialects != CLAP_NOTE_DIALECT_CLAP ||
-        output.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
-        std::strcmp(output.name, "Notes Out") != 0)
-        return false;
-
-    if (notePorts->get(plugin, 1, true, &input) ||
-        notePorts->get(plugin, 1, false, &output))
+    if (notePorts->get(plugin, 0, false, &output) ||
+        notePorts->get(plugin, 1, true, &input))
         return false;
     return true;
 }
