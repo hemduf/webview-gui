@@ -115,5 +115,85 @@ jobs:
           cmake
           -DWORKFLOW_FILE="${{ github.workspace }}/.github/workflows/polysynth-core.yml"
           -DEXAMPLES_CMAKE_FILE="${{ github.workspace }}/examples/CMakeLists.txt"
-          -DPOLYSYNTH_CMAKE_FILE="${{ github.workspace }}/examples/polysynth/CMakeLists.txt"
           -P "${{ github.workspace }}/examples/tests/polysynth_validator_ci_contract.cmake"
+
+  polysynth-validator:
+    name: ${{ matrix.os }} PolySynth clap-validator
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Checkout pinned clap-validator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: free-audio/clap-validator
+          ref: 152b9823e992d782c5c1fd33bca0295478b919aa
+          path: clap-validator
+
+      - name: Print pinned clap-validator commit
+        run: git -C clap-validator rev-parse HEAD
+
+      - name: Install clap-validator Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Build pinned clap-validator
+        run: cargo +1.95.0 build --release --locked --manifest-path clap-validator/Cargo.toml
+
+      - name: Configure PolySynth validator build
+        run: >-
+          cmake
+          -G Ninja
+          -S examples
+          -B build-polysynth-validator
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build exact PolySynth CLAP artifact
+        run: >-
+          cmake --build build-polysynth-validator
+          --target webview_gui_example_polysynth
+          --parallel
+
+      - name: Validate exact PolySynth CLAP artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLUGIN_PATH="${{ github.workspace }}/build-polysynth-validator/polysynth/WebviewGuiPolySynth.clap"
+          test -e "$PLUGIN_PATH"
+          echo "clap-validator commit: 152b9823e992d782c5c1fd33bca0295478b919aa"
+          echo "PolySynth CLAP path: $PLUGIN_PATH"
+          ./clap-validator/target/release/clap-validator --version
+          ./clap-validator/target/release/clap-validator validate "$PLUGIN_PATH" --only-failed
+
+      - name: Validate exact PolySynth CLAP artifact on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pluginPath = "${{ github.workspace }}\build-polysynth-validator\polysynth\WebviewGuiPolySynth.clap"
+          $validator = "${{ github.workspace }}\clap-validator\target\release\clap-validator.exe"
+          if (-not (Test-Path -LiteralPath $pluginPath)) {
+            throw "PolySynth CLAP artifact not found at $pluginPath"
+          }
+          Write-Host "clap-validator commit: 152b9823e992d782c5c1fd33bca0295478b919aa"
+          Write-Host "PolySynth CLAP path: $pluginPath"
+          & $validator --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $validator validate $pluginPath --only-failed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
