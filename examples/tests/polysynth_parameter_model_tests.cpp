@@ -15,6 +15,7 @@ using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterSpec;
 using webview_gui::examples::polysynth::coarseTuningTextForValue;
 using webview_gui::examples::polysynth::coarseTuningValueFromText;
+using webview_gui::examples::polysynth::continuousParameterValueFromText;
 using webview_gui::examples::polysynth::kParameterCount;
 using webview_gui::examples::polysynth::parameterSpecByIndex;
 using webview_gui::examples::polysynth::parameterSpecForId;
@@ -280,6 +281,55 @@ bool checkCoarseTuningTextContract() {
 
     return true;
 }
+
+bool checkContinuousParameterTextContract() {
+    struct ParseCase {
+        clap_id id;
+        const char *text;
+        double expected;
+    };
+    constexpr std::array<ParseCase, 4> valid{{
+        {1000u, "-6.0205999", -6.0205999},
+        {1003u, "99.5", 99.5},
+        {1004u, "6000.25", 6000.25},
+        {1011u, "-0.5", -0.5},
+    }};
+
+    for (const auto &item : valid) {
+        double parsed = 123.0;
+        if (!continuousParameterValueFromText(item.id, item.text, parsed) ||
+            std::fabs(parsed - item.expected) > 1.0e-12) {
+            std::cerr << "continuous parameter text-to-value contract mismatch\n";
+            return false;
+        }
+    }
+
+    double preserved = 17.0;
+    for (const char *invalid : {nullptr, "", "12x", "nan", "inf", " 12"}) {
+        if (continuousParameterValueFromText(1003u, invalid, preserved) || preserved != 17.0) {
+            std::cerr << "invalid continuous parameter text unexpectedly parsed or mutated output\n";
+            return false;
+        }
+    }
+
+    if (continuousParameterValueFromText(1001u, "1", preserved) ||
+        continuousParameterValueFromText(1002u, "12", preserved) ||
+        continuousParameterValueFromText(1003u, "101", preserved) ||
+        preserved != 17.0) {
+        std::cerr << "continuous parser accepted stepped or out-of-range parameter text\n";
+        return false;
+    }
+
+    std::array<char, CLAP_NAME_SIZE> unterminated{};
+    unterminated.fill('1');
+    if (continuousParameterValueFromText(1003u, unterminated.data(), preserved) ||
+        preserved != 17.0) {
+        std::cerr << "continuous parser accepted text without a bounded NUL terminator\n";
+        return false;
+    }
+
+    return true;
+}
 }
 
 int main() {
@@ -366,6 +416,9 @@ int main() {
 
     if (!checkCoarseTuningTextContract())
         return 11;
+
+    if (!checkContinuousParameterTextContract())
+        return 12;
 
     return 0;
 }
