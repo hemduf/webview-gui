@@ -291,7 +291,11 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         return nullptr;
 
     clap_param_info_t info{};
+    clap_param_info_t repeatedInfo{};
     if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
+        !info.cookie ||
+        !params->get_info(plugin, 0, &repeatedInfo) ||
+        repeatedInfo.id != info.id || repeatedInfo.cookie != info.cookie ||
         info.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
         info.min_value != -100.0 || info.max_value != 100.0 ||
         info.default_value != 0.0 ||
