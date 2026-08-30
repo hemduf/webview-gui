@@ -40,6 +40,39 @@ elseif(WIN32 OR UNIX)
     set_target_properties(webview_gui_example_polysynth PROPERTIES SUFFIX ".clap")
 endif()
 
+if(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT)
+    find_program(WEBVIEW_GUI_EXAMPLES_POLYSYNTH_CLAP_VALIDATOR_EXECUTABLE
+        NAMES clap-validator clap-validator.exe
+        PATHS "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT}/target/release"
+        NO_DEFAULT_PATH
+    )
+    if(NOT WEBVIEW_GUI_EXAMPLES_POLYSYNTH_CLAP_VALIDATOR_EXECUTABLE)
+        message(FATAL_ERROR
+            "Pinned clap-validator executable was not found under "
+            "${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT}/target/release")
+    endif()
+
+    if(APPLE)
+        set(_webview_gui_polysynth_validation_path
+            "$<TARGET_BUNDLE_DIR:webview_gui_example_polysynth>")
+    else()
+        set(_webview_gui_polysynth_validation_path
+            "$<TARGET_FILE:webview_gui_example_polysynth>")
+    endif()
+
+    add_custom_target(webview_gui_example_polysynth_validate
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "clap-validator commit: ${WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_REVISION}"
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "PolySynth CLAP path: ${_webview_gui_polysynth_validation_path}"
+        COMMAND "${WEBVIEW_GUI_EXAMPLES_POLYSYNTH_CLAP_VALIDATOR_EXECUTABLE}" --version
+        COMMAND "${WEBVIEW_GUI_EXAMPLES_POLYSYNTH_CLAP_VALIDATOR_EXECUTABLE}"
+            validate "${_webview_gui_polysynth_validation_path}" --only-failed
+        DEPENDS webview_gui_example_polysynth
+        VERBATIM
+    )
+endif()
+
 add_executable(webview_gui_example_polysynth_voice_allocator_tests
     ../tests/polysynth_voice_allocator_tests.cpp
 )
