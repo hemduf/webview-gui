@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <limits>
 
 namespace {
 using webview_gui::examples::polysynth::ParameterSlot;
@@ -16,6 +18,8 @@ using webview_gui::examples::polysynth::parameterSpecByIndex;
 using webview_gui::examples::polysynth::parameterSpecForId;
 using webview_gui::examples::polysynth::parameterSlotForId;
 using webview_gui::examples::polysynth::supportsPolyphonicAddressing;
+using webview_gui::examples::polysynth::waveformNameForValue;
+using webview_gui::examples::polysynth::waveformValueFromName;
 
 constexpr std::uint32_t kPolyAutomationFlags =
     CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID |
@@ -39,6 +43,53 @@ bool requirePolyphonic(ParameterSlot slot, const char *label) {
         std::cerr << label << " is missing the full polyphonic CLAP flag surface\n";
         return false;
     }
+    return true;
+}
+
+bool checkWaveformTextContract() {
+    struct ExpectedWaveform {
+        double value;
+        const char *name;
+    };
+    constexpr std::array<ExpectedWaveform, 3> expected{{
+        {0.0, "Sine"},
+        {1.0, "Saw"},
+        {2.0, "Square"},
+    }};
+
+    for (const auto &item : expected) {
+        const char *name = waveformNameForValue(item.value);
+        if (!name || std::strcmp(name, item.name) != 0) {
+            std::cerr << "waveform value-to-text contract mismatch\n";
+            return false;
+        }
+
+        double parsed = -1.0;
+        if (!waveformValueFromName(item.name, parsed) || parsed != item.value) {
+            std::cerr << "waveform text-to-value contract mismatch\n";
+            return false;
+        }
+    }
+
+    for (double invalid : {-1.0,
+                           0.5,
+                           3.0,
+                           std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+        if (waveformNameForValue(invalid) != nullptr) {
+            std::cerr << "invalid waveform value unexpectedly formatted\n";
+            return false;
+        }
+    }
+
+    double preserved = 17.0;
+    for (const char *invalid : {nullptr, "", "sine", "Saw ", "Triangle", "1"}) {
+        if (waveformValueFromName(invalid, preserved) || preserved != 17.0) {
+            std::cerr << "invalid waveform name unexpectedly parsed or mutated output\n";
+            return false;
+        }
+    }
+
     return true;
 }
 }
@@ -118,6 +169,9 @@ int main() {
         std::cerr << "global parameter capabilities are inconsistent\n";
         return 8;
     }
+
+    if (!checkWaveformTextContract())
+        return 9;
 
     return 0;
 }
