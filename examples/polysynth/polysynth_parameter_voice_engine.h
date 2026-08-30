@@ -606,10 +606,13 @@ private:
         return true;
     }
 
+    // Semantically invalid note-expression payloads are host input errors, not
+    // internal DSP failures. Ignore them without mutating voice state so one bad
+    // event cannot turn an otherwise valid real-time block into CLAP_PROCESS_ERROR.
     bool applyTuningExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
@@ -631,7 +634,7 @@ private:
     bool applyVolumeExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value <= 0.0 || event.value > 4.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
@@ -650,7 +653,7 @@ private:
     bool applyPerformanceExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
@@ -669,7 +672,7 @@ private:
     bool applyPressureExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
@@ -688,7 +691,7 @@ private:
     bool applyPanExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
@@ -707,7 +710,7 @@ private:
     bool applyBrightnessExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return false;
+            return true;
         if (!syncVoices())
             return false;
 
