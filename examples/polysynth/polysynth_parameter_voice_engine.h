@@ -798,8 +798,7 @@ private:
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
-            if (!std::isfinite(event.value) ||
-                event.value < spec->minValue || event.value > spec->maxValue)
+            if (!std::isfinite(event.value))
                 return false;
 
             if (spec->slot == ParameterSlot::MasterGain) {
@@ -808,10 +807,18 @@ private:
                                      event.channel,
                                      event.key))
                     return true;
+                // A host or fuzzing validator can send a structurally valid
+                // statement whose value is outside this parameter's semantic
+                // base range. Ignore that statement without mutating the retained
+                // base or failing the entire real-time process block.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
+                    return true;
                 masterGainBaseDb_ = event.value;
                 return applyMasterGainState();
             }
 
+            if (event.value < spec->minValue || event.value > spec->maxValue)
+                return false;
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
