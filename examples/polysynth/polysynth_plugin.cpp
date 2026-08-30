@@ -1,6 +1,7 @@
 #include "polysynth_plugin.h"
 #include "polysynth_parameter_voice_engine.h"
 
+#include <clap/ext/remote-controls.h>
 #include <clap/ext/state-context.h>
 #include <clap/ext/state.h>
 #include <clap/ext/tail.h>
@@ -28,6 +29,7 @@ using PolySynthBase = clap::helpers::Plugin<
 
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
 constexpr std::uint32_t kPolySynthReleaseTailSamples = 64u;
 
 static_assert(std::atomic<float>::is_always_lock_free,
@@ -41,6 +43,8 @@ static_assert(std::numeric_limits<double>::is_iec559,
 static_assert(kPolySynthDefaultVoiceCount > 0 &&
                   kPolySynthDefaultVoiceCount <= VoiceAllocator::kMaximumVoices,
               "PolySynth voice-info must report a valid configured voice count");
+static_assert(kTuningRemoteControlsPageId != CLAP_INVALID_ID,
+              "PolySynth remote-controls page ID must be valid");
 static_assert(kPolySynthReleaseTailSamples <
                   static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()),
               "PolySynth tail must remain finite under the CLAP tail contract");
@@ -449,6 +453,25 @@ protected:
         info->voice_capacity = VoiceAllocator::kMaximumVoices;
         info->flags = CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
         return true;
+    }
+
+    bool implementRemoteControls() const noexcept override { return true; }
+
+    std::uint32_t remoteControlsPageCount() noexcept override { return 1u; }
+
+    bool remoteControlsPageGet(std::uint32_t pageIndex,
+                               clap_remote_controls_page *page) noexcept override {
+        if (!page || pageIndex != 0u)
+            return false;
+
+        *page = {};
+        page->page_id = kTuningRemoteControlsPageId;
+        for (auto &paramId : page->param_ids)
+            paramId = CLAP_INVALID_ID;
+        page->param_ids[0] = kHostFineTuneParameterId;
+        page->is_for_preset = false;
+        return copyName(page->section_name, sizeof(page->section_name), "Oscillator") &&
+               copyName(page->page_name, sizeof(page->page_name), "Tuning");
     }
 
     bool implementsParams() const noexcept override { return true; }
