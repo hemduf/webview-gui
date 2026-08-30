@@ -256,7 +256,13 @@ inline bool coarseTuningValueFromText(const char *display, double &value) noexce
     if (!spec)
         return false;
 
-    const char *end = display + std::strlen(display);
+    std::size_t length = 0;
+    while (length < CLAP_NAME_SIZE && display[length] != '\0')
+        ++length;
+    if (length == 0 || length == CLAP_NAME_SIZE)
+        return false;
+
+    const char *end = display + length;
     int semitones = 0;
     const auto result = std::from_chars(display, end, semitones);
     if (result.ec != std::errc() || result.ptr != end ||
