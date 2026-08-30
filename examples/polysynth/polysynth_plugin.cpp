@@ -30,6 +30,8 @@ using PolySynthBase = clap::helpers::Plugin<
 
 constexpr clap_id kHostMasterGainParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::MasterGain);
+constexpr clap_id kHostWaveformParameterId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform);
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
@@ -98,7 +100,9 @@ bool isGlobalParameterAddress(std::int32_t noteId,
 }
 
 bool isPublishedHostParameter(clap_id id) noexcept {
-    return id == kHostFineTuneParameterId || id == kHostMasterGainParameterId;
+    return id == kHostFineTuneParameterId ||
+           id == kHostMasterGainParameterId ||
+           id == kHostWaveformParameterId;
 }
 
 void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
@@ -318,11 +322,12 @@ protected:
                                kPolySynthReleaseTailSamples) ||
             !engine_.setFineTuningCents(
                 hostFineTuneCents_.load(std::memory_order_acquire)) ||
-            !applyRetainedMasterGainBaseToEngine())
+            !applyRetainedMasterGainBaseToEngine() ||
+            !applyRetainedWaveformBaseToEngine())
             return false;
 
-        // configure() starts with no active generations and both retained base
-        // values are explicitly applied above, so no process-time replay is needed.
+        // configure() starts with no active generations and retained base values
+        // are explicitly applied above, so no process-time replay is needed.
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
         active_ = true;
         return true;
@@ -561,7 +566,7 @@ protected:
 
     bool implementsParams() const noexcept override { return true; }
 
-    std::uint32_t paramsCount() const noexcept override { return 2u; }
+    std::uint32_t paramsCount() const noexcept override { return 3u; }
 
     bool paramsInfo(std::uint32_t paramIndex,
                     clap_param_info_t *info) const noexcept override {
@@ -570,7 +575,9 @@ protected:
 
         const clap_id paramId = paramIndex == 0u
                                     ? kHostFineTuneParameterId
-                                    : kHostMasterGainParameterId;
+                                    : (paramIndex == 1u
+                                           ? kHostMasterGainParameterId
+                                           : kHostWaveformParameterId);
         const auto *spec = parameterSpecForId(paramId);
         if (!spec)
             return false;
@@ -598,6 +605,11 @@ protected:
                 hostFineTuneCents_.load(std::memory_order_acquire));
             return true;
         }
+        if (paramId == kHostWaveformParameterId) {
+            *value = static_cast<double>(
+                hostWaveform_.load(std::memory_order_acquire));
+            return true;
+        }
         *value = static_cast<double>(
             hostMasterGainDb_.load(std::memory_order_acquire));
         return true;
@@ -611,6 +623,9 @@ protected:
         if (!spec || !isPublishedHostParameter(paramId) || !display || size == 0 ||
             !std::isfinite(value) || value < spec->minValue || value > spec->maxValue)
             return false;
+
+        if (paramId == kHostWaveformParameterId)
+            return waveformTextForValue(value, display, size);
 
         auto result = std::to_chars(display,
                                     display + size - 1,
@@ -629,6 +644,14 @@ protected:
         const auto *spec = parameterSpecForId(paramId);
         if (!spec || !isPublishedHostParameter(paramId) || !display || !value)
             return false;
+
+        if (paramId == kHostWaveformParameterId) {
+            double parsedWaveform = 0.0;
+            if (!waveformValueFromName(display, parsedWaveform))
+                return false;
+            *value = parsedWaveform;
+            return true;
+        }
 
         const char *end = display + std::strlen(display);
         double parsed = 0.0;
@@ -660,7 +683,9 @@ protected:
                 const auto *spec = parameterSpecForId(event.param_id);
                 if (!spec || !isPublishedHostParameter(event.param_id) ||
                     !std::isfinite(event.value) ||
-                    event.value < spec->minValue || event.value > spec->maxValue)
+                    event.value < spec->minValue || event.value > spec->maxValue ||
+                    (event.param_id == kHostWaveformParameterId &&
+                     std::trunc(event.value) != event.value))
                     continue;
 
                 const bool isGlobal = isGlobalParameterAddress(event.note_id,
@@ -679,6 +704,10 @@ protected:
                             hostFineTuneCents_.store(
                                 static_cast<float>(event.value),
                                 std::memory_order_release);
+                        } else if (event.param_id == kHostWaveformParameterId) {
+                            hostWaveform_.store(
+                                static_cast<std::uint32_t>(event.value),
+                                std::memory_order_release);
                         } else {
                             hostMasterGainDb_.store(
                                 static_cast<float>(event.value),
@@ -691,6 +720,10 @@ protected:
                     if (event.param_id == kHostFineTuneParameterId) {
                         hostFineTuneCents_.store(
                             static_cast<float>(event.value),
+                            std::memory_order_release);
+                    } else if (event.param_id == kHostWaveformParameterId) {
+                        hostWaveform_.store(
+                            static_cast<std::uint32_t>(event.value),
                             std::memory_order_release);
                     } else {
                         hostMasterGainDb_.store(
@@ -736,6 +769,22 @@ private:
         return engine_.applyParameterFlushEvent(event.header);
     }
 
+    bool applyRetainedWaveformBaseToEngine() noexcept {
+        clap_event_param_value_t event{};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kHostWaveformParameterId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = static_cast<double>(
+            hostWaveform_.load(std::memory_order_acquire));
+        return engine_.applyParameterFlushEvent(event.header);
+    }
+
     bool syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
         const auto revisionBefore = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionBefore != appliedLoadedStateRevision_) {
@@ -750,11 +799,14 @@ private:
 
         double fineTune = 0.0;
         double masterGain = 0.0;
+        double waveform = 0.0;
         if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune) ||
-            !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain))
+            !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain) ||
+            !engine_.parameterBaseValue(kHostWaveformParameterId, waveform))
             return false;
         hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
         hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
+        hostWaveform_.store(static_cast<std::uint32_t>(waveform), std::memory_order_relaxed);
 
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore) {
@@ -773,6 +825,7 @@ private:
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
     std::atomic<float> hostMasterGainDb_{0.0f};
+    std::atomic<std::uint32_t> hostWaveform_{0u};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
