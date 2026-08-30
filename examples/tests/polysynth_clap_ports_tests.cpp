@@ -313,8 +313,7 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_info(plugin, 1, &masterInfo) || masterInfo.id != kMasterGainId ||
         !masterInfo.cookie ||
         !params->get_info(plugin, 1, &repeatedMasterInfo) ||
-        repeatedMasterInfo.id != masterInfo.id ||
-        repeatedMasterInfo.cookie != masterInfo.cookie ||
+        repeatedMasterInfo.id != masterInfo.id || repeatedMasterInfo.cookie != masterInfo.cookie ||
         masterInfo.flags != webview_gui::examples::polysynth::kGlobalModulatableFlags ||
         masterInfo.min_value != -60.0 || masterInfo.max_value != 12.0 ||
         masterInfo.default_value != 0.0 ||
@@ -414,9 +413,11 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         return false;
 
     if (!params || first.param_ids[0] != kFineTuneId ||
-        second.param_ids[0] != kFineTuneId || compatible.param_ids[0] != kFineTuneId)
+        second.param_ids[0] != kFineTuneId || compatible.param_ids[0] != kFineTuneId ||
+        first.param_ids[1] != kWaveformId || second.param_ids[1] != kWaveformId ||
+        compatible.param_ids[1] != kWaveformId)
         return false;
-    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (first.param_ids[index] != CLAP_INVALID_ID ||
             second.param_ids[index] != CLAP_INVALID_ID ||
             compatible.param_ids[index] != CLAP_INVALID_ID)
@@ -446,9 +447,12 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
 
     clap_param_info_t mappedFineInfo{};
     clap_param_info_t mappedMasterInfo{};
+    clap_param_info_t mappedWaveformInfo{};
     return params->get_info(plugin, 0u, &mappedFineInfo) &&
            params->get_info(plugin, 1u, &mappedMasterInfo) &&
+           params->get_info(plugin, 2u, &mappedWaveformInfo) &&
            mappedFineInfo.id == first.param_ids[0] &&
+           mappedWaveformInfo.id == first.param_ids[1] &&
            mappedMasterInfo.id == outputPage.param_ids[0];
 }
 
