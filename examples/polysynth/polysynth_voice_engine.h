@@ -286,6 +286,27 @@ public:
         return true;
     }
 
+    // CLAP PAN is an absolute per-note position in [0, 1]. Map it onto the
+    // example's existing center-preserving linear law without touching phase,
+    // envelope, filter or lifecycle state.
+    bool setVoicePanExpression(VoiceAllocator::VoiceIndex index,
+                               float pan) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(pan) || pan < 0.0f || pan > 1.0f)
+            return false;
+
+        auto &voice = voices_[index];
+        const float signedPan = pan * 2.0f - 1.0f;
+        if (signedPan <= 0.0f) {
+            voice.panLeftGain = 1.0f;
+            voice.panRightGain = 1.0f + signedPan;
+        } else {
+            voice.panLeftGain = 1.0f - signedPan;
+            voice.panRightGain = 1.0f;
+        }
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
@@ -477,7 +498,6 @@ private:
         if (!std::isfinite(baseG) || !std::isfinite(damping) ||
             !std::isfinite(denominator) || denominator <= 0.0)
             return false;
-
         a1 = 1.0 / denominator;
         a2 = baseG * a1;
         a3 = baseG * a2;
