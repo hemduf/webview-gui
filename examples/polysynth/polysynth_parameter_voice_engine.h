@@ -31,6 +31,7 @@ public:
         masterGainBaseDb_ = 0.0;
         masterGainGlobalModulationDb_ = 0.0;
         waveformBaseValue_ = 0.0;
+        coarseTuneBaseSemitones_ = 0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         trackedVoices_.fill(false);
@@ -67,6 +68,10 @@ public:
         }
         if (spec->slot == ParameterSlot::Waveform) {
             value = waveformBaseValue_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::CoarseTuning) {
+            value = static_cast<double>(coarseTuneBaseSemitones_);
             return true;
         }
         if (spec->slot == ParameterSlot::FineTuning) {
@@ -841,6 +846,25 @@ private:
                 return true;
             }
 
+            if (spec->slot == ParameterSlot::CoarseTuning) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                // Coarse Tune is a global stepped NOTE_ON default in this bounded
+                // increment. Ignore unsupported fractional/out-of-range statements
+                // without failing the real-time block or changing the retained base.
+                if (event.value < spec->minValue || event.value > spec->maxValue ||
+                    std::trunc(event.value) != event.value)
+                    return true;
+                const auto semitones = static_cast<int>(event.value);
+                if (!VoiceEngine::setCoarseTuningSemitones(semitones))
+                    return false;
+                coarseTuneBaseSemitones_ = semitones;
+                return true;
+            }
+
             if (event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
             if (spec->slot != ParameterSlot::FineTuning)
@@ -918,6 +942,7 @@ private:
     double masterGainBaseDb_ = 0.0;
     double masterGainGlobalModulationDb_ = 0.0;
     double waveformBaseValue_ = 0.0;
+    int coarseTuneBaseSemitones_ = 0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
