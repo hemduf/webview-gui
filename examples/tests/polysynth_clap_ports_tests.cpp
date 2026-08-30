@@ -137,7 +137,10 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
     if (!notePorts || !notePorts->count || !notePorts->get)
         return false;
 
-    if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 1)
+    // NOTE_END is an output event, but its address is explicitly matched against
+    // the plugin's note input port. It does not require advertising a musical
+    // note-output port for this instrument.
+    if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 0)
         return false;
 
     clap_note_port_info_t input{};
@@ -148,13 +151,6 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         std::strcmp(input.name, "Notes In") != 0)
         return false;
 
-    clap_note_port_info_t output{};
-    if (!notePorts->get(plugin, 0, false, &output) ||
-        output.id != webview_gui::examples::polysynth::kPolySynthNoteOutputPortId ||
-        output.supported_dialects != CLAP_NOTE_DIALECT_CLAP ||
-        output.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
-        std::strcmp(output.name, "Notes Out") != 0)
-        return false;
     return true;
 }
 
