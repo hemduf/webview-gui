@@ -30,6 +30,7 @@ public:
 
         masterGainBaseDb_ = 0.0;
         masterGainGlobalModulationDb_ = 0.0;
+        waveformBaseValue_ = 0.0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         trackedVoices_.fill(false);
@@ -62,6 +63,10 @@ public:
             return false;
         if (spec->slot == ParameterSlot::MasterGain) {
             value = masterGainBaseDb_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::Waveform) {
+            value = waveformBaseValue_;
             return true;
         }
         if (spec->slot == ParameterSlot::FineTuning) {
@@ -817,6 +822,25 @@ private:
                 return applyMasterGainState();
             }
 
+            if (spec->slot == ParameterSlot::Waveform) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                // Waveform is a stepped enum. Ignore structurally valid but
+                // unsupported statements rather than failing the real-time block.
+                if (event.value < spec->minValue || event.value > spec->maxValue ||
+                    std::trunc(event.value) != event.value)
+                    return true;
+                const auto waveform = static_cast<OscillatorWaveform>(
+                    static_cast<std::uint8_t>(event.value));
+                if (!VoiceEngine::setOscillatorWaveform(waveform))
+                    return false;
+                waveformBaseValue_ = event.value;
+                return true;
+            }
+
             if (event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
             if (spec->slot != ParameterSlot::FineTuning)
@@ -893,6 +917,7 @@ private:
     bool pendingExpressionTimeValid_ = false;
     double masterGainBaseDb_ = 0.0;
     double masterGainGlobalModulationDb_ = 0.0;
+    double waveformBaseValue_ = 0.0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
