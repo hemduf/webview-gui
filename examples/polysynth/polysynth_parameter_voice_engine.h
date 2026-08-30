@@ -76,6 +76,34 @@ public:
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
     }
 
+    // params.flush() is delivered on the audio thread while the plug-in is active
+    // and is not concurrent with process(). Normalize its lost sample offset to
+    // sample zero and route the event through the exact same value/modulation
+    // validation, addressing, and voice-local composition used by process().
+    bool applyParameterFlushEvent(const clap_event_header_t &header) noexcept {
+        if (header.space_id != CLAP_CORE_EVENT_SPACE_ID ||
+            header.size < sizeof(clap_event_header_t))
+            return false;
+
+        if (header.type == CLAP_EVENT_PARAM_VALUE) {
+            if (header.size < sizeof(clap_event_param_value_t))
+                return false;
+            auto event = *reinterpret_cast<const clap_event_param_value_t *>(&header);
+            event.header.time = 0;
+            return applyCoreEvent(event.header);
+        }
+
+        if (header.type == CLAP_EVENT_PARAM_MOD) {
+            if (header.size < sizeof(clap_event_param_mod_t))
+                return false;
+            auto event = *reinterpret_cast<const clap_event_param_mod_t *>(&header);
+            event.header.time = 0;
+            return applyCoreEvent(event.header);
+        }
+
+        return false;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
