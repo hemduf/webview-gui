@@ -273,9 +273,11 @@ public:
 
     // Audio-thread pitch update for an already allocated generation. Unlike the
     // +/-100-cent host Fine Tune default, the voice-local effective value may
-    // include CLAP's +/-120-semitone TUNING note expression. Only the phase
-    // increment changes: oscillator phase, envelope, filter state and lifecycle
-    // generation remain continuous across the event boundary.
+    // include CLAP's +/-120-semitone TUNING note expression. It can also include
+    // up to 96 semitones of compensation when an active voice preserves its
+    // NOTE_ON Coarse Tune snapshot while the global default moves between -48
+    // and +48. Only the phase increment changes: oscillator phase, envelope,
+    // filter state and lifecycle generation remain continuous across the event.
     bool setVoiceFineTuningCents(VoiceAllocator::VoiceIndex index,
                                  float cents) noexcept {
         if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
@@ -456,7 +458,9 @@ private:
     static constexpr double kPi = 3.1415926535897932384626433832795;
     static constexpr double kTwoPi = 6.283185307179586476925286766559;
     static constexpr double kMaximumPhaseIncrement = 0.49;
-    static constexpr float kMaximumVoicePitchOffsetCents = 12100.0f;
+    // Worst-case active-generation pitch handoff: 96 semitones of Coarse Tune
+    // snapshot compensation + 100 cents Fine Tune + 120 semitones CLAP TUNING.
+    static constexpr float kMaximumVoicePitchOffsetCents = 21700.0f;
     static constexpr float kEnvelopeDenormalFloor = 1.0e-20f;
     static constexpr double kFilterDenormalFloor = 1.0e-30;
     static constexpr float kMinimumFilterCutoffHz = 20.0f;
@@ -477,7 +481,6 @@ private:
     static double maximumFilterG() noexcept {
         return std::tan(kPi * kMaximumFilterCutoffFraction);
     }
-
     // Compact polyBLEP correction keeps the discontinuities of the educational
     // saw/square modes bounded without allocating tables or performing any
     // unbounded work on the audio thread. The sine path remains unchanged.
@@ -837,7 +840,6 @@ private:
                 const auto expressedSample = filteredSample * voice.noteExpressionGain;
                 leftMix += expressedSample * voice.panLeftGain;
                 rightMix += expressedSample * voice.panRightGain;
-
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
                     voice.phase -= 1.0;
