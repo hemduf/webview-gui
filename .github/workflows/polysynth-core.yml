@@ -29,6 +29,7 @@ on:
       - 'examples/tests/polysynth_pressure_expression_tests.cpp'
       - 'examples/tests/polysynth_note_expression_stream_tests.cpp'
       - 'examples/tests/polysynth_clap_ports_tests.cpp'
+      - 'examples/tests/polysynth_voice_info_tests.cpp'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/polysynth-core.yml'
   workflow_dispatch:
@@ -91,10 +92,11 @@ jobs:
           webview_gui_example_polysynth_pressure_expression_tests
           webview_gui_example_polysynth_note_expression_stream_tests
           webview_gui_example_polysynth_clap_ports_tests
+          webview_gui_example_polysynth_voice_info_tests
           webview_gui_example_polysynth
           --config Debug --parallel
 
       - name: Run PolySynth core tests
         run: >-
           ctest --test-dir build-polysynth-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|filter|mix_controls|filter_envelope|oscillator_tuning|polyphonic_parameter_state|event_stream|parameter_model|parameter_event|note_expression|pan_expression|brightness_expression|expression_expression|pressure_expression|note_expression_stream|clap_ports)$'
+          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|filter|mix_controls|filter_envelope|oscillator_tuning|polyphonic_parameter_state|event_stream|parameter_model|parameter_event|note_expression|pan_expression|brightness_expression|expression_expression|pressure_expression|note_expression_stream|clap_ports|voice_info)$'
