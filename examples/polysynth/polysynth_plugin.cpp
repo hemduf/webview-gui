@@ -273,7 +273,10 @@ protected:
 
         *info = {};
         info->voice_count = static_cast<std::uint32_t>(kPolySynthDefaultVoiceCount);
-        info->voice_capacity = static_cast<std::uint32_t>(kPolySynthDefaultVoiceCount);
+        // The current patch uses 16 voices, but the real-time allocator owns 64
+        // preallocated slots and can raise voice_count up to that capacity without
+        // allocating. CLAP explicitly distinguishes these two quantities.
+        info->voice_capacity = VoiceAllocator::kMaximumVoices;
         info->flags = CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
         return true;
     }
