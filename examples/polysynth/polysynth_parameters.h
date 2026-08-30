@@ -186,11 +186,10 @@ inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) no
 inline const char *waveformNameForValue(double value) noexcept {
     const auto *spec = parameterSpecForId(
         kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform));
-    if (!spec || !std::isfinite(value) || value < spec->minValue ||
-        value > spec->maxValue || std::trunc(value) != value)
+    if (!spec || !std::isfinite(value) || value < spec->minValue || value > spec->maxValue)
         return nullptr;
 
-    const auto index = static_cast<std::size_t>(value);
+    const auto index = static_cast<std::size_t>(std::trunc(value));
     return index < kWaveformNames.size() ? kWaveformNames[index] : nullptr;
 }
 
