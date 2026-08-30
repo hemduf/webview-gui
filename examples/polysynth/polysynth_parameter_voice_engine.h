@@ -36,6 +36,7 @@ public:
         fineTuneGlobalModulationCents_ = 0.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceCoarseTuningSemitones_.fill(0);
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
@@ -86,6 +87,7 @@ public:
         polyphonicState_.reset();
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceCoarseTuningSemitones_.fill(0);
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
@@ -544,6 +546,7 @@ private:
             return false;
         trackedVoices_[index] = true;
         trackedIdentities_[index] = event.identity;
+        voiceCoarseTuningSemitones_[index] = coarseTuneBaseSemitones_;
         voiceTuningExpressionSemitones_[index] = 0.0;
         voiceVolumeExpressions_[index] = 1.0;
         voicePerformanceExpressions_[index] = 1.0;
@@ -594,6 +597,7 @@ private:
                         return false;
                     trackedVoices_[index] = false;
                     trackedIdentities_[index] = {};
+                    voiceCoarseTuningSemitones_[index] = 0;
                     voiceTuningExpressionSemitones_[index] = 0.0;
                     voiceVolumeExpressions_[index] = 1.0;
                     voicePerformanceExpressions_[index] = 1.0;
@@ -607,6 +611,7 @@ private:
                     return false;
                 trackedVoices_[index] = true;
                 trackedIdentities_[index] = identity;
+                voiceCoarseTuningSemitones_[index] = coarseTuneBaseSemitones_;
                 voiceTuningExpressionSemitones_[index] = 0.0;
                 voiceVolumeExpressions_[index] = 1.0;
                 voicePerformanceExpressions_[index] = 1.0;
@@ -631,12 +636,12 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
-            // Fine Tune remains a +/-100-cent parameter domain. CLAP TUNING is
-            // a separate statement-of-value offset in semitones and must retain
-            // its full +/-120-semitone range rather than inheriting the parameter
-            // clamp. The resulting voice-local offset is bounded to +/-12100c.
+            // Coarse Tune is snapshotted per generation because it is currently
+            // a NOTE_ON default. Fine Tune and CLAP TUNING remain live per-voice
+            // offsets layered on top of that stable coarse snapshot.
             const auto parameterCents = std::clamp(base + modulation, -100.0, 100.0);
             const auto effectiveCents =
+                static_cast<double>(voiceCoarseTuningSemitones_[index]) * 100.0 +
                 parameterCents + voiceTuningExpressionSemitones_[index] * 100.0;
             if (!VoiceEngine::setVoiceFineTuningCents(
                     index, static_cast<float>(effectiveCents)))
@@ -921,6 +926,7 @@ private:
     PolyphonicParameterState polyphonicState_{};
     std::array<VoiceIdentity, VoiceAllocator::kMaximumVoices> trackedIdentities_{};
     std::array<bool, VoiceAllocator::kMaximumVoices> trackedVoices_{};
+    std::array<int, VoiceAllocator::kMaximumVoices> voiceCoarseTuningSemitones_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceVolumeExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePerformanceExpressions_{};
