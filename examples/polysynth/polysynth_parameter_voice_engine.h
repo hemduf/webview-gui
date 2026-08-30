@@ -607,8 +607,12 @@ private:
     }
 
     bool applyTuningExpression(const clap_event_note_expression_t &event) noexcept {
-        if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0 ||
-            !validExpressionAddress(event))
+        if (!validExpressionAddress(event))
+            return false;
+        // The pinned validator deliberately probes TUNING outside the semantic
+        // +/-120-semitone domain. A structurally valid but unsupported statement
+        // is ignored without poisoning the whole real-time process block.
+        if (!std::isfinite(event.value) || event.value < -120.0 || event.value > 120.0)
             return true;
         if (!syncVoices())
             return false;
@@ -629,8 +633,12 @@ private:
     }
 
     bool applyVolumeExpression(const clap_event_note_expression_t &event) noexcept {
-        if (!std::isfinite(event.value) || event.value <= 0.0 || event.value > 4.0 ||
-            !validExpressionAddress(event))
+        if (!validExpressionAddress(event))
+            return false;
+        // clap-validator includes VOLUME=0 in robustness streams although the
+        // CLAP semantic domain is 0 < x <= 4. Ignore such values rather than
+        // converting a fuzz statement into CLAP_PROCESS_ERROR.
+        if (!std::isfinite(event.value) || event.value <= 0.0 || event.value > 4.0)
             return true;
         if (!syncVoices())
             return false;
@@ -650,7 +658,7 @@ private:
     bool applyPerformanceExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return true;
+            return false;
         if (!syncVoices())
             return false;
 
@@ -669,7 +677,7 @@ private:
     bool applyPressureExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return true;
+            return false;
         if (!syncVoices())
             return false;
 
@@ -688,7 +696,7 @@ private:
     bool applyPanExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return true;
+            return false;
         if (!syncVoices())
             return false;
 
@@ -707,7 +715,7 @@ private:
     bool applyBrightnessExpression(const clap_event_note_expression_t &event) noexcept {
         if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
             !validExpressionAddress(event))
-            return true;
+            return false;
         if (!syncVoices())
             return false;
 
