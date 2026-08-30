@@ -5,6 +5,7 @@
 #include <clap/ext/audio-ports.h>
 #include <clap/ext/note-ports.h>
 #include <clap/ext/params.h>
+#include <clap/ext/remote-controls.h>
 
 #include <array>
 #include <cmath>
@@ -289,6 +290,44 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     return params;
 }
 
+bool checkRemoteControls(const clap_plugin_t *plugin,
+                         const clap_plugin_params_t *params) {
+    const auto *remoteControls = static_cast<const clap_plugin_remote_controls_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS));
+    const auto *compat = static_cast<const clap_plugin_remote_controls_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS_COMPAT));
+    if (!remoteControls || remoteControls != compat || !remoteControls->count ||
+        !remoteControls->get || remoteControls->count(plugin) != 1u)
+        return false;
+
+    clap_remote_controls_page_t first{};
+    clap_remote_controls_page_t second{};
+    if (!remoteControls->get(plugin, 0u, &first) ||
+        !remoteControls->get(plugin, 0u, &second))
+        return false;
+
+    if (first.page_id == CLAP_INVALID_ID || first.page_id != second.page_id ||
+        first.is_for_preset || second.is_for_preset ||
+        std::strcmp(first.section_name, "Oscillator") != 0 ||
+        std::strcmp(first.page_name, "Tuning") != 0)
+        return false;
+
+    // The bounded host-facing surface currently publishes Fine Tune only. A
+    // remote page must never reference an internal/unpublished parameter ID.
+    if (!params || first.param_ids[0] != kFineTuneId ||
+        second.param_ids[0] != kFineTuneId)
+        return false;
+    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (first.param_ids[index] != CLAP_INVALID_ID ||
+            second.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    clap_param_info_t mappedInfo{};
+    return params->get_info(plugin, 0u, &mappedInfo) &&
+           mappedInfo.id == first.param_ids[0];
+}
+
 bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
                              const clap_plugin_params_t *params) {
     constexpr std::uint32_t kFrames = 8;
@@ -452,6 +491,7 @@ int main() {
 
     const auto *params = checkParams(plugin);
     if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !params ||
+        !checkRemoteControls(plugin, params) ||
         plugin->get_extension(plugin, "clap.example.unimplemented") != nullptr) {
         plugin->destroy(plugin);
         return 5;
