@@ -150,6 +150,11 @@ bool configureReference(VoiceEngine &engine) noexcept {
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
 }
 
+bool configureParameterReference(ParameterVoiceEngine &engine) noexcept {
+    return engine.configure(2, 48000.0, 16) &&
+           engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
+
 } // namespace
 
 int main() {
@@ -305,7 +310,8 @@ int main() {
     // retains the base separately for later host-facing publication.
     ParameterVoiceEngine routedCoarse;
     VoiceEngine routedOctaveReference;
-    if (!configureReference(routedCoarse) || !configureReference(routedOctaveReference))
+    if (!configureParameterReference(routedCoarse) ||
+        !configureReference(routedOctaveReference))
         return 18;
     InputEvents<> routedEvents;
     if (!routedEvents.pushValue(0, kCoarseTuneId, 12.0) ||
