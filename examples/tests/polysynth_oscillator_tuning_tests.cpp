@@ -72,6 +72,29 @@ struct InputEvents {
         return true;
     }
 
+    bool pushTuning(uint32_t time,
+                    double semitones,
+                    int32_t noteId,
+                    int16_t key) noexcept {
+        if (count >= Capacity)
+            return false;
+        auto &event = expressions[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+        event.expression_id = CLAP_NOTE_EXPRESSION_TUNING;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = key;
+        event.value = semitones;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
     static uint32_t CLAP_ABI size(const clap_input_events_t *list) noexcept {
         return list && list->ctx ? static_cast<const InputEvents *>(list->ctx)->count : 0;
     }
@@ -86,6 +109,7 @@ struct InputEvents {
 
     std::array<clap_event_note_t, Capacity> notes{};
     std::array<clap_event_param_value_t, Capacity> values{};
+    std::array<clap_event_note_expression_t, Capacity> expressions{};
     std::array<const clap_event_header_t *, Capacity> headers{};
     uint32_t count = 0;
     clap_input_events_t input{};
@@ -376,6 +400,64 @@ int main() {
         !sameAudio(changedDefaultRight, stableFineRight)) {
         std::cerr << "Coarse Tune default change leaked into an active voice\n";
         return 24;
+    }
+
+    // Worst-case composition must preserve a generation that started at +48
+    // semitones even if the global Coarse Tune default later moves to -48 while
+    // Fine Tune reaches +100 cents and CLAP TUNING reaches +120 semitones. The
+    // compensation term alone is +9600 cents, so the voice-local pitch handoff
+    // must accept the full 21700-cent internal range without failing process().
+    ParameterVoiceEngine compensatedExtreme;
+    ParameterVoiceEngine stableExtreme;
+    if (!configureParameterReference(compensatedExtreme) ||
+        !configureParameterReference(stableExtreme))
+        return 25;
+
+    InputEvents<> compensatedStart;
+    InputEvents<> stableStart;
+    if (!compensatedStart.pushValue(0, kCoarseTuneId, 48.0) ||
+        !compensatedStart.pushNote(0, CLAP_EVENT_NOTE_ON, 40, 60) ||
+        !stableStart.pushValue(0, kCoarseTuneId, 48.0) ||
+        !stableStart.pushNote(0, CLAP_EVENT_NOTE_ON, 41, 60))
+        return 26;
+
+    AudioBlock compensatedStartLeft{};
+    AudioBlock compensatedStartRight{};
+    AudioBlock stableStartLeft{};
+    AudioBlock stableStartRight{};
+    if (!compensatedExtreme.process(&compensatedStart.input,
+                                    static_cast<uint32_t>(compensatedStartLeft.size()),
+                                    compensatedStartLeft.data(), compensatedStartRight.data(), sink) ||
+        !stableExtreme.process(&stableStart.input,
+                               static_cast<uint32_t>(stableStartLeft.size()),
+                               stableStartLeft.data(), stableStartRight.data(), sink) ||
+        !sameAudio(compensatedStartLeft, stableStartLeft) ||
+        !sameAudio(compensatedStartRight, stableStartRight))
+        return 27;
+
+    InputEvents<> compensatedLive;
+    InputEvents<> stableLive;
+    if (!compensatedLive.pushValue(0, kCoarseTuneId, -48.0) ||
+        !compensatedLive.pushValue(0, kFineTuneId, 100.0) ||
+        !compensatedLive.pushTuning(0, 120.0, 40, 60) ||
+        !stableLive.pushValue(0, kFineTuneId, 100.0) ||
+        !stableLive.pushTuning(0, 120.0, 41, 60))
+        return 28;
+
+    AudioBlock compensatedLiveLeft{};
+    AudioBlock compensatedLiveRight{};
+    AudioBlock stableLiveLeft{};
+    AudioBlock stableLiveRight{};
+    if (!compensatedExtreme.process(&compensatedLive.input,
+                                    static_cast<uint32_t>(compensatedLiveLeft.size()),
+                                    compensatedLiveLeft.data(), compensatedLiveRight.data(), sink) ||
+        !stableExtreme.process(&stableLive.input,
+                               static_cast<uint32_t>(stableLiveLeft.size()),
+                               stableLiveLeft.data(), stableLiveRight.data(), sink) ||
+        !sameAudio(compensatedLiveLeft, stableLiveLeft) ||
+        !sameAudio(compensatedLiveRight, stableLiveRight)) {
+        std::cerr << "worst-case Coarse/Fine/TUNING compensation exceeded the voice-local pitch range\n";
+        return 29;
     }
 
     return 0;
