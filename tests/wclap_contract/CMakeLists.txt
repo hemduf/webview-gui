@@ -41,3 +41,18 @@ add_test(
     NAME webview_gui_wclap_host_webview_contract
     COMMAND webview_gui_wclap_host_webview_contract
 )
+
+add_executable(webview_gui_wclap_backend_selection_contract
+    wclap_backend_selection_contract.cpp
+)
+target_include_directories(webview_gui_wclap_backend_selection_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+)
+target_compile_definitions(webview_gui_wclap_backend_selection_contract PRIVATE
+    __wasm__=1
+)
+
+add_test(
+    NAME webview_gui_wclap_backend_selection_contract
+    COMMAND webview_gui_wclap_backend_selection_contract
+)
