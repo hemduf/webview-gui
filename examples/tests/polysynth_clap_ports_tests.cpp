@@ -248,16 +248,15 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // This bounded increment exposes the first host-facing base-value contract
-    // only. Fine Tune already has a sample-accurate polyphonic process path, but
-    // per-note/modulation flags remain intentionally unadvertised until the
-    // non-process flush handoff can preserve those semantics too.
+    // Fine Tune is still the only host-facing parameter in this bounded surface,
+    // but its process() and active params.flush() paths now both preserve the
+    // qualified global and voice-addressed value/modulation semantics.
     if (params->count(plugin) != 1)
         return nullptr;
 
     clap_param_info_t info{};
     if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
-        info.flags != webview_gui::examples::polysynth::kBaseAutomatableFlags ||
+        info.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
         info.min_value != -100.0 || info.max_value != 100.0 ||
         info.default_value != 0.0 ||
         std::strcmp(info.name, "Fine Tune") != 0 ||
