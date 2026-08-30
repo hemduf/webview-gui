@@ -274,4 +274,29 @@ inline bool coarseTuningValueFromText(const char *display, double &value) noexce
     return true;
 }
 
+inline bool continuousParameterValueFromText(clap_id id,
+                                             const char *display,
+                                             double &value) noexcept {
+    const auto *spec = parameterSpecForId(id);
+    if (!spec || (spec->flags & CLAP_PARAM_IS_STEPPED) != 0u ||
+        !display || *display == '\0')
+        return false;
+
+    std::size_t length = 0;
+    while (length < CLAP_NAME_SIZE && display[length] != '\0')
+        ++length;
+    if (length == 0 || length == CLAP_NAME_SIZE)
+        return false;
+
+    const char *end = display + length;
+    double parsed = 0.0;
+    const auto result = std::from_chars(display, end, parsed, std::chars_format::general);
+    if (result.ec != std::errc() || result.ptr != end || !std::isfinite(parsed) ||
+        parsed < spec->minValue || parsed > spec->maxValue)
+        return false;
+
+    value = parsed;
+    return true;
+}
+
 } // namespace webview_gui::examples::polysynth
