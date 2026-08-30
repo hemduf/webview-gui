@@ -4,9 +4,13 @@ endif()
 if(NOT DEFINED EXAMPLES_CMAKE_FILE OR NOT EXISTS "${EXAMPLES_CMAKE_FILE}")
     message(FATAL_ERROR "EXAMPLES_CMAKE_FILE must point to examples/CMakeLists.txt")
 endif()
+if(NOT DEFINED POLYSYNTH_CMAKE_FILE OR NOT EXISTS "${POLYSYNTH_CMAKE_FILE}")
+    message(FATAL_ERROR "POLYSYNTH_CMAKE_FILE must point to examples/polysynth/CMakeLists.txt")
+endif()
 
 file(READ "${WORKFLOW_FILE}" workflow)
 file(READ "${EXAMPLES_CMAKE_FILE}" examples_cmake)
+file(READ "${POLYSYNTH_CMAKE_FILE}" polysynth_cmake)
 
 function(require_text haystack needle description)
     string(FIND "${${haystack}}" "${needle}" position)
@@ -23,6 +27,31 @@ require_text(examples_cmake
 require_text(examples_cmake
     "${expected_revision}"
     "PolySynth validation must use the reviewed clap-validator commit")
+
+require_text(polysynth_cmake
+    "WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT"
+    "PolySynth CMake must consume the pinned validator checkout")
+require_text(polysynth_cmake
+    "webview_gui_example_polysynth_validate"
+    "PolySynth CMake must provide a dedicated validator target")
+require_text(polysynth_cmake
+    "TARGET_BUNDLE_DIR:webview_gui_example_polysynth"
+    "PolySynth validation must use the bundle path on macOS")
+require_text(polysynth_cmake
+    "TARGET_FILE:webview_gui_example_polysynth"
+    "PolySynth validation must use the module path off macOS")
+require_text(polysynth_cmake
+    "PolySynth CLAP path:"
+    "PolySynth validator target must print the exact plug-in path")
+require_text(polysynth_cmake
+    "--version"
+    "PolySynth validator target must print the validator version")
+require_text(polysynth_cmake
+    "validate"
+    "PolySynth validator target must execute validation")
+require_text(polysynth_cmake
+    "--only-failed"
+    "PolySynth validator target must preserve validator failure diagnostics")
 
 require_text(workflow
     "polysynth-validator:"
@@ -43,20 +72,11 @@ require_text(workflow
     "cargo +1.95.0 build --release --locked"
     "PolySynth validator build must honor Cargo.lock")
 require_text(workflow
-    "Build exact PolySynth CLAP artifact"
-    "PolySynth validator job must build the PR artifact")
+    "WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT"
+    "PolySynth validator job must pass the pinned validator checkout to CMake")
 require_text(workflow
-    "clap-validator --version"
-    "PolySynth validator job must print the validator version")
-require_text(workflow
-    "PolySynth CLAP path:"
-    "PolySynth validator job must print the exact plug-in path")
-require_text(workflow
-    "validate"
-    "PolySynth validator job must execute validation")
-require_text(workflow
-    "--only-failed"
-    "PolySynth validator job must preserve validator failure diagnostics")
+    "webview_gui_example_polysynth_validate"
+    "PolySynth validator job must execute the dedicated CMake target")
 
 string(FIND "${workflow}" "continue-on-error" continue_on_error_position)
 if(NOT continue_on_error_position EQUAL -1)
