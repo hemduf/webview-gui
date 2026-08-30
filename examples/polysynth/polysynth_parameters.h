@@ -3,8 +3,10 @@
 #include <clap/ext/params.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace webview_gui::examples::polysynth {
 
@@ -173,6 +175,41 @@ inline constexpr bool parameterSlotForId(clap_id id, std::size_t &slot) noexcept
 
 inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) noexcept {
     return (spec.flags & kPolyphonicAddressFlags) == kPolyphonicAddressFlags;
+}
+
+inline const char *waveformNameForValue(double value) noexcept {
+    static constexpr std::array<const char *, 3> kWaveformNames{{
+        "Sine",
+        "Saw",
+        "Square",
+    }};
+
+    const auto *spec = parameterSpecForId(
+        kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform));
+    if (!spec || !std::isfinite(value) || value < spec->minValue ||
+        value > spec->maxValue || std::trunc(value) != value)
+        return nullptr;
+
+    const auto index = static_cast<std::size_t>(value);
+    return index < kWaveformNames.size() ? kWaveformNames[index] : nullptr;
+}
+
+inline bool waveformValueFromName(const char *name, double &value) noexcept {
+    if (!name)
+        return false;
+
+    static constexpr std::array<const char *, 3> kWaveformNames{{
+        "Sine",
+        "Saw",
+        "Square",
+    }};
+    for (std::size_t index = 0; index < kWaveformNames.size(); ++index) {
+        if (std::strcmp(name, kWaveformNames[index]) == 0) {
+            value = static_cast<double>(index);
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace webview_gui::examples::polysynth
