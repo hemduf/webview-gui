@@ -3,6 +3,7 @@
 #include <clap/ext/params.h>
 
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -227,6 +228,44 @@ inline bool waveformValueFromName(const char *name, double &value) noexcept {
         }
     }
     return false;
+}
+
+inline bool coarseTuningTextForValue(double value,
+                                     char *display,
+                                     std::uint32_t size) noexcept {
+    const auto *spec = parameterSpecForId(
+        kFirstParameterId + static_cast<clap_id>(ParameterSlot::CoarseTuning));
+    if (!spec || !std::isfinite(value) || value < spec->minValue || value > spec->maxValue)
+        return false;
+
+    std::array<char, 4> text{};
+    const auto semitones = static_cast<int>(std::trunc(value));
+    const auto result = std::to_chars(text.data(), text.data() + text.size() - 1u, semitones);
+    if (result.ec != std::errc())
+        return false;
+    *result.ptr = '\0';
+    return detail::copyStaticParameterDisplayText(text.data(), display, size);
+}
+
+inline bool coarseTuningValueFromText(const char *display, double &value) noexcept {
+    if (!display || *display == '\0')
+        return false;
+
+    const auto *spec = parameterSpecForId(
+        kFirstParameterId + static_cast<clap_id>(ParameterSlot::CoarseTuning));
+    if (!spec)
+        return false;
+
+    const char *end = display + std::strlen(display);
+    int semitones = 0;
+    const auto result = std::from_chars(display, end, semitones);
+    if (result.ec != std::errc() || result.ptr != end ||
+        static_cast<double>(semitones) < spec->minValue ||
+        static_cast<double>(semitones) > spec->maxValue)
+        return false;
+
+    value = static_cast<double>(semitones);
+    return true;
 }
 
 } // namespace webview_gui::examples::polysynth
