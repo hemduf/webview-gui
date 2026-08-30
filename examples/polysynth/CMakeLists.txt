@@ -150,6 +150,15 @@ target_include_directories(webview_gui_example_polysynth_expression_expression_t
 target_link_libraries(webview_gui_example_polysynth_expression_expression_tests PRIVATE clap)
 target_compile_features(webview_gui_example_polysynth_expression_expression_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_example_polysynth_pressure_expression_tests
+    ../tests/polysynth_pressure_expression_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_pressure_expression_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_pressure_expression_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_pressure_expression_tests PRIVATE cxx_std_17)
+
 add_executable(webview_gui_example_polysynth_note_expression_stream_tests
     ../tests/polysynth_note_expression_stream_tests.cpp
 )
@@ -193,5 +202,7 @@ add_test(NAME webview_gui_examples_polysynth_brightness_expression
     COMMAND webview_gui_example_polysynth_brightness_expression_tests)
 add_test(NAME webview_gui_examples_polysynth_expression_expression
     COMMAND webview_gui_example_polysynth_expression_expression_tests)
+add_test(NAME webview_gui_examples_polysynth_pressure_expression
+    COMMAND webview_gui_example_polysynth_pressure_expression_tests)
 add_test(NAME webview_gui_examples_polysynth_note_expression_stream
     COMMAND webview_gui_example_polysynth_note_expression_stream_tests)
