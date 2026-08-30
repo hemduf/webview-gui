@@ -1,3 +1,45 @@
+add_library(webview_gui_example_polysynth_clap_core STATIC
+    polysynth_plugin.cpp
+)
+target_include_directories(webview_gui_example_polysynth_clap_core PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_clap_core PUBLIC clap-helpers)
+target_compile_features(webview_gui_example_polysynth_clap_core PUBLIC cxx_std_17)
+set_target_properties(webview_gui_example_polysynth_clap_core PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+
+add_library(webview_gui_example_polysynth MODULE
+    polysynth_entry.cpp
+)
+target_link_libraries(webview_gui_example_polysynth PRIVATE
+    webview_gui_example_polysynth_clap_core
+)
+target_compile_features(webview_gui_example_polysynth PRIVATE cxx_std_17)
+set_target_properties(webview_gui_example_polysynth PROPERTIES
+    OUTPUT_NAME "WebviewGuiPolySynth"
+    PREFIX ""
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+)
+
+if(APPLE)
+    set_target_properties(webview_gui_example_polysynth PROPERTIES
+        BUNDLE TRUE
+        BUNDLE_EXTENSION clap
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.webview-gui.example.polysynth"
+        MACOSX_BUNDLE_BUNDLE_NAME "WebviewGuiPolySynth"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/../common/plugin.plist.in"
+    )
+elseif(WIN32 OR UNIX)
+    set_target_properties(webview_gui_example_polysynth PROPERTIES SUFFIX ".clap")
+endif()
+
 add_executable(webview_gui_example_polysynth_voice_allocator_tests
     ../tests/polysynth_voice_allocator_tests.cpp
 )
@@ -174,7 +216,9 @@ add_executable(webview_gui_example_polysynth_clap_ports_tests
 target_include_directories(webview_gui_example_polysynth_clap_ports_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
 )
-target_link_libraries(webview_gui_example_polysynth_clap_ports_tests PRIVATE clap-helpers)
+target_link_libraries(webview_gui_example_polysynth_clap_ports_tests PRIVATE
+    webview_gui_example_polysynth_clap_core
+)
 target_compile_features(webview_gui_example_polysynth_clap_ports_tests PRIVATE cxx_std_17)
 
 add_test(NAME webview_gui_examples_polysynth_voice_allocator
