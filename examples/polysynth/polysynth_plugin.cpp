@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace webview_gui::examples::polysynth {
@@ -24,6 +25,8 @@ constexpr clap_id kHostFineTuneParameterId =
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "PolySynth requires a lock-free pending parameter handoff");
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -67,6 +70,66 @@ struct NoteEndOutputSink {
     }
 };
 
+// params.flush() has no sample offsets, but when the plug-in is activated a
+// flushed base value must still reach already-running voices before rendering
+// resumes. Prepend one fixed sample-zero PARAM_VALUE to the next process block;
+// host-provided sample-zero events remain later in the stream and therefore win.
+struct PendingFineTuneInput {
+    PendingFineTuneInput(const clap_input_events_t *hostInput, float value) noexcept
+        : hostInput(hostInput) {
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kHostFineTuneParameterId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = static_cast<double>(value);
+
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+
+        if (hostInput && hostInput->size && hostInput->get)
+            hostCount = hostInput->size(hostInput);
+        else if (hostInput)
+            valid = false;
+
+        if (hostCount == std::numeric_limits<std::uint32_t>::max())
+            valid = false;
+    }
+
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
+        if (!events || !events->ctx)
+            return 0;
+        const auto &self = *static_cast<const PendingFineTuneInput *>(events->ctx);
+        return self.valid ? self.hostCount + 1u : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
+                                                    std::uint32_t index) noexcept {
+        if (!events || !events->ctx)
+            return nullptr;
+        const auto &self = *static_cast<const PendingFineTuneInput *>(events->ctx);
+        if (!self.valid)
+            return nullptr;
+        if (index == 0)
+            return &self.event.header;
+        if (!self.hostInput || index > self.hostCount)
+            return nullptr;
+        return self.hostInput->get(self.hostInput, index - 1u);
+    }
+
+    const clap_input_events_t *hostInput = nullptr;
+    clap_event_param_value_t event{};
+    clap_input_events_t input{};
+    std::uint32_t hostCount = 0;
+    bool valid = true;
+};
+
 class PolySynthPlugin final : public PolySynthBase {
 public:
     explicit PolySynthPlugin(const clap_host_t *host)
@@ -83,10 +146,15 @@ protected:
         if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || minFrameCount == 0 ||
             maxFrameCount < minFrameCount)
             return false;
-        if (!engine_.configure(kPolySynthDefaultVoiceCount, sampleRate, 64u))
+        if (!engine_.configure(kPolySynthDefaultVoiceCount, sampleRate, 64u) ||
+            !engine_.setFineTuningCents(
+                hostFineTuneCents_.load(std::memory_order_acquire)))
             return false;
-        return engine_.setFineTuningCents(
-            hostFineTuneCents_.load(std::memory_order_relaxed));
+
+        // configure() starts with no active generations, so the retained base
+        // value is already authoritative and no process-time replay is needed.
+        pendingFineTuneFlush_.store(false, std::memory_order_release);
+        return true;
     }
 
     void deactivate() noexcept override { engine_.reset(); }
@@ -111,13 +179,26 @@ protected:
         // every frame, hence neither channel can be advertised as constant.
         output.constant_mask = 0;
 
+        const bool replayFlushedValue =
+            pendingFineTuneFlush_.load(std::memory_order_acquire);
+        PendingFineTuneInput pendingInput{
+            processData->in_events,
+            hostFineTuneCents_.load(std::memory_order_acquire)};
+        if (replayFlushedValue && !pendingInput.valid)
+            return CLAP_PROCESS_ERROR;
+
+        const clap_input_events_t *inputEvents =
+            replayFlushedValue ? &pendingInput.input : processData->in_events;
+
         NoteEndOutputSink noteEndSink{processData->out_events};
-        if (!engine_.process(processData->in_events,
-                             processData->frames_count,
-                             output.data32[0],
-                             output.data32[1],
-                             noteEndSink) ||
-            !noteEndSink.ok)
+        const bool engineOk = engine_.process(inputEvents,
+                                              processData->frames_count,
+                                              output.data32[0],
+                                              output.data32[1],
+                                              noteEndSink);
+        if (engineOk && replayFlushedValue)
+            pendingFineTuneFlush_.store(false, std::memory_order_release);
+        if (!engineOk || !noteEndSink.ok)
             return CLAP_PROCESS_ERROR;
 
         // Publish a lock-free block-boundary snapshot for main-thread get_value().
@@ -126,7 +207,7 @@ protected:
         double fineTune = 0.0;
         if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune))
             return CLAP_PROCESS_ERROR;
-        hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
+        hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_release);
 
         return CLAP_PROCESS_CONTINUE;
     }
@@ -201,7 +282,7 @@ protected:
         if (!value || paramId != kHostFineTuneParameterId)
             return false;
         *value = static_cast<double>(
-            hostFineTuneCents_.load(std::memory_order_relaxed));
+            hostFineTuneCents_.load(std::memory_order_acquire));
         return true;
     }
 
@@ -264,19 +345,22 @@ protected:
                 continue;
 
             const auto fineTune = static_cast<float>(event.value);
-            hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
+            hostFineTuneCents_.store(fineTune, std::memory_order_release);
 
-            // flush() is never concurrent with process(). If the engine has
-            // already been activated this updates the control state immediately;
-            // before first activation setFineTuningCents() simply returns false
-            // and activate() applies the retained lock-free snapshot instead.
+            // flush() is never concurrent with process(). The default setter is
+            // enough before activation, but active generations need the event
+            // adapter's voice-local update. Queue one fixed sample-zero replay
+            // for the next process call; any host sample-zero event comes later
+            // and overrides this retained flush value deterministically.
             (void)engine_.setFineTuningCents(fineTune);
+            pendingFineTuneFlush_.store(true, std::memory_order_release);
         }
     }
 
 private:
     ParameterVoiceEngine engine_{};
     std::atomic<float> hostFineTuneCents_{0.0f};
+    std::atomic<bool> pendingFineTuneFlush_{false};
 };
 
 std::uint32_t CLAP_ABI factoryGetPluginCount(const clap_plugin_factory_t *) { return 1u; }
