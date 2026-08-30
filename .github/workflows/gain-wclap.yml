@@ -1,0 +1,82 @@
+name: Gain WCLAP WASI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    paths:
+      - 'examples/gain/**'
+      - 'examples/CMakeLists.txt'
+      - 'cmake/WebviewGuiWclap.cmake'
+      - 'include/webview-gui/**'
+      - '.github/workflows/gain-wclap.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gain-wclap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gain-wasi:
+    name: wasi-sdk-33 Gain WCLAP bundle
+    runs-on: ubuntu-24.04
+    env:
+      WASI_VERSION: '33'
+      WASI_VERSION_FULL: '33.0'
+      WASI_ARCHIVE: wasi-sdk-33.0-x86_64-linux.tar.gz
+      WASI_SHA256: 0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install pinned WASI SDK
+        run: |
+          curl --fail --location --retry 3 \
+            --output "${WASI_ARCHIVE}" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/${WASI_ARCHIVE}"
+          echo "${WASI_SHA256}  ${WASI_ARCHIVE}" | sha256sum --check --strict
+          tar xzf "${WASI_ARCHIVE}"
+          echo "WASI_SDK_PATH=${GITHUB_WORKSPACE}/wasi-sdk-${WASI_VERSION_FULL}-x86_64-linux" >> "${GITHUB_ENV}"
+
+      - name: Configure current Gain WCLAP
+        run: >-
+          cmake -S examples -B build-gain-wclap -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="${WASI_SDK_PATH}/share/cmake/wasi-sdk-pthread.cmake"
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN_WCLAP=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build current Gain WCLAP
+        run: cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
+
+      - name: Verify bundle layout and WASM ABI
+        run: |
+          test -f build-gain-wclap/WebviewGuiGain.wclap/module.wasm
+          test -f build-gain-wclap/WebviewGuiGain.wclap.tar.gz
+          node - <<'NODE'
+          const fs = require('fs');
+          const bytes = fs.readFileSync('build-gain-wclap/WebviewGuiGain.wclap/module.wasm');
+          const module = new WebAssembly.Module(bytes);
+          const exports = WebAssembly.Module.exports(module).map(x => x.name);
+          for (const required of ['clap_entry', 'malloc']) {
+            if (!exports.includes(required)) throw new Error(`missing WASM export: ${required}`);
+          }
+          const imports = WebAssembly.Module.imports(module);
+          for (const entry of imports) {
+            if (/gtk|webkit|cocoa|user32|ole32/i.test(`${entry.module}:${entry.name}`))
+              throw new Error(`native GUI import leaked into WCLAP: ${entry.module}:${entry.name}`);
+          }
+          NODE
+          tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
