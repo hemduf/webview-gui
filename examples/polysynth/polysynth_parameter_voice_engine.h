@@ -117,6 +117,13 @@ private:
         bool active = false;
     };
 
+    struct PendingPanExpression {
+        VoiceIdentity address{};
+        std::uint32_t time = 0;
+        double pan = 0.5;
+        bool active = false;
+    };
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -151,6 +158,8 @@ private:
         for (auto &entry : pendingTuningExpressions_)
             entry = {};
         for (auto &entry : pendingVolumeExpressions_)
+            entry = {};
+        for (auto &entry : pendingPanExpressions_)
             entry = {};
     }
 
@@ -198,6 +207,28 @@ private:
         return false;
     }
 
+    bool storePendingPan(const clap_event_note_expression_t &event) noexcept {
+        const auto address = addressFrom(event);
+        for (auto &entry : pendingPanExpressions_) {
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
+                continue;
+            entry.pan = event.value;
+            return true;
+        }
+
+        for (auto &entry : pendingPanExpressions_) {
+            if (entry.active)
+                continue;
+            entry.address = address;
+            entry.time = event.header.time;
+            entry.pan = event.value;
+            entry.active = true;
+            return true;
+        }
+        return false;
+    }
+
     bool pendingTuningFor(const VoiceIdentity &identity,
                           std::uint32_t time,
                           double &semitones) const noexcept {
@@ -223,6 +254,21 @@ private:
                 !addressMatches(identity, entry.address))
                 continue;
             gain = entry.gain;
+            found = true;
+        }
+        return found;
+    }
+
+    bool pendingPanFor(const VoiceIdentity &identity,
+                       std::uint32_t time,
+                       double &pan) const noexcept {
+        bool found = false;
+        pan = 0.5;
+        for (const auto &entry : pendingPanExpressions_) {
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
+                continue;
+            pan = entry.pan;
             found = true;
         }
         return found;
@@ -266,6 +312,11 @@ private:
         if (pendingVolumeFor(event.identity, event.time, volumeGain) &&
             !VoiceEngine::setVoiceVolumeExpression(index,
                                                    static_cast<float>(volumeGain)))
+            return false;
+
+        double pan = 0.5;
+        if (pendingPanFor(event.identity, event.time, pan) &&
+            !VoiceEngine::setVoicePanExpression(index, static_cast<float>(pan)))
             return false;
         return true;
     }
@@ -366,6 +417,25 @@ private:
         return storePendingVolume(event);
     }
 
+    bool applyPanExpression(const clap_event_note_expression_t &event) noexcept {
+        if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
+            !validExpressionAddress(event))
+            return false;
+        if (!syncVoices())
+            return false;
+
+        const auto address = addressFrom(event);
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
+                continue;
+            if (!VoiceEngine::setVoicePanExpression(
+                    index, static_cast<float>(event.value)))
+                return false;
+        }
+        return storePendingPan(event);
+    }
+
     bool applyCoreEvent(const clap_event_header_t &header) noexcept {
         if (header.space_id != CLAP_CORE_EVENT_SPACE_ID)
             return true;
@@ -382,6 +452,8 @@ private:
                     return applyTuningExpression(event);
                 case CLAP_NOTE_EXPRESSION_VOLUME:
                     return applyVolumeExpression(event);
+                case CLAP_NOTE_EXPRESSION_PAN:
+                    return applyPanExpression(event);
                 default:
                     return true;
             }
@@ -446,6 +518,8 @@ private:
         pendingTuningExpressions_{};
     std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices>
         pendingVolumeExpressions_{};
+    std::array<PendingPanExpression, VoiceAllocator::kMaximumVoices>
+        pendingPanExpressions_{};
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
