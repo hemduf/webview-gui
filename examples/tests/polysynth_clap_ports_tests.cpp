@@ -20,6 +20,9 @@ using webview_gui::examples::polysynth::ParameterSlot;
 constexpr clap_id kMasterGainId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::MasterGain);
+constexpr clap_id kWaveformId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Waveform);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
@@ -288,9 +291,8 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Preserve Fine Tune at stable host index 0 while expanding the published
-    // surface with global Master Gain at index 1.
-    if (params->count(plugin) != 2u)
+    // Preserve existing host indices while adding Waveform at index 2.
+    if (params->count(plugin) != 3u)
         return nullptr;
 
     clap_param_info_t info{};
@@ -320,9 +322,26 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(masterInfo.module, "Output") != 0)
         return nullptr;
 
+    clap_param_info_t waveformInfo{};
+    clap_param_info_t repeatedWaveformInfo{};
+    const auto *waveformSpec = webview_gui::examples::polysynth::parameterSpecForId(kWaveformId);
+    if (!waveformSpec ||
+        !params->get_info(plugin, 2, &waveformInfo) || waveformInfo.id != kWaveformId ||
+        !waveformInfo.cookie ||
+        !params->get_info(plugin, 2, &repeatedWaveformInfo) ||
+        repeatedWaveformInfo.id != waveformInfo.id ||
+        repeatedWaveformInfo.cookie != waveformInfo.cookie ||
+        waveformInfo.flags != waveformSpec->flags ||
+        waveformInfo.min_value != 0.0 || waveformInfo.max_value != 2.0 ||
+        waveformInfo.default_value != 0.0 ||
+        std::strcmp(waveformInfo.name, "Waveform") != 0 ||
+        std::strcmp(waveformInfo.module, "Oscillator") != 0)
+        return nullptr;
+
     double value = -1.0;
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kMasterGainId, &value) || value != 0.0)
+        !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kWaveformId, &value) || value != 0.0)
         return nullptr;
 
     char text[32]{};
@@ -334,7 +353,10 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text(plugin, kMasterGainId, kHalfGainDb, text, sizeof(text)) ||
         text[0] == '\0' ||
         !params->text_to_value(plugin, kMasterGainId, text, &parsed) ||
-        std::fabs(parsed - kHalfGainDb) > 1.0e-5)
+        std::fabs(parsed - kHalfGainDb) > 1.0e-5 ||
+        !params->value_to_text(plugin, kWaveformId, 1.75, text, sizeof(text)) ||
+        std::strcmp(text, "Saw") != 0 ||
+        !params->text_to_value(plugin, kWaveformId, "Square", &parsed) || parsed != 2.0)
         return nullptr;
 
     RejectingOutputEvents output;
@@ -343,9 +365,19 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 50.0)
         return nullptr;
 
+    FlushInputEvents setSquare(kWaveformId, 2.0);
+    params->flush(plugin, &setSquare.input, &output.output);
+    if (!params->get_value(plugin, kWaveformId, &value) || value != 2.0)
+        return nullptr;
+
     FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+        return nullptr;
+
+    FlushInputEvents restoreSine(kWaveformId, 0.0);
+    params->flush(plugin, &restoreSine.input, &output.output);
+    if (!params->get_value(plugin, kWaveformId, &value) || value != 0.0)
         return nullptr;
 
     return params;
