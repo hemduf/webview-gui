@@ -28,6 +28,8 @@ public:
             !polyphonicState_.configure(requestedVoices))
             return false;
 
+        masterGainBaseDb_ = 0.0;
+        masterGainGlobalModulationDb_ = 0.0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         trackedVoices_.fill(false);
@@ -40,7 +42,8 @@ public:
         const auto slot = fineTuneSlot();
         return polyphonicState_.setGlobalBase(slot, fineTuneBaseCents_) &&
                polyphonicState_.setGlobalModulation(slot, 0.0) &&
-               VoiceEngine::setFineTuningCents(0.0f);
+               VoiceEngine::setFineTuningCents(0.0f) &&
+               applyMasterGainState();
     }
 
     bool setFineTuningCents(float cents) noexcept {
@@ -55,10 +58,17 @@ public:
 
     [[nodiscard]] bool parameterBaseValue(clap_id id, double &value) const noexcept {
         const auto *spec = parameterSpecForId(id);
-        if (!spec || spec->slot != ParameterSlot::FineTuning)
+        if (!spec)
             return false;
-        value = fineTuneBaseCents_;
-        return true;
+        if (spec->slot == ParameterSlot::MasterGain) {
+            value = masterGainBaseDb_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::FineTuning) {
+            value = fineTuneBaseCents_;
+            return true;
+        }
+        return false;
     }
 
     void reset() noexcept {
@@ -71,9 +81,11 @@ public:
         voicePerformanceExpressions_.fill(1.0);
         voicePressureExpressions_.fill(0.0);
         clearTransientExpressionState();
+        masterGainGlobalModulationDb_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
+        (void)applyMasterGainState();
     }
 
     // params.flush() is delivered on the audio thread while the plug-in is active
@@ -178,6 +190,10 @@ private:
         double brightness = 0.0;
         bool active = false;
     };
+
+    static constexpr clap_id masterGainId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::MasterGain);
+    }
 
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
@@ -480,6 +496,19 @@ private:
             static_cast<float>(globalFineTuningCents()));
     }
 
+    bool applyMasterGainState() noexcept {
+        const auto *spec = parameterSpecForId(masterGainId());
+        if (!spec)
+            return false;
+        const auto effectiveDb = std::clamp(masterGainBaseDb_ + masterGainGlobalModulationDb_,
+                                            spec->minValue,
+                                            spec->maxValue);
+        // A one-sample prepared ramp preserves the VoiceEngine's click-safe gain
+        // state machine while making the new target effective on the first sample
+        // rendered after the CLAP event boundary.
+        return VoiceEngine::setMasterGainDb(static_cast<float>(effectiveDb), 1u);
+    }
+
     bool applyVoiceExpressionGain(VoiceAllocator::VoiceIndex index) noexcept {
         if (index >= capacity() || !trackedVoices_[index])
             return false;
@@ -769,11 +798,22 @@ private:
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
-            if (spec->slot != ParameterSlot::FineTuning)
-                return true;
             if (!std::isfinite(event.value) ||
                 event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
+
+            if (spec->slot == ParameterSlot::MasterGain) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                masterGainBaseDb_ = event.value;
+                return applyMasterGainState();
+            }
+
+            if (spec->slot != ParameterSlot::FineTuning)
+                return true;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
                 return false;
 
@@ -793,10 +833,21 @@ private:
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
-            if (spec->slot != ParameterSlot::FineTuning)
-                return true;
             if (!std::isfinite(event.amount))
                 return false;
+
+            if (spec->slot == ParameterSlot::MasterGain) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                masterGainGlobalModulationDb_ = event.amount;
+                return applyMasterGainState();
+            }
+
+            if (spec->slot != ParameterSlot::FineTuning)
+                return true;
             if (!syncVoices() ||
                 !polyphonicState_.applyModulation(fineTuneSlot(), event))
                 return false;
@@ -833,6 +884,8 @@ private:
         pendingBrightnessExpressions_{};
     std::uint32_t pendingExpressionTime_ = 0;
     bool pendingExpressionTimeValid_ = false;
+    double masterGainBaseDb_ = 0.0;
+    double masterGainGlobalModulationDb_ = 0.0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
 };
