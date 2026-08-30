@@ -18,6 +18,8 @@ using webview_gui::examples::polysynth::VoiceEngine;
 
 constexpr clap_id kCoarseTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::CoarseTuning);
+constexpr clap_id kFineTuneId =
+    1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
 
 template <std::size_t Capacity = 8>
 struct InputEvents {
@@ -309,19 +311,29 @@ int main() {
     // generation snapshots the requested semitone offset, while the adapter
     // retains the base separately for later host-facing publication.
     ParameterVoiceEngine routedCoarse;
+    ParameterVoiceEngine stableCoarse;
     VoiceEngine routedOctaveReference;
     if (!configureParameterReference(routedCoarse) ||
+        !configureParameterReference(stableCoarse) ||
         !configureReference(routedOctaveReference))
         return 18;
     InputEvents<> routedEvents;
+    InputEvents<> stableEvents;
     if (!routedEvents.pushValue(0, kCoarseTuneId, 12.0) ||
-        !routedEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 30, 69))
+        !routedEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 30, 69) ||
+        !stableEvents.pushValue(0, kCoarseTuneId, 12.0) ||
+        !stableEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 32, 69))
         return 19;
     AudioBlock routedLeft{};
     AudioBlock routedRight{};
+    AudioBlock stableLeft{};
+    AudioBlock stableRight{};
     if (!routedCoarse.process(&routedEvents.input,
                               static_cast<uint32_t>(routedLeft.size()),
-                              routedLeft.data(), routedRight.data(), sink))
+                              routedLeft.data(), routedRight.data(), sink) ||
+        !stableCoarse.process(&stableEvents.input,
+                              static_cast<uint32_t>(stableLeft.size()),
+                              stableLeft.data(), stableRight.data(), sink))
         return 20;
     AudioBlock routedReferenceLeft{};
     AudioBlock routedReferenceRight{};
@@ -339,6 +351,31 @@ int main() {
     if (!routedCoarse.parameterBaseValue(kCoarseTuneId, routedBase) || routedBase != 12.0) {
         std::cerr << "Coarse Tune PARAM_VALUE was not retained as the adapter base\n";
         return 22;
+    }
+
+    // Changing the global Coarse Tune default must not alter an existing
+    // generation when a later Fine Tune event recomputes its live pitch. The
+    // generation keeps the coarse snapshot taken at NOTE_ON.
+    InputEvents<> changedDefaultEvents;
+    InputEvents<> stableFineEvents;
+    if (!changedDefaultEvents.pushValue(0, kCoarseTuneId, 0.0) ||
+        !changedDefaultEvents.pushValue(0, kFineTuneId, 25.0) ||
+        !stableFineEvents.pushValue(0, kFineTuneId, 25.0))
+        return 23;
+    AudioBlock changedDefaultLeft{};
+    AudioBlock changedDefaultRight{};
+    AudioBlock stableFineLeft{};
+    AudioBlock stableFineRight{};
+    if (!routedCoarse.process(&changedDefaultEvents.input,
+                              static_cast<uint32_t>(changedDefaultLeft.size()),
+                              changedDefaultLeft.data(), changedDefaultRight.data(), sink) ||
+        !stableCoarse.process(&stableFineEvents.input,
+                              static_cast<uint32_t>(stableFineLeft.size()),
+                              stableFineLeft.data(), stableFineRight.data(), sink) ||
+        !sameAudio(changedDefaultLeft, stableFineLeft) ||
+        !sameAudio(changedDefaultRight, stableFineRight)) {
+        std::cerr << "Coarse Tune default change leaked into an active voice\n";
+        return 24;
     }
 
     return 0;
