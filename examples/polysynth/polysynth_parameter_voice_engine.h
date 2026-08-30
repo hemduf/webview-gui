@@ -124,6 +124,13 @@ private:
         bool active = false;
     };
 
+    struct PendingBrightnessExpression {
+        VoiceIdentity address{};
+        std::uint32_t time = 0;
+        double brightness = 0.0;
+        bool active = false;
+    };
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -160,6 +167,8 @@ private:
         for (auto &entry : pendingVolumeExpressions_)
             entry = {};
         for (auto &entry : pendingPanExpressions_)
+            entry = {};
+        for (auto &entry : pendingBrightnessExpressions_)
             entry = {};
     }
 
@@ -248,6 +257,28 @@ private:
         return false;
     }
 
+    bool storePendingBrightness(const clap_event_note_expression_t &event) noexcept {
+        const auto address = addressFrom(event);
+        for (auto &entry : pendingBrightnessExpressions_) {
+            if (!entry.active || entry.time != event.header.time ||
+                entry.address != address)
+                continue;
+            entry.brightness = event.value;
+            return true;
+        }
+
+        for (auto &entry : pendingBrightnessExpressions_) {
+            if (entry.active)
+                continue;
+            entry.address = address;
+            entry.time = event.header.time;
+            entry.brightness = event.value;
+            entry.active = true;
+            return true;
+        }
+        return false;
+    }
+
     bool pendingTuningFor(const VoiceIdentity &identity,
                           std::uint32_t time,
                           double &semitones) const noexcept {
@@ -288,6 +319,21 @@ private:
                 !addressMatches(identity, entry.address))
                 continue;
             pan = entry.pan;
+            found = true;
+        }
+        return found;
+    }
+
+    bool pendingBrightnessFor(const VoiceIdentity &identity,
+                              std::uint32_t time,
+                              double &brightness) const noexcept {
+        bool found = false;
+        brightness = 0.0;
+        for (const auto &entry : pendingBrightnessExpressions_) {
+            if (!entry.active || entry.time != time ||
+                !addressMatches(identity, entry.address))
+                continue;
+            brightness = entry.brightness;
             found = true;
         }
         return found;
@@ -338,6 +384,12 @@ private:
         double pan = 0.5;
         if (pendingPanFor(event.identity, event.time, pan) &&
             !VoiceEngine::setVoicePanExpression(index, static_cast<float>(pan)))
+            return false;
+
+        double brightness = 0.0;
+        if (pendingBrightnessFor(event.identity, event.time, brightness) &&
+            !VoiceEngine::setVoiceBrightnessExpression(
+                index, static_cast<float>(brightness)))
             return false;
         return true;
     }
@@ -457,6 +509,25 @@ private:
         return storePendingPan(event);
     }
 
+    bool applyBrightnessExpression(const clap_event_note_expression_t &event) noexcept {
+        if (!std::isfinite(event.value) || event.value < 0.0 || event.value > 1.0 ||
+            !validExpressionAddress(event))
+            return false;
+        if (!syncVoices())
+            return false;
+
+        const auto address = addressFrom(event);
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index] ||
+                !addressMatches(trackedIdentities_[index], address))
+                continue;
+            if (!VoiceEngine::setVoiceBrightnessExpression(
+                    index, static_cast<float>(event.value)))
+                return false;
+        }
+        return storePendingBrightness(event);
+    }
+
     bool applyCoreEvent(const clap_event_header_t &header) noexcept {
         if (header.space_id != CLAP_CORE_EVENT_SPACE_ID)
             return true;
@@ -476,6 +547,8 @@ private:
                     return applyVolumeExpression(event);
                 case CLAP_NOTE_EXPRESSION_PAN:
                     return applyPanExpression(event);
+                case CLAP_NOTE_EXPRESSION_BRIGHTNESS:
+                    return applyBrightnessExpression(event);
                 default:
                     return true;
             }
@@ -542,6 +615,8 @@ private:
         pendingVolumeExpressions_{};
     std::array<PendingPanExpression, VoiceAllocator::kMaximumVoices>
         pendingPanExpressions_{};
+    std::array<PendingBrightnessExpression, VoiceAllocator::kMaximumVoices>
+        pendingBrightnessExpressions_{};
     std::uint32_t pendingExpressionTime_ = 0;
     bool pendingExpressionTimeValid_ = false;
     double fineTuneBaseCents_ = 0.0;
