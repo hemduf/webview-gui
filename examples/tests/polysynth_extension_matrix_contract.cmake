@@ -41,8 +41,14 @@ require_contains(plugin_source
     "bool implementsParams() const noexcept override { return true; }"
     "params implementation marker")
 require_contains(plugin_source
+    "std::uint32_t paramsCount() const noexcept override { return 2u; }"
+    "published parameter count")
+require_contains(plugin_source
     "bool implementsState() const noexcept override { return true; }"
     "state implementation marker")
+require_contains(plugin_source
+    "constexpr std::uint32_t kStateVersion = 2u;"
+    "Master Gain state version")
 require_contains(plugin_source
     "bool implementsStateContext() const noexcept override { return true; }"
     "state-context implementation marker")
@@ -55,6 +61,9 @@ require_contains(plugin_source
 require_contains(plugin_source
     "bool implementRemoteControls() const noexcept override { return true; }"
     "remote-controls implementation marker")
+require_contains(plugin_source
+    "std::uint32_t remoteControlsPageCount() noexcept override { return 2u; }"
+    "remote-controls page count")
 require_contains(plugin_source
     "bool implementsNoteName() const noexcept override { return true; }"
     "note-name implementation marker")
@@ -79,11 +88,15 @@ require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix h
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
 require_contains(readme "| `clap.note-ports` | Implemented |" "note-ports matrix row")
 require_contains(readme "| `clap.params` | Partial |" "params matrix row")
+require_contains(readme "Fine Tune and Master Gain are published" "Master Gain parameter documentation")
 require_contains(readme "| `clap.state` | Implemented |" "state matrix row")
+require_contains(readme "version-2 payload" "Master Gain state documentation")
+require_contains(readme "Version-1 Fine-Tune-only payloads remain loadable" "state backward compatibility")
 require_contains(readme "| `clap.state-context/2` | Implemented |" "state-context matrix row")
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
 require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
+require_contains(readme "`Output / Performance` maps Master Gain" "Master Gain remote-controls page")
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
