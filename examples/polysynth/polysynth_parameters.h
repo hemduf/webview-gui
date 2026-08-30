@@ -183,9 +183,10 @@ inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) no
     return (spec.flags & kPolyphonicAddressFlags) == kPolyphonicAddressFlags;
 }
 
-inline bool copyParameterDisplayText(const char *text,
-                                     char *display,
-                                     std::uint32_t size) noexcept {
+namespace detail {
+inline bool copyStaticParameterDisplayText(const char *text,
+                                           char *display,
+                                           std::uint32_t size) noexcept {
     if (!text || !display || size == 0u)
         return false;
 
@@ -196,6 +197,7 @@ inline bool copyParameterDisplayText(const char *text,
     std::memcpy(display, text, length + 1u);
     return true;
 }
+} // namespace detail
 
 inline const char *waveformNameForValue(double value) noexcept {
     const auto *spec = parameterSpecForId(
@@ -210,7 +212,8 @@ inline const char *waveformNameForValue(double value) noexcept {
 inline bool waveformTextForValue(double value,
                                  char *display,
                                  std::uint32_t size) noexcept {
-    return copyParameterDisplayText(waveformNameForValue(value), display, size);
+    return detail::copyStaticParameterDisplayText(
+        waveformNameForValue(value), display, size);
 }
 
 inline bool waveformValueFromName(const char *name, double &value) noexcept {
