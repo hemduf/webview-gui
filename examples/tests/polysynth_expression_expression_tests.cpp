@@ -244,20 +244,42 @@ int main() {
         }
     }
 
+    // REVIEW RED: CLAP explicitly permits EXPRESSION=0. It must produce an exact
+    // voice mute while preserving the voice lifecycle for later expression events.
+    ParameterVoiceEngine zeroEngine;
+    if (!configure(zeroEngine, 1))
+        return 22;
+    InputEvents zeroEvents;
+    if (!zeroEvents.pushNote(0, 1000, 69) ||
+        !zeroEvents.pushExpression(8, 0.0, 1000, 69))
+        return 23;
+    Buffer zeroLeft{};
+    Buffer zeroRight{};
+    if (!render(zeroEngine, zeroEvents, zeroLeft, zeroRight)) {
+        std::cerr << "legal EXPRESSION=0 was rejected\n";
+        return 24;
+    }
+    for (std::uint32_t frame = 8; frame < kFrames; ++frame) {
+        if (zeroLeft[frame] != 0.0f || zeroRight[frame] != 0.0f) {
+            std::cerr << "EXPRESSION=0 did not mute the voice exactly\n";
+            return 25;
+        }
+    }
+
     // The pinned CLAP domain for EXPRESSION is [0, 1]. Reject non-finite/out of
     // range values instead of letting them poison persistent RT voice state.
     ParameterVoiceEngine invalidEngine;
     if (!configure(invalidEngine, 1))
-        return 22;
+        return 26;
     InputEvents invalidEvents;
     if (!invalidEvents.pushNote(0, 1001, 69) ||
         !invalidEvents.pushExpression(1, 1.01, 1001, 69))
-        return 23;
+        return 27;
     Buffer invalidLeft{};
     Buffer invalidRight{};
     if (render(invalidEngine, invalidEvents, invalidLeft, invalidRight)) {
         std::cerr << "out-of-range EXPRESSION was accepted\n";
-        return 24;
+        return 28;
     }
 
     return 0;
