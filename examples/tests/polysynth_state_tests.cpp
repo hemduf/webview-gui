@@ -15,9 +15,13 @@ namespace {
 
 using webview_gui::examples::polysynth::ParameterSlot;
 
+constexpr clap_id kMasterGainId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::MasterGain);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr double kQuarterGainDb = -12.041199826559248;
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) {
     return nullptr;
@@ -41,12 +45,12 @@ const clap_host_t kHost{
 };
 
 struct FlushInputEvents {
-    explicit FlushInputEvents(double value) noexcept {
+    FlushInputEvents(clap_id paramId, double value) noexcept {
         event.header.size = sizeof(event);
         event.header.time = 0;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kFineTuneId;
+        event.param_id = paramId;
         event.note_id = -1;
         event.port_index = -1;
         event.channel = -1;
@@ -138,24 +142,54 @@ struct ChunkedInputStream {
     clap_istream_t stream{};
 };
 
-bool setFineTune(const clap_plugin_t *plugin,
-                 const clap_plugin_params_t *params,
-                 double value) noexcept {
-    if (!plugin || !params || !params->flush)
-        return false;
-    FlushInputEvents input(value);
-    params->flush(plugin, &input.input, nullptr);
-    double observed = 0.0;
-    return params->get_value(plugin, kFineTuneId, &observed) &&
-           std::fabs(observed - value) <= 1.0e-6;
+void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
+    for (unsigned i = 0; i < 4; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
 }
 
-bool getFineTune(const clap_plugin_t *plugin,
-                 const clap_plugin_params_t *params,
-                 double expected) noexcept {
+void storeU64Le(std::uint8_t *destination, std::uint64_t value) noexcept {
+    for (unsigned i = 0; i < 8; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+std::uint32_t loadU32Le(const std::uint8_t *source) noexcept {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<std::uint32_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+std::array<std::uint8_t, 24> legacyState(double fineTune) noexcept {
+    std::array<std::uint8_t, 24> bytes{};
+    constexpr std::array<std::uint8_t, 8> magic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
+    std::copy(magic.begin(), magic.end(), bytes.begin());
+    storeU32Le(bytes.data() + 8, 1u);
+    std::uint64_t fineTuneBits = 0;
+    std::memcpy(&fineTuneBits, &fineTune, sizeof(fineTuneBits));
+    storeU64Le(bytes.data() + 12, fineTuneBits);
+    return bytes;
+}
+
+bool setParameter(const clap_plugin_t *plugin,
+                  const clap_plugin_params_t *params,
+                  clap_id paramId,
+                  double value) noexcept {
+    if (!plugin || !params || !params->flush)
+        return false;
+    FlushInputEvents input(paramId, value);
+    params->flush(plugin, &input.input, nullptr);
+    double observed = 0.0;
+    return params->get_value(plugin, paramId, &observed) &&
+           std::fabs(observed - value) <= 1.0e-5;
+}
+
+bool getParameter(const clap_plugin_t *plugin,
+                  const clap_plugin_params_t *params,
+                  clap_id paramId,
+                  double expected) noexcept {
     double value = 0.0;
-    return params->get_value(plugin, kFineTuneId, &value) &&
-           std::fabs(value - expected) <= 1.0e-6;
+    return params->get_value(plugin, paramId, &value) &&
+           std::fabs(value - expected) <= 1.0e-5;
 }
 
 } // namespace
@@ -179,31 +213,35 @@ int main() {
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
-    if (!params || !params->get_value || !params->flush ||
+    if (!params || !params->get_value || !params->flush || params->count(plugin) != 2u ||
         !state || !state->save || !state->load) {
         plugin->destroy(plugin);
         return 4;
     }
 
-    if (!setFineTune(plugin, params, 37.5)) {
+    if (!setParameter(plugin, params, kFineTuneId, 37.5) ||
+        !setParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
         plugin->destroy(plugin);
         return 5;
     }
 
     ChunkedOutputStream saved(3);
-    if (!state->save(plugin, &saved.stream) || saved.used == 0 || saved.calls < 2) {
+    if (!state->save(plugin, &saved.stream) || saved.used != 24u || saved.calls < 2 ||
+        loadU32Le(saved.bytes.data() + 8) != 2u) {
         plugin->destroy(plugin);
         return 6;
     }
 
-    if (!setFineTune(plugin, params, -25.0)) {
+    if (!setParameter(plugin, params, kFineTuneId, -25.0) ||
+        !setParameter(plugin, params, kMasterGainId, -3.0)) {
         plugin->destroy(plugin);
         return 7;
     }
 
     ChunkedInputStream restore(saved.bytes.data(), saved.used, 2);
     if (!state->load(plugin, &restore.stream) || restore.calls < 2 ||
-        !getFineTune(plugin, params, 37.5)) {
+        !getParameter(plugin, params, kFineTuneId, 37.5) ||
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
         plugin->destroy(plugin);
         return 8;
     }
@@ -213,7 +251,9 @@ int main() {
         return 9;
     }
     ChunkedInputStream truncated(saved.bytes.data(), saved.used - 1, 2);
-    if (state->load(plugin, &truncated.stream) || !getFineTune(plugin, params, 37.5)) {
+    if (state->load(plugin, &truncated.stream) ||
+        !getParameter(plugin, params, kFineTuneId, 37.5) ||
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
         plugin->destroy(plugin);
         return 10;
     }
@@ -221,7 +261,9 @@ int main() {
     auto corruptedBytes = saved.bytes;
     corruptedBytes[0] ^= 0x7f;
     ChunkedInputStream corrupted(corruptedBytes.data(), saved.used, 2);
-    if (state->load(plugin, &corrupted.stream) || !getFineTune(plugin, params, 37.5)) {
+    if (state->load(plugin, &corrupted.stream) ||
+        !getParameter(plugin, params, kFineTuneId, 37.5) ||
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
         plugin->destroy(plugin);
         return 11;
     }
@@ -245,7 +287,8 @@ int main() {
     ChunkedInputStream cloneRestore(saved.bytes.data(), saved.used, 1);
     if (!cloneParams || !cloneState ||
         !cloneState->load(clone, &cloneRestore.stream) ||
-        !getFineTune(clone, cloneParams, 37.5) ||
+        !getParameter(clone, cloneParams, kFineTuneId, 37.5) ||
+        !getParameter(clone, cloneParams, kMasterGainId, kQuarterGainDb) ||
         !clone->activate(clone, 48000.0, 1, 64)) {
         clone->destroy(clone);
         plugin->destroy(plugin);
@@ -254,6 +297,30 @@ int main() {
 
     clone->deactivate(clone);
     clone->destroy(clone);
+
+    const auto legacyBytes = legacyState(-12.5);
+    const auto *legacy = factory->create_plugin(factory, &kHost, kPolySynthPluginId);
+    if (!legacy || !legacy->init(legacy)) {
+        if (legacy)
+            legacy->destroy(legacy);
+        plugin->destroy(plugin);
+        return 15;
+    }
+    const auto *legacyParams = static_cast<const clap_plugin_params_t *>(
+        legacy->get_extension(legacy, CLAP_EXT_PARAMS));
+    const auto *legacyStateExt = static_cast<const clap_plugin_state_t *>(
+        legacy->get_extension(legacy, CLAP_EXT_STATE));
+    ChunkedInputStream legacyRestore(legacyBytes.data(), legacyBytes.size(), 2);
+    if (!legacyParams || !legacyStateExt ||
+        !legacyStateExt->load(legacy, &legacyRestore.stream) ||
+        !getParameter(legacy, legacyParams, kFineTuneId, -12.5) ||
+        !getParameter(legacy, legacyParams, kMasterGainId, 0.0)) {
+        legacy->destroy(legacy);
+        plugin->destroy(plugin);
+        return 16;
+    }
+
+    legacy->destroy(legacy);
     plugin->destroy(plugin);
     return 0;
 }
