@@ -49,14 +49,9 @@ jobs:
 
       - name: Configure current Gain WCLAP
         run: >-
-          cmake -S examples -B build-gain-wclap -G Ninja
+          cmake -S examples/gain/wclap -B build-gain-wclap -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE="${WASI_SDK_PATH}/share/cmake/wasi-sdk-pthread.cmake"
-          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
-          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
-          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN_WCLAP=ON
-          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=OFF
-          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
 
       - name: Build current Gain WCLAP
         run: cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
