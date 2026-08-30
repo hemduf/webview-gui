@@ -636,13 +636,17 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
-            // Coarse Tune is snapshotted per generation because it is currently
-            // a NOTE_ON default. Fine Tune and CLAP TUNING remain live per-voice
-            // offsets layered on top of that stable coarse snapshot.
+            // VoiceEngine::setVoiceFineTuningCents() applies the current global
+            // coarse default internally. Compensate by the difference between the
+            // generation's NOTE_ON snapshot and today's default so Fine Tune and
+            // CLAP TUNING can move live without either double-counting Coarse Tune
+            // or leaking a later default change into an existing generation.
             const auto parameterCents = std::clamp(base + modulation, -100.0, 100.0);
-            const auto effectiveCents =
-                static_cast<double>(voiceCoarseTuningSemitones_[index]) * 100.0 +
-                parameterCents + voiceTuningExpressionSemitones_[index] * 100.0;
+            const auto coarseCompensationCents =
+                static_cast<double>(voiceCoarseTuningSemitones_[index] -
+                                    coarseTuneBaseSemitones_) * 100.0;
+            const auto effectiveCents = coarseCompensationCents + parameterCents +
+                                        voiceTuningExpressionSemitones_[index] * 100.0;
             if (!VoiceEngine::setVoiceFineTuningCents(
                     index, static_cast<float>(effectiveCents)))
                 return false;
@@ -838,16 +842,16 @@ private:
                                      event.channel,
                                      event.key))
                     return true;
-                // Waveform is a stepped enum. Ignore structurally valid but
-                // unsupported statements rather than failing the real-time block.
-                if (event.value < spec->minValue || event.value > spec->maxValue ||
-                    std::trunc(event.value) != event.value)
+                // CLAP_PARAM_IS_STEPPED converts in-range doubles using a cast
+                // (truncation). Keep that ABI rule consistent with value_to_text.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
                     return true;
                 const auto waveform = static_cast<OscillatorWaveform>(
                     static_cast<std::uint8_t>(event.value));
                 if (!VoiceEngine::setOscillatorWaveform(waveform))
                     return false;
-                waveformBaseValue_ = event.value;
+                waveformBaseValue_ = static_cast<double>(
+                    static_cast<std::uint8_t>(event.value));
                 return true;
             }
 
@@ -857,11 +861,9 @@ private:
                                      event.channel,
                                      event.key))
                     return true;
-                // Coarse Tune is a global stepped NOTE_ON default in this bounded
-                // increment. Ignore unsupported fractional/out-of-range statements
-                // without failing the real-time block or changing the retained base.
-                if (event.value < spec->minValue || event.value > spec->maxValue ||
-                    std::trunc(event.value) != event.value)
+                // Coarse Tune has the same CLAP stepped conversion rule. Bounds
+                // are checked before the cast so the conversion is always safe.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
                     return true;
                 const auto semitones = static_cast<int>(event.value);
                 if (!VoiceEngine::setCoarseTuningSemitones(semitones))
