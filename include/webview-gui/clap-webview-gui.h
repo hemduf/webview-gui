@@ -305,6 +305,18 @@ struct ClapWebviewGui {
 
 private:
     [[nodiscard]] bool hasHostWebviewPath() const noexcept {
+#if defined(WEBVIEW_GUI_WEBVIEW_ONLY) || defined(__EMSCRIPTEN__) || defined(__wasm__) || \
+    defined(__wasm32__) || defined(__wasm64__)
+        // In WCLAP the bridge queries the plug-in's clap.webview/3 extension after
+        // clap_plugin.init(). Re-entering plugin->get_extension() from inside the
+        // plug-in's init callback is unnecessary and breaks strict CLAP helpers
+        // across pointer-translating WASM bridges. The module-side GUI only needs
+        // the host-owned send path; resources/receive stay on clap_plugin_webview.
+        return plugin != nullptr
+            && host != nullptr
+            && hostWebview != nullptr
+            && hostWebview->send != nullptr;
+#else
         return plugin != nullptr
             && host != nullptr
             && pluginWebview != nullptr
@@ -313,6 +325,7 @@ private:
             && pluginWebview->receive != nullptr
             && hostWebview != nullptr
             && hostWebview->send != nullptr;
+#endif
     }
 
     void initialiseCurrentIdentity() {
@@ -321,8 +334,11 @@ private:
         hostWebview = nullptr;
         extHostWebview = nullptr;
 
+#if !defined(WEBVIEW_GUI_WEBVIEW_ONLY) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
+    !defined(__wasm32__) && !defined(__wasm64__)
         if (plugin && plugin->get_extension)
             pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
+#endif
         if (host && host->get_extension)
             hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
 
