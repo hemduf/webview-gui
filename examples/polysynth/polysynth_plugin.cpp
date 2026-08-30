@@ -517,7 +517,11 @@ protected:
         // handling for global and voice-addressed PARAM_VALUE/PARAM_MOD events,
         // so the capability flags may match the already-qualified parameter model.
         info->flags = spec->flags;
-        info->cookie = nullptr;
+        // `kParameterSpecs` has static storage duration, so the cookie stays
+        // stable until module unload. The event path remains param-id authoritative
+        // and deliberately does not dereference host-provided cookies because CLAP
+        // permits the host to return either this exact pointer or nullptr.
+        info->cookie = const_cast<void *>(static_cast<const void *>(spec));
         info->min_value = spec->minValue;
         info->max_value = spec->maxValue;
         info->default_value = spec->defaultValue;
