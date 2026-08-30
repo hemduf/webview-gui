@@ -5,6 +5,7 @@
 #include <clap/helpers/plugin.hxx>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -90,18 +91,20 @@ protected:
 
     bool implementsNotePorts() const noexcept override { return true; }
 
-    std::uint32_t notePortsCount(bool) const noexcept override { return 1u; }
+    std::uint32_t notePortsCount(bool isInput) const noexcept override {
+        return isInput ? 1u : 0u;
+    }
 
     bool notePortsInfo(std::uint32_t index,
                        bool isInput,
                        clap_note_port_info_t *info) const noexcept override {
-        if (!info || index != 0)
+        if (!info || !isInput || index != 0)
             return false;
         *info = {};
-        info->id = isInput ? kPolySynthNoteInputPortId : kPolySynthNoteOutputPortId;
+        info->id = kPolySynthNoteInputPortId;
         info->supported_dialects = CLAP_NOTE_DIALECT_CLAP;
         info->preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
-        return copyName(info->name, sizeof(info->name), isInput ? "Notes In" : "Notes Out");
+        return copyName(info->name, sizeof(info->name), "Notes In");
     }
 
 private:
