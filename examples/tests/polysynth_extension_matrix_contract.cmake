@@ -41,14 +41,17 @@ require_contains(plugin_source
     "bool implementsParams() const noexcept override { return true; }"
     "params implementation marker")
 require_contains(plugin_source
-    "std::uint32_t paramsCount() const noexcept override { return 2u; }"
+    "constexpr std::array<clap_id, 3> kPublishedHostParameterIds"
+    "published parameter table")
+require_contains(plugin_source
+    "return static_cast<std::uint32_t>(kPublishedHostParameterIds.size());"
     "published parameter count")
 require_contains(plugin_source
     "bool implementsState() const noexcept override { return true; }"
     "state implementation marker")
 require_contains(plugin_source
-    "constexpr std::uint32_t kStateVersion = 2u;"
-    "Master Gain state version")
+    "constexpr std::uint32_t kStateVersion = 3u;"
+    "Waveform state version")
 require_contains(plugin_source
     "bool implementsStateContext() const noexcept override { return true; }"
     "state-context implementation marker")
@@ -88,10 +91,10 @@ require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix h
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
 require_contains(readme "| `clap.note-ports` | Implemented |" "note-ports matrix row")
 require_contains(readme "| `clap.params` | Partial |" "params matrix row")
-require_contains(readme "Fine Tune and Master Gain are published" "Master Gain parameter documentation")
+require_contains(readme "Fine Tune, Master Gain, and Waveform are published" "Waveform parameter documentation")
 require_contains(readme "| `clap.state` | Implemented |" "state matrix row")
-require_contains(readme "version-2 payload" "Master Gain state documentation")
-require_contains(readme "Version-1 Fine-Tune-only payloads remain loadable" "state backward compatibility")
+require_contains(readme "28-byte version-3 payload" "Waveform state documentation")
+require_contains(readme "Version-1 and version-2 24-byte payloads remain loadable" "state backward compatibility")
 require_contains(readme "| `clap.state-context/2` | Implemented |" "state-context matrix row")
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
