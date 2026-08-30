@@ -601,6 +601,7 @@ protected:
         if (pageIndex == 0u) {
             page->page_id = kTuningRemoteControlsPageId;
             page->param_ids[0] = kHostFineTuneParameterId;
+            page->param_ids[1] = kHostWaveformParameterId;
             return copyName(page->section_name, sizeof(page->section_name), "Oscillator") &&
                    copyName(page->page_name, sizeof(page->page_name), "Tuning");
         }
