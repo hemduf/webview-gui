@@ -2,6 +2,8 @@
 
 #include <clap/clap.h>
 
+#include <cstddef>
+
 namespace webview_gui::examples::polysynth {
 
 inline constexpr const char *kPolySynthPluginId = "com.webview-gui.example.polysynth";
