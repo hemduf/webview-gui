@@ -154,6 +154,12 @@ inline constexpr std::array<ParameterSpec, kParameterCount> kParameterSpecs{{
      kPolyphonicParameterFlags},
 }};
 
+inline constexpr std::array<const char *, 3> kWaveformNames{{
+    "Sine",
+    "Saw",
+    "Square",
+}};
+
 inline constexpr const ParameterSpec *parameterSpecByIndex(std::uint32_t index) noexcept {
     return index < kParameterSpecs.size() ? &kParameterSpecs[index] : nullptr;
 }
@@ -178,12 +184,6 @@ inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) no
 }
 
 inline const char *waveformNameForValue(double value) noexcept {
-    static constexpr std::array<const char *, 3> kWaveformNames{{
-        "Sine",
-        "Saw",
-        "Square",
-    }};
-
     const auto *spec = parameterSpecForId(
         kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform));
     if (!spec || !std::isfinite(value) || value < spec->minValue ||
@@ -198,11 +198,6 @@ inline bool waveformValueFromName(const char *name, double &value) noexcept {
     if (!name)
         return false;
 
-    static constexpr std::array<const char *, 3> kWaveformNames{{
-        "Sine",
-        "Saw",
-        "Square",
-    }};
     for (std::size_t index = 0; index < kWaveformNames.size(); ++index) {
         if (std::strcmp(name, kWaveformNames[index]) == 0) {
             value = static_cast<double>(index);
