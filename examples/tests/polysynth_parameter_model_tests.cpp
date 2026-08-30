@@ -304,8 +304,16 @@ bool checkContinuousParameterTextContract() {
         }
     }
 
+    constexpr std::array<const char *, 6> invalidTexts{{
+        nullptr,
+        "",
+        "12x",
+        "nan",
+        "inf",
+        " 12",
+    }};
     double preserved = 17.0;
-    for (const char *invalid : {nullptr, "", "12x", "nan", "inf", " 12"}) {
+    for (const char *invalid : invalidTexts) {
         if (continuousParameterValueFromText(1003u, invalid, preserved) || preserved != 17.0) {
             std::cerr << "invalid continuous parameter text unexpectedly parsed or mutated output\n";
             return false;
