@@ -55,6 +55,12 @@ require_contains(plugin_source
 require_contains(plugin_source
     "bool implementRemoteControls() const noexcept override { return true; }"
     "remote-controls implementation marker")
+require_contains(plugin_source
+    "bool implementsNoteName() const noexcept override { return true; }"
+    "note-name implementation marker")
+require_contains(plugin_source
+    "std::uint32_t noteNameCount() noexcept override { return 128u; }"
+    "note-name count marker")
 
 require_absent(plugin_source
     "bool implementsLatency() const noexcept override { return true; }"
@@ -62,9 +68,6 @@ require_absent(plugin_source
 require_absent(plugin_source
     "bool implementsRender() const noexcept override { return true; }"
     "render advertisement")
-require_absent(plugin_source
-    "bool implementsNoteName() const noexcept override { return true; }"
-    "note-name advertisement")
 require_absent(plugin_source
     "bool implementsPresetLoad() const noexcept override { return true; }"
     "preset-load advertisement")
@@ -84,7 +87,7 @@ require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-control
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
-require_contains(readme "| `clap.note-name` | Intentionally not advertised |" "note-name matrix row")
+require_contains(readme "| `clap.note-name` | Implemented |" "note-name matrix row")
 require_contains(readme "| `clap.preset-load/2` | Pending |" "preset-load matrix row")
 require_contains(readme "surround/ambisonics" "unrelated-extension rationale")
 require_contains(readme "NOTE_EXPRESSION" "note-expression event coverage")
