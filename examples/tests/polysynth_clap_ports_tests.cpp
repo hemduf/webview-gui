@@ -18,6 +18,9 @@ using webview_gui::examples::polysynth::ParameterSlot;
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr double kPi = 3.1415926535897932384626433832795;
+constexpr double kTwoPi = 2.0 * kPi;
+constexpr double kSampleRate = 48000.0;
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) {
     return nullptr;
@@ -181,6 +184,16 @@ struct RejectingOutputEvents {
     clap_output_events_t output{};
 };
 
+double phaseIncrement(std::int16_t key, double fineCents = 0.0) noexcept {
+    const double semitones = static_cast<double>(key - 69) + fineCents / 100.0;
+    return (440.0 * std::exp2(semitones / 12.0)) / kSampleRate;
+}
+
+double wrappedPhase(double phase) noexcept {
+    phase -= std::floor(phase);
+    return phase;
+}
+
 bool checkAudioPorts(const clap_plugin_t *plugin) {
     const auto *audioPorts = static_cast<const clap_plugin_audio_ports_t *>(
         plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
@@ -275,6 +288,73 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         return nullptr;
 
     return params;
+}
+
+bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
+                             const clap_plugin_params_t *params) {
+    constexpr std::uint32_t kFrames = 8;
+    std::array<float, kFrames> firstLeft{};
+    std::array<float, kFrames> firstRight{};
+    std::array<float *, 2> firstChannels{firstLeft.data(), firstRight.data()};
+    clap_audio_buffer_t firstOutput{};
+    firstOutput.data32 = firstChannels.data();
+    firstOutput.channel_count = 2;
+
+    InputEvents noteOn;
+    if (!noteOn.pushNote(CLAP_EVENT_NOTE_ON, 0, 811, 60))
+        return false;
+    OutputEvents firstEvents;
+    clap_process_t firstProcess{};
+    firstProcess.frames_count = kFrames;
+    firstProcess.audio_outputs = &firstOutput;
+    firstProcess.audio_outputs_count = 1;
+    firstProcess.in_events = &noteOn.input;
+    firstProcess.out_events = &firstEvents.output;
+    if (plugin->process(plugin, &firstProcess) == CLAP_PROCESS_ERROR || firstEvents.count != 0)
+        return false;
+
+    // CLAP permits params.flush while activated as long as it is not concurrent
+    // with process(). A base-value update delivered in that state must affect an
+    // already active generation when rendering resumes at the next sample.
+    plugin->stop_processing(plugin);
+    RejectingOutputEvents flushOutput;
+    FlushInputEvents retune(100.0);
+    params->flush(plugin, &retune.input, &flushOutput.output);
+    if (!plugin->start_processing(plugin))
+        return false;
+
+    std::array<float, kFrames> secondLeft{};
+    std::array<float, kFrames> secondRight{};
+    std::array<float *, 2> secondChannels{secondLeft.data(), secondRight.data()};
+    clap_audio_buffer_t secondOutput{};
+    secondOutput.data32 = secondChannels.data();
+    secondOutput.channel_count = 2;
+    InputEvents noEvents;
+    OutputEvents secondEvents;
+    clap_process_t secondProcess{};
+    secondProcess.frames_count = kFrames;
+    secondProcess.audio_outputs = &secondOutput;
+    secondProcess.audio_outputs_count = 1;
+    secondProcess.in_events = &noEvents.input;
+    secondProcess.out_events = &secondEvents.output;
+    if (plugin->process(plugin, &secondProcess) == CLAP_PROCESS_ERROR || secondEvents.count != 0)
+        return false;
+
+    const double firstIncrement = phaseIncrement(60, 0.0);
+    const double retunedIncrement = phaseIncrement(60, 100.0);
+    const double secondBlockPhase = 0.25 + static_cast<double>(kFrames) * firstIncrement;
+    for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
+        const auto expected = static_cast<float>(std::sin(
+            wrappedPhase(secondBlockPhase + static_cast<double>(frame) * retunedIncrement) *
+            kTwoPi));
+        if (std::fabs(secondLeft[frame] - expected) > 1.0e-5f ||
+            std::fabs(secondRight[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+
+    double hostVisibleValue = 0.0;
+    return params->get_value(plugin, kFineTuneId, &hostVisibleValue) &&
+           hostVisibleValue == 100.0;
 }
 
 bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t *params) {
@@ -378,7 +458,7 @@ int main() {
         return 5;
     }
 
-    if (!plugin->activate(plugin, 48000.0, 1, 128)) {
+    if (!plugin->activate(plugin, kSampleRate, 1, 128)) {
         plugin->destroy(plugin);
         return 6;
     }
@@ -388,9 +468,31 @@ int main() {
         return 7;
     }
 
+    const bool flushHandoffOk = checkActiveFlushHandoff(plugin, params);
+    plugin->stop_processing(plugin);
+    plugin->deactivate(plugin);
+    if (!flushHandoffOk) {
+        plugin->destroy(plugin);
+        return 8;
+    }
+
+    RejectingOutputEvents resetOutput;
+    FlushInputEvents restoreZero(0.0);
+    params->flush(plugin, &restoreZero.input, &resetOutput.output);
+
+    if (!plugin->activate(plugin, kSampleRate, 1, 128)) {
+        plugin->destroy(plugin);
+        return 9;
+    }
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 10;
+    }
+
     const bool processOk = checkProcessBridge(plugin, params);
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
-    return processOk ? 0 : 8;
+    return processOk ? 0 : 11;
 }
