@@ -183,6 +183,20 @@ inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) no
     return (spec.flags & kPolyphonicAddressFlags) == kPolyphonicAddressFlags;
 }
 
+inline bool copyParameterDisplayText(const char *text,
+                                     char *display,
+                                     std::uint32_t size) noexcept {
+    if (!text || !display || size == 0u)
+        return false;
+
+    const std::size_t length = std::strlen(text);
+    if (length >= static_cast<std::size_t>(size))
+        return false;
+
+    std::memcpy(display, text, length + 1u);
+    return true;
+}
+
 inline const char *waveformNameForValue(double value) noexcept {
     const auto *spec = parameterSpecForId(
         kFirstParameterId + static_cast<clap_id>(ParameterSlot::Waveform));
@@ -196,19 +210,7 @@ inline const char *waveformNameForValue(double value) noexcept {
 inline bool waveformTextForValue(double value,
                                  char *display,
                                  std::uint32_t size) noexcept {
-    if (!display || size == 0u)
-        return false;
-
-    const char *name = waveformNameForValue(value);
-    if (!name)
-        return false;
-
-    const std::size_t length = std::strlen(name);
-    if (length >= static_cast<std::size_t>(size))
-        return false;
-
-    std::memcpy(display, name, length + 1u);
-    return true;
+    return copyParameterDisplayText(waveformNameForValue(value), display, size);
 }
 
 inline bool waveformValueFromName(const char *name, double &value) noexcept {
