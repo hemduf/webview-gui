@@ -18,6 +18,9 @@ using webview_gui::examples::polysynth::ParameterSlot;
 constexpr clap_id kMasterGainId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::MasterGain);
+constexpr clap_id kWaveformId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Waveform);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
@@ -170,6 +173,15 @@ std::array<std::uint8_t, 24> legacyState(double fineTune) noexcept {
     return bytes;
 }
 
+std::array<std::uint8_t, 24> version2State(double fineTune, float masterGainDb) noexcept {
+    auto bytes = legacyState(fineTune);
+    storeU32Le(bytes.data() + 8, 2u);
+    std::uint32_t masterGainBits = 0;
+    std::memcpy(&masterGainBits, &masterGainDb, sizeof(masterGainBits));
+    storeU32Le(bytes.data() + 20, masterGainBits);
+    return bytes;
+}
+
 bool setParameter(const clap_plugin_t *plugin,
                   const clap_plugin_params_t *params,
                   clap_id paramId,
@@ -213,27 +225,29 @@ int main() {
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
-    if (!params || !params->get_value || !params->flush || params->count(plugin) != 2u ||
+    if (!params || !params->get_value || !params->flush || params->count(plugin) != 3u ||
         !state || !state->save || !state->load) {
         plugin->destroy(plugin);
         return 4;
     }
 
     if (!setParameter(plugin, params, kFineTuneId, 37.5) ||
-        !setParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
+        !setParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
+        !setParameter(plugin, params, kWaveformId, 2.0)) {
         plugin->destroy(plugin);
         return 5;
     }
 
     ChunkedOutputStream saved(3);
-    if (!state->save(plugin, &saved.stream) || saved.used != 24u || saved.calls < 2 ||
-        loadU32Le(saved.bytes.data() + 8) != 2u) {
+    if (!state->save(plugin, &saved.stream) || saved.used != 28u || saved.calls < 2 ||
+        loadU32Le(saved.bytes.data() + 8) != 3u) {
         plugin->destroy(plugin);
         return 6;
     }
 
     if (!setParameter(plugin, params, kFineTuneId, -25.0) ||
-        !setParameter(plugin, params, kMasterGainId, -3.0)) {
+        !setParameter(plugin, params, kMasterGainId, -3.0) ||
+        !setParameter(plugin, params, kWaveformId, 1.0)) {
         plugin->destroy(plugin);
         return 7;
     }
@@ -241,7 +255,8 @@ int main() {
     ChunkedInputStream restore(saved.bytes.data(), saved.used, 2);
     if (!state->load(plugin, &restore.stream) || restore.calls < 2 ||
         !getParameter(plugin, params, kFineTuneId, 37.5) ||
-        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
+        !getParameter(plugin, params, kWaveformId, 2.0)) {
         plugin->destroy(plugin);
         return 8;
     }
@@ -253,7 +268,8 @@ int main() {
     ChunkedInputStream truncated(saved.bytes.data(), saved.used - 1, 2);
     if (state->load(plugin, &truncated.stream) ||
         !getParameter(plugin, params, kFineTuneId, 37.5) ||
-        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
+        !getParameter(plugin, params, kWaveformId, 2.0)) {
         plugin->destroy(plugin);
         return 10;
     }
@@ -263,7 +279,8 @@ int main() {
     ChunkedInputStream corrupted(corruptedBytes.data(), saved.used, 2);
     if (state->load(plugin, &corrupted.stream) ||
         !getParameter(plugin, params, kFineTuneId, 37.5) ||
-        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb)) {
+        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
+        !getParameter(plugin, params, kWaveformId, 2.0)) {
         plugin->destroy(plugin);
         return 11;
     }
@@ -289,6 +306,7 @@ int main() {
         !cloneState->load(clone, &cloneRestore.stream) ||
         !getParameter(clone, cloneParams, kFineTuneId, 37.5) ||
         !getParameter(clone, cloneParams, kMasterGainId, kQuarterGainDb) ||
+        !getParameter(clone, cloneParams, kWaveformId, 2.0) ||
         !clone->activate(clone, 48000.0, 1, 64)) {
         clone->destroy(clone);
         plugin->destroy(plugin);
@@ -314,13 +332,39 @@ int main() {
     if (!legacyParams || !legacyStateExt ||
         !legacyStateExt->load(legacy, &legacyRestore.stream) ||
         !getParameter(legacy, legacyParams, kFineTuneId, -12.5) ||
-        !getParameter(legacy, legacyParams, kMasterGainId, 0.0)) {
+        !getParameter(legacy, legacyParams, kMasterGainId, 0.0) ||
+        !getParameter(legacy, legacyParams, kWaveformId, 0.0)) {
         legacy->destroy(legacy);
         plugin->destroy(plugin);
         return 16;
     }
 
     legacy->destroy(legacy);
+
+    const auto v2Bytes = version2State(21.0, -6.0f);
+    const auto *v2 = factory->create_plugin(factory, &kHost, kPolySynthPluginId);
+    if (!v2 || !v2->init(v2)) {
+        if (v2)
+            v2->destroy(v2);
+        plugin->destroy(plugin);
+        return 17;
+    }
+    const auto *v2Params = static_cast<const clap_plugin_params_t *>(
+        v2->get_extension(v2, CLAP_EXT_PARAMS));
+    const auto *v2StateExt = static_cast<const clap_plugin_state_t *>(
+        v2->get_extension(v2, CLAP_EXT_STATE));
+    ChunkedInputStream v2Restore(v2Bytes.data(), v2Bytes.size(), 2);
+    if (!v2Params || !v2StateExt ||
+        !v2StateExt->load(v2, &v2Restore.stream) ||
+        !getParameter(v2, v2Params, kFineTuneId, 21.0) ||
+        !getParameter(v2, v2Params, kMasterGainId, -6.0) ||
+        !getParameter(v2, v2Params, kWaveformId, 0.0)) {
+        v2->destroy(v2);
+        plugin->destroy(plugin);
+        return 18;
+    }
+
+    v2->destroy(v2);
     plugin->destroy(plugin);
     return 0;
 }
