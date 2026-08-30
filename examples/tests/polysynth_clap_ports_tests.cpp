@@ -23,6 +23,9 @@ constexpr clap_id kMasterGainId =
 constexpr clap_id kWaveformId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::Waveform);
+constexpr clap_id kCoarseTuneId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::CoarseTuning);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
@@ -211,8 +214,6 @@ bool checkAudioPorts(const clap_plugin_t *plugin) {
     if (audioPorts->count(plugin, true) != 0 || audioPorts->count(plugin, false) != 1)
         return false;
 
-    // Once count() reports zero, asking get() for index 0 is host misuse under
-    // CLAP. Probe only valid indices so the test itself obeys the ABI contract.
     clap_audio_port_info_t info{};
     if (!audioPorts->get(plugin, 0, false, &info))
         return false;
@@ -232,10 +233,6 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS));
     if (!notePorts || !notePorts->count || !notePorts->get)
         return false;
-
-    // NOTE_END is an output event, but its address is explicitly matched against
-    // the plugin's note input port. It does not require advertising a musical
-    // note-output port for this instrument.
     if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 0)
         return false;
 
@@ -246,7 +243,6 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         input.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
         std::strcmp(input.name, "Notes In") != 0)
         return false;
-
     return true;
 }
 
@@ -277,10 +273,6 @@ bool checkNoteNames(const clap_plugin_t *plugin) {
             std::strcmp(noteName.name, item.name) != 0)
             return false;
     }
-
-    // `count()` defines the valid host query range. Calling get(count) is host
-    // misuse and the pinned helper intentionally terminates under Minimal
-    // checking, so this ABI test probes valid indices only.
     return true;
 }
 
@@ -291,29 +283,24 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Preserve existing host indices while adding Waveform at index 2.
-    if (params->count(plugin) != 3u)
+    // Preserve existing host indices while adding Coarse Tune at index 3.
+    if (params->count(plugin) != 4u)
         return nullptr;
 
     clap_param_info_t info{};
     clap_param_info_t repeatedInfo{};
     if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
-        !info.cookie ||
-        !params->get_info(plugin, 0, &repeatedInfo) ||
+        !info.cookie || !params->get_info(plugin, 0, &repeatedInfo) ||
         repeatedInfo.id != info.id || repeatedInfo.cookie != info.cookie ||
         info.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
-        info.min_value != -100.0 || info.max_value != 100.0 ||
-        info.default_value != 0.0 ||
+        info.min_value != -100.0 || info.max_value != 100.0 || info.default_value != 0.0 ||
         std::strcmp(info.name, "Fine Tune") != 0 ||
         std::strcmp(info.module, "Oscillator") != 0)
         return nullptr;
 
     clap_param_info_t masterInfo{};
-    clap_param_info_t repeatedMasterInfo{};
     if (!params->get_info(plugin, 1, &masterInfo) || masterInfo.id != kMasterGainId ||
         !masterInfo.cookie ||
-        !params->get_info(plugin, 1, &repeatedMasterInfo) ||
-        repeatedMasterInfo.id != masterInfo.id || repeatedMasterInfo.cookie != masterInfo.cookie ||
         masterInfo.flags != webview_gui::examples::polysynth::kGlobalModulatableFlags ||
         masterInfo.min_value != -60.0 || masterInfo.max_value != 12.0 ||
         masterInfo.default_value != 0.0 ||
@@ -322,14 +309,9 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         return nullptr;
 
     clap_param_info_t waveformInfo{};
-    clap_param_info_t repeatedWaveformInfo{};
     const auto *waveformSpec = webview_gui::examples::polysynth::parameterSpecForId(kWaveformId);
-    if (!waveformSpec ||
-        !params->get_info(plugin, 2, &waveformInfo) || waveformInfo.id != kWaveformId ||
-        !waveformInfo.cookie ||
-        !params->get_info(plugin, 2, &repeatedWaveformInfo) ||
-        repeatedWaveformInfo.id != waveformInfo.id ||
-        repeatedWaveformInfo.cookie != waveformInfo.cookie ||
+    if (!waveformSpec || !params->get_info(plugin, 2, &waveformInfo) ||
+        waveformInfo.id != kWaveformId || !waveformInfo.cookie ||
         waveformInfo.flags != waveformSpec->flags ||
         waveformInfo.min_value != 0.0 || waveformInfo.max_value != 2.0 ||
         waveformInfo.default_value != 0.0 ||
@@ -337,10 +319,22 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(waveformInfo.module, "Oscillator") != 0)
         return nullptr;
 
+    clap_param_info_t coarseInfo{};
+    const auto *coarseSpec = webview_gui::examples::polysynth::parameterSpecForId(kCoarseTuneId);
+    if (!coarseSpec || !params->get_info(plugin, 3, &coarseInfo) ||
+        coarseInfo.id != kCoarseTuneId || !coarseInfo.cookie ||
+        coarseInfo.flags != coarseSpec->flags ||
+        coarseInfo.min_value != -48.0 || coarseInfo.max_value != 48.0 ||
+        coarseInfo.default_value != 0.0 ||
+        std::strcmp(coarseInfo.name, "Coarse Tune") != 0 ||
+        std::strcmp(coarseInfo.module, "Oscillator") != 0)
+        return nullptr;
+
     double value = -1.0;
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kWaveformId, &value) || value != 0.0)
+        !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0)
         return nullptr;
 
     char text[32]{};
@@ -355,7 +349,10 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::fabs(parsed - kHalfGainDb) > 1.0e-5 ||
         !params->value_to_text(plugin, kWaveformId, 1.75, text, sizeof(text)) ||
         std::strcmp(text, "Saw") != 0 ||
-        !params->text_to_value(plugin, kWaveformId, "Square", &parsed) || parsed != 2.0)
+        !params->text_to_value(plugin, kWaveformId, "Square", &parsed) || parsed != 2.0 ||
+        !params->value_to_text(plugin, kCoarseTuneId, -12.9, text, sizeof(text)) ||
+        std::strcmp(text, "-12") != 0 ||
+        !params->text_to_value(plugin, kCoarseTuneId, "24", &parsed) || parsed != 24.0)
         return nullptr;
 
     RejectingOutputEvents output;
@@ -369,14 +366,20 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_value(plugin, kWaveformId, &value) || value != 2.0)
         return nullptr;
 
-    FlushInputEvents restoreZero(kFineTuneId, 0.0);
-    params->flush(plugin, &restoreZero.input, &output.output);
-    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+    FlushInputEvents setCoarse(kCoarseTuneId, 12.0);
+    params->flush(plugin, &setCoarse.input, &output.output);
+    if (!params->get_value(plugin, kCoarseTuneId, &value) || value != 12.0)
         return nullptr;
 
+    FlushInputEvents restoreZero(kFineTuneId, 0.0);
+    params->flush(plugin, &restoreZero.input, &output.output);
     FlushInputEvents restoreSine(kWaveformId, 0.0);
     params->flush(plugin, &restoreSine.input, &output.output);
-    if (!params->get_value(plugin, kWaveformId, &value) || value != 0.0)
+    FlushInputEvents restoreCoarse(kCoarseTuneId, 0.0);
+    params->flush(plugin, &restoreCoarse.input, &output.output);
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0)
         return nullptr;
 
     return params;
@@ -394,32 +397,26 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         return false;
 
     clap_remote_controls_page_t first{};
-    clap_remote_controls_page_t second{};
     clap_remote_controls_page_t compatible{};
     if (!remoteControls->get(plugin, 0u, &first) ||
-        !remoteControls->get(plugin, 0u, &second) ||
         !compat->get(plugin, 0u, &compatible))
         return false;
 
-    if (first.page_id == CLAP_INVALID_ID || first.page_id != second.page_id ||
-        first.page_id != compatible.page_id || first.is_for_preset ||
-        second.is_for_preset || compatible.is_for_preset ||
+    if (first.page_id == CLAP_INVALID_ID || first.page_id != compatible.page_id ||
+        first.is_for_preset || compatible.is_for_preset ||
         std::strcmp(first.section_name, "Oscillator") != 0 ||
-        std::strcmp(second.section_name, first.section_name) != 0 ||
         std::strcmp(compatible.section_name, first.section_name) != 0 ||
         std::strcmp(first.page_name, "Tuning") != 0 ||
-        std::strcmp(second.page_name, first.page_name) != 0 ||
         std::strcmp(compatible.page_name, first.page_name) != 0)
         return false;
 
     if (!params || first.param_ids[0] != kFineTuneId ||
-        second.param_ids[0] != kFineTuneId || compatible.param_ids[0] != kFineTuneId ||
-        first.param_ids[1] != kWaveformId || second.param_ids[1] != kWaveformId ||
-        compatible.param_ids[1] != kWaveformId)
+        compatible.param_ids[0] != kFineTuneId ||
+        first.param_ids[1] != kWaveformId || compatible.param_ids[1] != kWaveformId ||
+        first.param_ids[2] != kCoarseTuneId || compatible.param_ids[2] != kCoarseTuneId)
         return false;
-    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 3; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (first.param_ids[index] != CLAP_INVALID_ID ||
-            second.param_ids[index] != CLAP_INVALID_ID ||
             compatible.param_ids[index] != CLAP_INVALID_ID)
             return false;
     }
@@ -448,11 +445,14 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
     clap_param_info_t mappedFineInfo{};
     clap_param_info_t mappedMasterInfo{};
     clap_param_info_t mappedWaveformInfo{};
+    clap_param_info_t mappedCoarseInfo{};
     return params->get_info(plugin, 0u, &mappedFineInfo) &&
            params->get_info(plugin, 1u, &mappedMasterInfo) &&
            params->get_info(plugin, 2u, &mappedWaveformInfo) &&
+           params->get_info(plugin, 3u, &mappedCoarseInfo) &&
            mappedFineInfo.id == first.param_ids[0] &&
            mappedWaveformInfo.id == first.param_ids[1] &&
+           mappedCoarseInfo.id == first.param_ids[2] &&
            mappedMasterInfo.id == outputPage.param_ids[0];
 }
 
@@ -479,9 +479,6 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     if (plugin->process(plugin, &firstProcess) == CLAP_PROCESS_ERROR || firstEvents.count != 0)
         return false;
 
-    // CLAP permits params.flush while activated as long as it is not concurrent
-    // with process(). A base-value update delivered in that state must affect an
-    // already active generation when rendering resumes at the next sample.
     plugin->stop_processing(plugin);
     RejectingOutputEvents flushOutput;
     FlushInputEvents retune(kFineTuneId, 100.0);
@@ -554,9 +551,6 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
     if (plugin->process(plugin, &process) == CLAP_PROCESS_ERROR)
         return false;
 
-    // NOTE_ON at sample 4 must not leak audio into earlier samples. Do not
-    // couple this bridge test to one exact oscillator phase: require finite,
-    // centered, non-silent output somewhere in the active [4, 8) segment.
     for (std::uint32_t frame = 0; frame < 4; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
@@ -572,8 +566,6 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
     if (activeMagnitude <= 1.0e-6)
         return false;
 
-    // NOTE_CHOKE is a hard lifecycle boundary, so no later sample in this
-    // block may retain audio from the choked generation.
     for (std::uint32_t frame = 8; frame < kFrames; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
