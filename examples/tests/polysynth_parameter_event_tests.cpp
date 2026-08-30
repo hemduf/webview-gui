@@ -14,6 +14,8 @@ using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
 constexpr clap_id kMasterGainId =
     1000u + static_cast<unsigned>(ParameterSlot::MasterGain);
+constexpr clap_id kWaveformId =
+    1000u + static_cast<unsigned>(ParameterSlot::Waveform);
 constexpr clap_id kFineTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
 constexpr double kPi = 3.1415926535897932384626433832795;
@@ -382,6 +384,28 @@ int main() {
         std::fabs(baseValue - kHalfGainDb) > 1.0e-9) {
         std::cerr << "finite out-of-range Master Gain PARAM_VALUE changed the base value\n";
         return 25;
+    }
+
+    ParameterVoiceEngine waveform;
+    if (!configure(waveform))
+        return 26;
+    InputEvents waveformEvents;
+    waveformEvents.pushValue(8, kWaveformId, 1.0);
+    waveformEvents.pushNote(8, 35, 60);
+    RenderResult waveformAudio;
+    if (!render(waveform, waveformEvents, waveformAudio)) {
+        std::cerr << "Waveform PARAM_VALUE failed the process block\n";
+        return 27;
+    }
+    if (std::fabs(waveformAudio.left[8] + 0.5f) > 1.0e-5f ||
+        std::fabs(waveformAudio.right[8] + 0.5f) > 1.0e-5f) {
+        std::cerr << "Waveform PARAM_VALUE was not ordered before same-sample NOTE_ON\n";
+        return 28;
+    }
+    if (!waveform.parameterBaseValue(kWaveformId, baseValue) ||
+        std::fabs(baseValue - 1.0) > 1.0e-12) {
+        std::cerr << "Waveform PARAM_VALUE was not retained as the host-visible base\n";
+        return 29;
     }
 
     return 0;
