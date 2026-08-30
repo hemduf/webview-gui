@@ -1,4 +1,5 @@
 #include "polysynth_plugin.h"
+#include "polysynth_voice_allocator.h"
 
 #include <clap/clap.h>
 #include <clap/ext/voice-info.h>
@@ -64,8 +65,11 @@ int main() {
         return 6;
     }
 
+    // CLAP distinguishes the number of voices the current patch uses from the
+    // fixed storage capacity available without reallocating. This reference
+    // patch uses 16 voices while the RT allocator preallocates 64 slots.
     if (info.voice_count != kPolySynthDefaultVoiceCount ||
-        info.voice_capacity != kPolySynthDefaultVoiceCount ||
+        info.voice_capacity != VoiceAllocator::kMaximumVoices ||
         (info.flags & CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES) == 0) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
