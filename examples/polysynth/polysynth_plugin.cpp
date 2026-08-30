@@ -3,6 +3,7 @@
 
 #include <clap/ext/state-context.h>
 #include <clap/ext/state.h>
+#include <clap/ext/tail.h>
 #include <clap/ext/voice-info.h>
 #include <clap/helpers/plugin.hh>
 #include <clap/helpers/plugin.hxx>
@@ -27,6 +28,7 @@ using PolySynthBase = clap::helpers::Plugin<
 
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr std::uint32_t kPolySynthReleaseTailSamples = 64u;
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires a lock-free host-visible parameter snapshot");
@@ -39,6 +41,9 @@ static_assert(std::numeric_limits<double>::is_iec559,
 static_assert(kPolySynthDefaultVoiceCount > 0 &&
                   kPolySynthDefaultVoiceCount <= VoiceAllocator::kMaximumVoices,
               "PolySynth voice-info must report a valid configured voice count");
+static_assert(kPolySynthReleaseTailSamples <
+                  static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()),
+              "PolySynth tail must remain finite under the CLAP tail contract");
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -257,7 +262,9 @@ protected:
         if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || minFrameCount == 0 ||
             maxFrameCount < minFrameCount)
             return false;
-        if (!engine_.configure(kPolySynthDefaultVoiceCount, sampleRate, 64u) ||
+        if (!engine_.configure(kPolySynthDefaultVoiceCount,
+                               sampleRate,
+                               kPolySynthReleaseTailSamples) ||
             !engine_.setFineTuningCents(
                 hostFineTuneCents_.load(std::memory_order_acquire)))
             return false;
@@ -325,6 +332,14 @@ protected:
             return CLAP_PROCESS_ERROR;
 
         return CLAP_PROCESS_CONTINUE;
+    }
+
+    bool implementsTail() const noexcept override { return true; }
+
+    std::uint32_t tailGet() const noexcept override {
+        // The current patch has a fixed finite amplitude release and no delay,
+        // reverb, feedback, or other post-note source that can outlive it.
+        return kPolySynthReleaseTailSamples;
     }
 
     bool implementsState() const noexcept override { return true; }
