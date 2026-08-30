@@ -44,6 +44,8 @@ public:
         filterEnvelopeAmount_ = 0.0f;
         filterBaseG_ = 0.0;
         filterEnvelopeGDelta_ = 0.0;
+        filterBrightnessGDelta_ = 0.0;
+        filterMaximumG_ = 0.0;
         filterDamping_ = 2.0;
         pan_ = 0.0f;
         masterGainCurrent_ = 1.0f;
@@ -139,6 +141,10 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        if (!std::isfinite(maximumG) || maximumG < baseG)
+            return false;
+
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
@@ -146,6 +152,8 @@ public:
         filterResonance_ = resonance;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         filterEnabled_ = true;
         return true;
@@ -183,12 +191,18 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        if (!std::isfinite(maximumG) || maximumG < baseG)
+            return false;
+
         filterEnvelopeAmount_ = amount;
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         return true;
     }
@@ -307,6 +321,19 @@ public:
         return true;
     }
 
+    // CLAP BRIGHTNESS is a normalized per-note timbral offset in [0, 1]. The
+    // example maps 0 to the configured filter cutoff and 1 to the highest legal
+    // cutoff. Both endpoints are prepared as TPT g values outside process(), so
+    // a sample-accurate event only updates one bounded voice-local scalar.
+    bool setVoiceBrightnessExpression(VoiceAllocator::VoiceIndex index,
+                                      float brightness) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(brightness) || brightness < 0.0f || brightness > 1.0f)
+            return false;
+        voices_[index].noteExpressionBrightness = brightness;
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
@@ -400,6 +427,8 @@ private:
         double filterA3 = 0.0;
         double filterBaseG = 0.0;
         double filterEnvelopeGDelta = 0.0;
+        double filterBrightnessGDelta = 0.0;
+        double filterMaximumG = 0.0;
         double filterDamping = 2.0;
         double filterIc1Eq = 0.0;
         double filterIc2Eq = 0.0;
@@ -408,6 +437,7 @@ private:
         float level = 0.0f;
         float stageStep = 0.0f;
         float noteExpressionGain = 1.0f;
+        float noteExpressionBrightness = 0.0f;
         float panLeftGain = 1.0f;
         float panRightGain = 1.0f;
         std::uint32_t stageRemaining = 0;
@@ -441,6 +471,10 @@ private:
 
     static double flushFilterDenormal(double value) noexcept {
         return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
+    }
+
+    static double maximumFilterG() noexcept {
+        return std::tan(kPi * kMaximumFilterCutoffFraction);
     }
 
     // Compact polyBLEP correction keeps the discontinuities of the educational
@@ -565,6 +599,8 @@ private:
         voice.filterA3 = filterA3_;
         voice.filterBaseG = filterBaseG_;
         voice.filterEnvelopeGDelta = filterEnvelopeGDelta_;
+        voice.filterBrightnessGDelta = filterBrightnessGDelta_;
+        voice.filterMaximumG = filterMaximumG_;
         voice.filterDamping = filterDamping_;
         voice.filterEnvelopeEnabled = filterEnabled_ && filterEnvelopeAmount_ != 0.0f;
         if (pan_ <= 0.0f) {
@@ -602,6 +638,17 @@ private:
             voice.level / static_cast<float>(voice.releaseSamples));
     }
 
+    static void filterCoefficientsForG(double g,
+                                       double damping,
+                                       double &a1,
+                                       double &a2,
+                                       double &a3) noexcept {
+        const double denominator = 1.0 + g * (g + damping);
+        a1 = 1.0 / denominator;
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
     static double processFilter(Voice &voice, double input) noexcept {
         if (!voice.filterEnabled)
             return input;
@@ -609,18 +656,20 @@ private:
         double a1 = voice.filterA1;
         double a2 = voice.filterA2;
         double a3 = voice.filterA3;
-        if (voice.filterEnvelopeEnabled) {
+        if (voice.filterEnvelopeEnabled || voice.noteExpressionBrightness > 0.0f) {
             double normalizedEnvelope = 0.0;
-            if (voice.peakLevel > kEnvelopeDenormalFloor) {
+            if (voice.filterEnvelopeEnabled &&
+                voice.peakLevel > kEnvelopeDenormalFloor) {
                 normalizedEnvelope = std::clamp(
                     static_cast<double>(voice.level / voice.peakLevel), 0.0, 1.0);
             }
-            const double g = voice.filterBaseG +
-                             voice.filterEnvelopeGDelta * normalizedEnvelope;
-            const double denominator = 1.0 + g * (g + voice.filterDamping);
-            a1 = 1.0 / denominator;
-            a2 = g * a1;
-            a3 = g * a2;
+            const double requestedG =
+                voice.filterBaseG +
+                voice.filterEnvelopeGDelta * normalizedEnvelope +
+                voice.filterBrightnessGDelta *
+                    static_cast<double>(voice.noteExpressionBrightness);
+            const double g = std::min(voice.filterMaximumG, requestedG);
+            filterCoefficientsForG(g, voice.filterDamping, a1, a2, a3);
         }
 
         const double v3 = input - voice.filterIc2Eq;
@@ -821,6 +870,8 @@ private:
     float filterEnvelopeAmount_ = 0.0f;
     double filterBaseG_ = 0.0;
     double filterEnvelopeGDelta_ = 0.0;
+    double filterBrightnessGDelta_ = 0.0;
+    double filterMaximumG_ = 0.0;
     double filterDamping_ = 2.0;
     float pan_ = 0.0f;
     float masterGainCurrent_ = 1.0f;
