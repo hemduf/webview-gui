@@ -19,6 +19,14 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+# WASI SDK reactors do not link a C++ exception runtime. Keep this profile local
+# to the WCLAP build so the native Gain target preserves its normal compiler
+# settings while the exact same core sources compile without __cxa_* references.
+target_compile_options(webview_gui_example_gain_clap_core PRIVATE
+    -msimd128
+    -fno-exceptions
+)
+
 add_executable(webview_gui_example_gain_wclap
     "${CMAKE_CURRENT_LIST_DIR}/../gain_entry.cpp"
 )
