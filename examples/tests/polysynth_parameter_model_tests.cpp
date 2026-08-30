@@ -13,6 +13,8 @@
 namespace {
 using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterSpec;
+using webview_gui::examples::polysynth::coarseTuningTextForValue;
+using webview_gui::examples::polysynth::coarseTuningValueFromText;
 using webview_gui::examples::polysynth::kParameterCount;
 using webview_gui::examples::polysynth::parameterSpecByIndex;
 using webview_gui::examples::polysynth::parameterSpecForId;
@@ -172,6 +174,112 @@ bool checkWaveformDisplayBufferContract() {
 
     return true;
 }
+
+bool checkCoarseTuningTextContract() {
+    struct DisplayCase {
+        double value;
+        const char *expected;
+    };
+    constexpr std::array<DisplayCase, 7> cases{{
+        {-48.0, "-48"},
+        {-12.9, "-12"},
+        {-0.9, "0"},
+        {0.0, "0"},
+        {12.9, "12"},
+        {47.9, "47"},
+        {48.0, "48"},
+    }};
+
+    for (const auto &item : cases) {
+        std::array<char, CLAP_NAME_SIZE> display{};
+        if (!coarseTuningTextForValue(item.value,
+                                      display.data(),
+                                      static_cast<std::uint32_t>(display.size())) ||
+            std::strcmp(display.data(), item.expected) != 0) {
+            std::cerr << "coarse tuning stepped value-to-text contract mismatch\n";
+            return false;
+        }
+    }
+
+    struct ParseCase {
+        const char *text;
+        double expected;
+    };
+    constexpr std::array<ParseCase, 5> parseCases{{
+        {"-48", -48.0},
+        {"-12", -12.0},
+        {"0", 0.0},
+        {"12", 12.0},
+        {"48", 48.0},
+    }};
+    for (const auto &item : parseCases) {
+        double parsed = 99.0;
+        if (!coarseTuningValueFromText(item.text, parsed) || parsed != item.expected) {
+            std::cerr << "coarse tuning text-to-value contract mismatch\n";
+            return false;
+        }
+    }
+
+    std::array<char, 4> exactNegative{{'x', 'x', 'x', 'x'}};
+    if (!coarseTuningTextForValue(-48.0,
+                                  exactNegative.data(),
+                                  static_cast<std::uint32_t>(exactNegative.size())) ||
+        std::strcmp(exactNegative.data(), "-48") != 0) {
+        std::cerr << "coarse tuning exact-size display buffer was rejected\n";
+        return false;
+    }
+
+    std::array<char, 3> tooSmall{{'k', 'e', 'p'}};
+    const auto originalTooSmall = tooSmall;
+    if (coarseTuningTextForValue(-48.0,
+                                 tooSmall.data(),
+                                 static_cast<std::uint32_t>(tooSmall.size())) ||
+        tooSmall != originalTooSmall) {
+        std::cerr << "coarse tuning short display buffer unexpectedly succeeded or mutated output\n";
+        return false;
+    }
+
+    std::array<char, 8> invalidValue{{'u', 'n', 'c', 'h', 'a', 'n', 'g', 'e'}};
+    const auto originalInvalidValue = invalidValue;
+    for (double invalid : {-48.0001,
+                           48.0001,
+                           std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+        if (coarseTuningTextForValue(invalid,
+                                     invalidValue.data(),
+                                     static_cast<std::uint32_t>(invalidValue.size())) ||
+            invalidValue != originalInvalidValue) {
+            std::cerr << "invalid coarse tuning value unexpectedly formatted or mutated output\n";
+            return false;
+        }
+    }
+
+    constexpr std::array<const char *, 8> invalidTexts{{
+        nullptr,
+        "",
+        "49",
+        "-49",
+        "12x",
+        "12.5",
+        "+12",
+        " 12",
+    }};
+    double preserved = 17.0;
+    for (const char *invalid : invalidTexts) {
+        if (coarseTuningValueFromText(invalid, preserved) || preserved != 17.0) {
+            std::cerr << "invalid coarse tuning text unexpectedly parsed or mutated output\n";
+            return false;
+        }
+    }
+
+    if (coarseTuningTextForValue(0.0, nullptr, CLAP_NAME_SIZE) ||
+        coarseTuningTextForValue(0.0, invalidValue.data(), 0u)) {
+        std::cerr << "invalid coarse tuning display request unexpectedly succeeded\n";
+        return false;
+    }
+
+    return true;
+}
 }
 
 int main() {
@@ -255,6 +363,9 @@ int main() {
 
     if (!checkWaveformDisplayBufferContract())
         return 10;
+
+    if (!checkCoarseTuningTextContract())
+        return 11;
 
     return 0;
 }
