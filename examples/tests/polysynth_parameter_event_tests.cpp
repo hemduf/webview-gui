@@ -362,5 +362,27 @@ int main() {
         return 21;
     }
 
+    ParameterVoiceEngine invalidMasterGain;
+    if (!configure(invalidMasterGain))
+        return 22;
+    InputEvents invalidMasterGainEvents;
+    invalidMasterGainEvents.pushValue(0, kMasterGainId, kHalfGainDb);
+    invalidMasterGainEvents.pushNote(0, 34, 60);
+    invalidMasterGainEvents.pushValue(8, kMasterGainId, 24.0);
+    RenderResult invalidMasterGainAudio;
+    if (!render(invalidMasterGain, invalidMasterGainEvents, invalidMasterGainAudio)) {
+        std::cerr << "finite out-of-range Master Gain PARAM_VALUE failed the process block\n";
+        return 23;
+    }
+    if (!matchesMasterGainStep(invalidMasterGainAudio, 0, 0.5f, 0.5f, 60)) {
+        std::cerr << "finite out-of-range Master Gain PARAM_VALUE changed the DSP state\n";
+        return 24;
+    }
+    if (!invalidMasterGain.parameterBaseValue(kMasterGainId, baseValue) ||
+        std::fabs(baseValue - kHalfGainDb) > 1.0e-9) {
+        std::cerr << "finite out-of-range Master Gain PARAM_VALUE changed the base value\n";
+        return 25;
+    }
+
     return 0;
 }
