@@ -761,12 +761,12 @@ private:
                 if (!voice.active || voice.deferredReleaseCompletion)
                     continue;
 
-                const double oscillator = oscillatorSample(voice) *
-                                          static_cast<double>(voice.level) *
-                                          static_cast<double>(voice.noteExpressionGain);
+                const double oscillator =
+                    oscillatorSample(voice) * static_cast<double>(voice.level);
                 const auto filteredSample = static_cast<float>(processFilter(voice, oscillator));
-                leftMix += filteredSample * voice.panLeftGain;
-                rightMix += filteredSample * voice.panRightGain;
+                const auto expressedSample = filteredSample * voice.noteExpressionGain;
+                leftMix += expressedSample * voice.panLeftGain;
+                rightMix += expressedSample * voice.panRightGain;
 
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
