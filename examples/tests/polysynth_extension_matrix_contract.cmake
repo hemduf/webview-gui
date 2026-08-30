@@ -68,6 +68,9 @@ require_contains(plugin_source
     "std::uint32_t remoteControlsPageCount() noexcept override { return 2u; }"
     "remote-controls page count")
 require_contains(plugin_source
+    "page->param_ids[1] = kHostWaveformParameterId;"
+    "Waveform remote-controls mapping")
+require_contains(plugin_source
     "bool implementsNoteName() const noexcept override { return true; }"
     "note-name implementation marker")
 require_contains(plugin_source
@@ -99,6 +102,7 @@ require_contains(readme "| `clap.state-context/2` | Implemented |" "state-contex
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
 require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
+require_contains(readme "`Oscillator / Tuning` maps Fine Tune and Waveform" "Waveform remote-controls page")
 require_contains(readme "`Output / Performance` maps Master Gain" "Master Gain remote-controls page")
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
