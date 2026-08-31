@@ -57,23 +57,23 @@ int main() {
     ClapWebviewGui gui{&plugin, &host};
     gui.init();
 
-    // WCLAP bridges may implement host.get_extension() by consulting plug-in
-    // extension state. During clap_plugin.init() that can re-enter the plug-in
-    // before strict CLAP helpers have marked initialization complete. The GUI
-    // helper must therefore perform identity/thread binding only here and defer
-    // both sides of WebView negotiation until a post-init GUI callback.
-    if (!expect(hostExtensionQueries == 0,
-                "WCLAP init queried a host extension before clap_plugin.init completed"))
+    // The WCLAP module's host.get_extension(CLAP_EXT_WEBVIEW) is a bridge-owned
+    // special case which returns a pre-registered proxy without consulting the
+    // native host or re-entering plug-in extension discovery. Resolve that host
+    // proxy during init because the pinned native bridge copies extHostWebview
+    // immediately. Plug-in WebView discovery must remain deferred.
+    if (!expect(hostExtensionQueries == 1,
+                "WCLAP init did not resolve the host WebView proxy exactly once"))
         return 1;
     if (!expect(pluginExtensionQueries == 0,
                 "WCLAP init queried a plug-in extension before clap_plugin.init completed"))
         return 2;
 
     if (!expect(gui.isApiSupported(CLAP_WINDOW_API_WEBVIEW, false),
-                "first post-init GUI negotiation did not resolve host WebView support"))
+                "post-init GUI negotiation lost host WebView support"))
         return 3;
     if (!expect(hostExtensionQueries == 1,
-                "host WebView extension was not resolved exactly once after init"))
+                "post-init GUI negotiation repeated the cached host WebView lookup"))
         return 4;
     if (!expect(pluginExtensionQueries == 0,
                 "WCLAP host-owned WebView path unexpectedly queried plug-in WebView support"))
@@ -89,26 +89,25 @@ int main() {
 
     const std::uint8_t byte = 0x42;
     if (!expect(gui.send(&byte, 1) && hostSendCalls == 1,
-                "WCLAP message did not use the lazily resolved host WebView extension"))
+                "WCLAP message did not use the init-resolved host WebView extension"))
         return 8;
 
     gui.destroy();
 
-    // Absence is also a resolved result. Repeated GUI capability probes must not
-    // repeatedly cross the WCLAP/native host boundary when clap.webview/3 is not
-    // provided by the host.
+    // Absence is also an init-time resolved result. Repeated GUI capability probes
+    // must not repeatedly cross the host boundary when clap.webview/3 is missing.
     clap_host_t missingHost{};
     missingHost.get_extension = missingHostGetExtension;
     ClapWebviewGui missingGui{&plugin, &missingHost};
     missingGui.init();
-    if (!expect(missingHostExtensionQueries == 0,
-                "missing-host WCLAP init queried an extension too early"))
+    if (!expect(missingHostExtensionQueries == 1,
+                "missing host WebView extension was not resolved exactly once during init"))
         return 9;
     if (!expect(!missingGui.isApiSupported(CLAP_WINDOW_API_WEBVIEW, false),
                 "missing host WebView extension was reported as supported"))
         return 10;
     if (!expect(missingHostExtensionQueries == 1,
-                "missing host WebView extension was not queried exactly once"))
+                "negative host WebView lookup was repeated after init"))
         return 11;
     if (!expect(!missingGui.isApiSupported(CLAP_WINDOW_API_WEBVIEW, false) &&
                     missingHostExtensionQueries == 1,
