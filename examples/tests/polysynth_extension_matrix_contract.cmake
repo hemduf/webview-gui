@@ -187,7 +187,7 @@ require_contains(readme "| `clap.state-context/2` | Implemented |" "state-contex
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
 require_contains(readme "Release parameter converted to samples at the active sample rate" "dynamic tail documentation")
-require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
+require_contains(readme "| `clap.remote-controls/2` | Implemented |" "remote-controls matrix row")
 require_contains(readme "`Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune" "Coarse Tune remote-controls page")
 require_contains(readme "`Output / Performance` maps Master Gain, Pan, and Amp Level" "Amp Level remote-controls page")
 require_contains(readme "`Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env" "Filter Envelope Amount remote-controls page")
