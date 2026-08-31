@@ -28,6 +28,14 @@ function(require_absent haystack_var needle label)
     endif()
 endfunction()
 
+function(require_before haystack_var first second label)
+    string(FIND "${${haystack_var}}" "${first}" first_at)
+    string(FIND "${${haystack_var}}" "${second}" second_at)
+    if(first_at EQUAL -1 OR second_at EQUAL -1 OR first_at GREATER second_at)
+        message(FATAL_ERROR "Invalid ${label}: expected '${first}' before '${second}'")
+    endif()
+endfunction()
+
 # The runtime CLAP contract is exercised by polysynth_clap_ports/state/voice-info/
 # tail tests. This static guard keeps the human-facing extension matrix synchronized
 # with the exact helper overrides that decide extension discovery.
@@ -82,6 +90,16 @@ require_contains(plugin_source
 require_contains(plugin_source
     "tailLoadedStateRevisionPublished_"
     "coherent loaded-state tail publication revision")
+require_contains(plugin_source
+    "pendingLoadedTailSamples_"
+    "coherent pending loaded-state tail samples")
+# The acquire of the tail revision must happen before reading the published sample
+# count; otherwise an audio-thread tail.get() may read the old sample count first,
+# then synchronize with the new revision and incorrectly return that stale value.
+require_before(plugin_source
+    "tailLoadedStateRevisionPublished_.load(std::memory_order_acquire)"
+    "currentTailSamples_.load(std::memory_order_acquire)"
+    "tail revision/sample publication ordering")
 
 # Existing host indices 0..8 are ABI and project-state compatibility surface.
 # The four Amp Envelope controls must therefore append at 9..12 even though their
