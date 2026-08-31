@@ -40,7 +40,11 @@ function(webview_gui_configure_wclap_target target)
 
     target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
     if(TARGET webview-gui)
-        target_compile_definitions(webview-gui PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
+        # ClapWebviewGui is header-defined, so the WebView-only profile must be
+        # a usage requirement. WCLAP consumers such as a static plug-in core
+        # compile those inline methods themselves; PRIVATE would configure only
+        # source/webview-gui.cpp and silently leave consumers on the native path.
+        target_compile_definitions(webview-gui PUBLIC WEBVIEW_GUI_WEBVIEW_ONLY=1)
     endif()
 
     if(EMSCRIPTEN)
