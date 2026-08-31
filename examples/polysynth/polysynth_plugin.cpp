@@ -739,6 +739,8 @@ protected:
 
         publishHostParameterSnapshot(retained);
         currentTailSamples_.store(initialTailSamples, std::memory_order_release);
+        tailLoadedStateRevisionPublished_.store(retainedRevision,
+                                                std::memory_order_release);
         appliedLoadedStateRevision_ = retainedRevision;
         appliedLoadedStateRevisionPublished_.store(retainedRevision,
                                                    std::memory_order_release);
@@ -823,9 +825,9 @@ protected:
     std::uint32_t tailGet() const noexcept override {
         const auto publishedTail = currentTailSamples_.load(std::memory_order_acquire);
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
-        const auto appliedRevision =
-            appliedLoadedStateRevisionPublished_.load(std::memory_order_acquire);
-        if (loadedRevision == appliedRevision || !active_)
+        const auto tailRevision =
+            tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+        if (loadedRevision == tailRevision || !active_)
             return publishedTail;
 
         ParameterSnapshot pending{};
@@ -1512,11 +1514,12 @@ private:
         const auto tailSamples = std::max(defaultTailSamples,
                                           engine_.maximumActiveReleaseSamples());
         const auto previous = currentTailSamples_.load(std::memory_order_acquire);
-        if (tailSamples == previous)
-            return true;
-
-        currentTailSamples_.store(tailSamples, std::memory_order_release);
-        if (notifyHost && hostTail_ && hostTail_->changed)
+        const bool changed = tailSamples != previous;
+        if (changed)
+            currentTailSamples_.store(tailSamples, std::memory_order_release);
+        tailLoadedStateRevisionPublished_.store(appliedLoadedStateRevision_,
+                                                std::memory_order_release);
+        if (changed && notifyHost && hostTail_ && hostTail_->changed)
             hostTail_->changed(host_);
         return true;
     }
@@ -1610,6 +1613,7 @@ private:
     std::atomic<float> pendingLoadedAmpSustain_{0.8f};
     std::atomic<float> pendingLoadedAmpReleaseSeconds_{0.25f};
     std::atomic<std::uint32_t> currentTailSamples_{kPolySynthBootstrapReleaseSamples};
+    std::atomic<std::uint32_t> tailLoadedStateRevisionPublished_{0u};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::atomic<std::uint32_t> appliedLoadedStateRevisionPublished_{0u};
     double activeSampleRate_ = 0.0;
