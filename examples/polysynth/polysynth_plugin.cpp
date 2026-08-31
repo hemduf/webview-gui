@@ -35,17 +35,21 @@ constexpr clap_id kHostCoarseTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::CoarseTuning);
 constexpr clap_id kHostFineTuneParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr clap_id kHostFilterCutoffParameterId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterCutoff);
 constexpr clap_id kHostPanParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::Pan);
-constexpr std::array<clap_id, 5> kPublishedHostParameterIds{{
+constexpr std::array<clap_id, 6> kPublishedHostParameterIds{{
     kHostFineTuneParameterId,
     kHostMasterGainParameterId,
     kHostWaveformParameterId,
     kHostCoarseTuneParameterId,
     kHostPanParameterId,
+    kHostFilterCutoffParameterId,
 }};
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
 constexpr clap_id kPerformanceRemoteControlsPageId = 0x3201u;
+constexpr clap_id kFilterRemoteControlsPageId = 0x3202u;
 constexpr std::uint32_t kPolySynthReleaseTailSamples = 64u;
 
 static_assert(std::atomic<float>::is_always_lock_free,
@@ -67,7 +71,10 @@ static_assert(kPolySynthDefaultVoiceCount > 0 &&
               "PolySynth voice-info must report a valid configured voice count");
 static_assert(kTuningRemoteControlsPageId != CLAP_INVALID_ID &&
                   kPerformanceRemoteControlsPageId != CLAP_INVALID_ID &&
-                  kTuningRemoteControlsPageId != kPerformanceRemoteControlsPageId,
+                  kFilterRemoteControlsPageId != CLAP_INVALID_ID &&
+                  kTuningRemoteControlsPageId != kPerformanceRemoteControlsPageId &&
+                  kTuningRemoteControlsPageId != kFilterRemoteControlsPageId &&
+                  kPerformanceRemoteControlsPageId != kFilterRemoteControlsPageId,
               "PolySynth remote-controls page IDs must be valid and unique");
 static_assert(kPolySynthReleaseTailSamples <
                   static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()),
@@ -94,11 +101,12 @@ const clap_plugin_descriptor_t kDescriptor{
 };
 
 constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-constexpr std::uint32_t kStateVersion = 5u;
+constexpr std::uint32_t kStateVersion = 6u;
 constexpr std::size_t kLegacyStateSize = 24u;
 constexpr std::size_t kStateV3Size = 28u;
 constexpr std::size_t kStateV4Size = 32u;
-constexpr std::size_t kStateSize = 36u;
+constexpr std::size_t kStateV5Size = 36u;
+constexpr std::size_t kStateSize = 40u;
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -180,7 +188,8 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
                                                   float masterGainDb,
                                                   std::uint32_t waveform,
                                                   std::int32_t coarseTuneSemitones,
-                                                  float pan) noexcept {
+                                                  float pan,
+                                                  float filterCutoffHz) noexcept {
     std::array<std::uint8_t, kStateSize> bytes{};
     std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
     storeU32Le(bytes.data() + 8, kStateVersion);
@@ -201,6 +210,10 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
     std::uint32_t panBits = 0;
     std::memcpy(&panBits, &pan, sizeof(panBits));
     storeU32Le(bytes.data() + 32, panBits);
+
+    std::uint32_t cutoffBits = 0;
+    std::memcpy(&cutoffBits, &filterCutoffHz, sizeof(cutoffBits));
+    storeU32Le(bytes.data() + 36, cutoffBits);
     return bytes;
 }
 
@@ -210,7 +223,8 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
                  float &masterGainDb,
                  std::uint32_t &waveform,
                  std::int32_t &coarseTuneSemitones,
-                 float &pan) noexcept {
+                 float &pan,
+                 float &filterCutoffHz) noexcept {
     if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
         return false;
 
@@ -220,6 +234,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     const auto expectedSize = version < 3u ? kLegacyStateSize
                               : version == 3u ? kStateV3Size
                               : version == 4u ? kStateV4Size
+                              : version == 5u ? kStateV5Size
                                               : kStateSize;
     if (encodedSize != expectedSize)
         return false;
@@ -234,6 +249,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     waveform = 0u;
     coarseTuneSemitones = 0;
     pan = 0.0f;
+    filterCutoffHz = 6000.0f;
     if (version == 1u) {
         if (bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
             return false;
@@ -273,9 +289,19 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     const auto panBits = loadU32Le(bytes.data() + 32);
     std::memcpy(&pan, &panBits, sizeof(pan));
     const auto *panSpec = parameterSpecForId(kHostPanParameterId);
-    return panSpec && std::isfinite(pan) &&
-           static_cast<double>(pan) >= panSpec->minValue &&
-           static_cast<double>(pan) <= panSpec->maxValue;
+    if (!panSpec || !std::isfinite(pan) ||
+        static_cast<double>(pan) < panSpec->minValue ||
+        static_cast<double>(pan) > panSpec->maxValue)
+        return false;
+    if (version == 5u)
+        return true;
+
+    const auto cutoffBits = loadU32Le(bytes.data() + 36);
+    std::memcpy(&filterCutoffHz, &cutoffBits, sizeof(filterCutoffHz));
+    const auto *cutoffSpec = parameterSpecForId(kHostFilterCutoffParameterId);
+    return cutoffSpec && std::isfinite(filterCutoffHz) &&
+           static_cast<double>(filterCutoffHz) >= cutoffSpec->minValue &&
+           static_cast<double>(filterCutoffHz) <= cutoffSpec->maxValue;
 }
 
 struct NoteEndOutputSink {
@@ -300,7 +326,8 @@ struct PendingParameterStateInput {
                  float masterGainDb,
                  std::uint32_t waveform,
                  std::int32_t coarseTuneSemitones,
-                 float pan) noexcept {
+                 float pan,
+                 float filterCutoffHz) noexcept {
         hostInput = newHostInput;
         hostCount = 0;
         valid = true;
@@ -310,6 +337,7 @@ struct PendingParameterStateInput {
         prepareEvent(events[2], kHostWaveformParameterId, waveform);
         prepareEvent(events[3], kHostCoarseTuneParameterId, coarseTuneSemitones);
         prepareEvent(events[4], kHostPanParameterId, pan);
+        prepareEvent(events[5], kHostFilterCutoffParameterId, filterCutoffHz);
 
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
@@ -360,7 +388,7 @@ struct PendingParameterStateInput {
     }
 
     const clap_input_events_t *hostInput = nullptr;
-    std::array<clap_event_param_value_t, 5> events{};
+    std::array<clap_event_param_value_t, 6> events{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
     bool valid = false;
@@ -393,10 +421,21 @@ protected:
                                kPolySynthReleaseTailSamples) ||
             !engine_.setFineTuningCents(
                 hostFineTuneCents_.load(std::memory_order_acquire)) ||
-            !applyRetainedMasterGainBaseToEngine() ||
-            !applyRetainedWaveformBaseToEngine() ||
-            !applyRetainedCoarseTuneBaseToEngine() ||
-            !applyRetainedPanBaseToEngine())
+            !applyRetainedParameterBaseToEngine(
+                kHostMasterGainParameterId,
+                hostMasterGainDb_.load(std::memory_order_acquire)) ||
+            !applyRetainedParameterBaseToEngine(
+                kHostWaveformParameterId,
+                hostWaveform_.load(std::memory_order_acquire)) ||
+            !applyRetainedParameterBaseToEngine(
+                kHostCoarseTuneParameterId,
+                hostCoarseTuneSemitones_.load(std::memory_order_acquire)) ||
+            !applyRetainedParameterBaseToEngine(
+                kHostPanParameterId,
+                hostPan_.load(std::memory_order_acquire)) ||
+            !applyRetainedParameterBaseToEngine(
+                kHostFilterCutoffParameterId,
+                hostFilterCutoffHz_.load(std::memory_order_acquire)))
             return false;
 
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
@@ -437,7 +476,8 @@ protected:
                     hostMasterGainDb_.load(std::memory_order_acquire),
                     hostWaveform_.load(std::memory_order_acquire),
                     hostCoarseTuneSemitones_.load(std::memory_order_acquire),
-                    hostPan_.load(std::memory_order_acquire)))
+                    hostPan_.load(std::memory_order_acquire),
+                    hostFilterCutoffHz_.load(std::memory_order_acquire)))
                 return CLAP_PROCESS_ERROR;
             inputEvents = &pendingInput.input;
         }
@@ -474,7 +514,8 @@ protected:
             hostMasterGainDb_.load(std::memory_order_relaxed),
             hostWaveform_.load(std::memory_order_relaxed),
             hostCoarseTuneSemitones_.load(std::memory_order_relaxed),
-            hostPan_.load(std::memory_order_relaxed));
+            hostPan_.load(std::memory_order_relaxed),
+            hostFilterCutoffHz_.load(std::memory_order_relaxed));
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -507,7 +548,14 @@ protected:
         if (version >= 5u) {
             if (!readAll(stream,
                          bytes.data() + kStateV4Size,
-                         kStateSize - kStateV4Size))
+                         kStateV5Size - kStateV4Size))
+                return false;
+            encodedSize = kStateV5Size;
+        }
+        if (version >= 6u) {
+            if (!readAll(stream,
+                         bytes.data() + kStateV5Size,
+                         kStateSize - kStateV5Size))
                 return false;
             encodedSize = kStateSize;
         }
@@ -522,13 +570,15 @@ protected:
         std::uint32_t waveform = 0u;
         std::int32_t coarseTuneSemitones = 0;
         float pan = 0.0f;
+        float filterCutoffHz = 6000.0f;
         if (!decodeState(bytes,
                          encodedSize,
                          fineTuneCents,
                          masterGainDb,
                          waveform,
                          coarseTuneSemitones,
-                         pan))
+                         pan,
+                         filterCutoffHz))
             return false;
 
         const auto fineTune = static_cast<float>(fineTuneCents);
@@ -537,7 +587,8 @@ protected:
             hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb ||
             hostWaveform_.load(std::memory_order_relaxed) != waveform ||
             hostCoarseTuneSemitones_.load(std::memory_order_relaxed) != coarseTuneSemitones ||
-            hostPan_.load(std::memory_order_relaxed) != pan;
+            hostPan_.load(std::memory_order_relaxed) != pan ||
+            hostFilterCutoffHz_.load(std::memory_order_relaxed) != filterCutoffHz;
 
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
@@ -545,11 +596,13 @@ protected:
         pendingLoadedCoarseTuneSemitones_.store(coarseTuneSemitones,
                                                 std::memory_order_relaxed);
         pendingLoadedPan_.store(pan, std::memory_order_relaxed);
+        pendingLoadedFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         hostWaveform_.store(waveform, std::memory_order_relaxed);
         hostCoarseTuneSemitones_.store(coarseTuneSemitones, std::memory_order_relaxed);
         hostPan_.store(pan, std::memory_order_relaxed);
+        hostFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
@@ -645,7 +698,7 @@ protected:
 
     bool implementRemoteControls() const noexcept override { return true; }
 
-    std::uint32_t remoteControlsPageCount() noexcept override { return 2u; }
+    std::uint32_t remoteControlsPageCount() noexcept override { return 3u; }
 
     bool remoteControlsPageGet(std::uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override {
@@ -666,11 +719,18 @@ protected:
                    copyName(page->page_name, sizeof(page->page_name), "Tuning");
         }
 
-        page->page_id = kPerformanceRemoteControlsPageId;
-        page->param_ids[0] = kHostMasterGainParameterId;
-        page->param_ids[1] = kHostPanParameterId;
-        return copyName(page->section_name, sizeof(page->section_name), "Output") &&
-               copyName(page->page_name, sizeof(page->page_name), "Performance");
+        if (pageIndex == 1u) {
+            page->page_id = kPerformanceRemoteControlsPageId;
+            page->param_ids[0] = kHostMasterGainParameterId;
+            page->param_ids[1] = kHostPanParameterId;
+            return copyName(page->section_name, sizeof(page->section_name), "Output") &&
+                   copyName(page->page_name, sizeof(page->page_name), "Performance");
+        }
+
+        page->page_id = kFilterRemoteControlsPageId;
+        page->param_ids[0] = kHostFilterCutoffParameterId;
+        return copyName(page->section_name, sizeof(page->section_name), "Filter") &&
+               copyName(page->page_name, sizeof(page->page_name), "Tone");
     }
 
     bool implementsParams() const noexcept override { return true; }
@@ -717,6 +777,10 @@ protected:
         }
         if (paramId == kHostPanParameterId) {
             *value = static_cast<double>(hostPan_.load(std::memory_order_acquire));
+            return true;
+        }
+        if (paramId == kHostFilterCutoffParameterId) {
+            *value = static_cast<double>(hostFilterCutoffHz_.load(std::memory_order_acquire));
             return true;
         }
         *value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
@@ -803,69 +867,25 @@ private:
                                            std::memory_order_release);
         } else if (paramId == kHostPanParameterId) {
             hostPan_.store(static_cast<float>(value), std::memory_order_release);
+        } else if (paramId == kHostFilterCutoffParameterId) {
+            hostFilterCutoffHz_.store(static_cast<float>(value), std::memory_order_release);
         } else {
             hostMasterGainDb_.store(static_cast<float>(value), std::memory_order_release);
         }
     }
 
-    bool applyRetainedMasterGainBaseToEngine() noexcept {
+    bool applyRetainedParameterBaseToEngine(clap_id paramId, double value) noexcept {
         clap_event_param_value_t event{};
         event.header.size = sizeof(event);
         event.header.time = 0;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kHostMasterGainParameterId;
+        event.param_id = paramId;
         event.note_id = -1;
         event.port_index = -1;
         event.channel = -1;
         event.key = -1;
-        event.value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
-        return engine_.applyParameterFlushEvent(event.header);
-    }
-
-    bool applyRetainedWaveformBaseToEngine() noexcept {
-        clap_event_param_value_t event{};
-        event.header.size = sizeof(event);
-        event.header.time = 0;
-        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-        event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kHostWaveformParameterId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
-        event.value = static_cast<double>(hostWaveform_.load(std::memory_order_acquire));
-        return engine_.applyParameterFlushEvent(event.header);
-    }
-
-    bool applyRetainedCoarseTuneBaseToEngine() noexcept {
-        clap_event_param_value_t event{};
-        event.header.size = sizeof(event);
-        event.header.time = 0;
-        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-        event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kHostCoarseTuneParameterId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
-        event.value = static_cast<double>(
-            hostCoarseTuneSemitones_.load(std::memory_order_acquire));
-        return engine_.applyParameterFlushEvent(event.header);
-    }
-
-    bool applyRetainedPanBaseToEngine() noexcept {
-        clap_event_param_value_t event{};
-        event.header.size = sizeof(event);
-        event.header.time = 0;
-        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-        event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kHostPanParameterId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
-        event.value = static_cast<double>(hostPan_.load(std::memory_order_acquire));
+        event.value = value;
         return engine_.applyParameterFlushEvent(event.header);
     }
 
@@ -886,6 +906,9 @@ private:
                 std::memory_order_relaxed);
             hostPan_.store(pendingLoadedPan_.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
+            hostFilterCutoffHz_.store(
+                pendingLoadedFilterCutoffHz_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
             return true;
         }
 
@@ -894,11 +917,13 @@ private:
         double waveform = 0.0;
         double coarseTune = 0.0;
         double pan = 0.0;
+        double filterCutoff = 0.0;
         if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune) ||
             !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain) ||
             !engine_.parameterBaseValue(kHostWaveformParameterId, waveform) ||
             !engine_.parameterBaseValue(kHostCoarseTuneParameterId, coarseTune) ||
-            !engine_.parameterBaseValue(kHostPanParameterId, pan))
+            !engine_.parameterBaseValue(kHostPanParameterId, pan) ||
+            !engine_.parameterBaseValue(kHostFilterCutoffParameterId, filterCutoff))
             return false;
         hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
         hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
@@ -906,6 +931,7 @@ private:
         hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(coarseTune),
                                       std::memory_order_relaxed);
         hostPan_.store(static_cast<float>(pan), std::memory_order_relaxed);
+        hostFilterCutoffHz_.store(static_cast<float>(filterCutoff), std::memory_order_relaxed);
 
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore) {
@@ -923,6 +949,9 @@ private:
                 std::memory_order_relaxed);
             hostPan_.store(pendingLoadedPan_.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
+            hostFilterCutoffHz_.store(
+                pendingLoadedFilterCutoffHz_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
         }
         return true;
     }
@@ -935,11 +964,13 @@ private:
     std::atomic<std::uint32_t> hostWaveform_{0u};
     std::atomic<std::int32_t> hostCoarseTuneSemitones_{0};
     std::atomic<float> hostPan_{0.0f};
+    std::atomic<float> hostFilterCutoffHz_{6000.0f};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
     std::atomic<std::int32_t> pendingLoadedCoarseTuneSemitones_{0};
     std::atomic<float> pendingLoadedPan_{0.0f};
+    std::atomic<float> pendingLoadedFilterCutoffHz_{6000.0f};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
