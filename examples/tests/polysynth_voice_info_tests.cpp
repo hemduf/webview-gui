@@ -20,6 +20,9 @@ using webview_gui::examples::polysynth::ParameterSlot;
 constexpr clap_id kCutoffId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FilterCutoff);
+constexpr clap_id kResonanceId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FilterResonance);
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) {
     return nullptr;
@@ -135,7 +138,7 @@ std::uint32_t loadU32Le(const std::uint8_t *source) noexcept {
     return value;
 }
 
-bool checkCutoffHostContract(const clap_plugin_t *plugin) noexcept {
+bool checkFilterHostContract(const clap_plugin_t *plugin) noexcept {
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     const auto *remote = static_cast<const clap_plugin_remote_controls_t *>(
@@ -147,8 +150,8 @@ bool checkCutoffHostContract(const clap_plugin_t *plugin) noexcept {
         !remote || !remote->count || !remote->get || !state || !state->save || !state->load)
         return false;
 
-    // Preserve the five existing host indices; publish Cutoff as stable index 5.
-    if (params->count(plugin) != 6u)
+    // Preserve the six existing host indices; publish Resonance as stable index 6.
+    if (params->count(plugin) != 7u)
         return false;
 
     clap_param_info_t cutoffInfo{};
@@ -159,8 +162,19 @@ bool checkCutoffHostContract(const clap_plugin_t *plugin) noexcept {
         std::strcmp(cutoffInfo.module, "Filter") != 0)
         return false;
 
+    clap_param_info_t resonanceInfo{};
+    if (!params->get_info(plugin, 6u, &resonanceInfo) || resonanceInfo.id != kResonanceId ||
+        resonanceInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        resonanceInfo.min_value != 0.0 || resonanceInfo.max_value != 0.99 ||
+        resonanceInfo.default_value != 0.0 ||
+        std::strcmp(resonanceInfo.name, "Resonance") != 0 ||
+        std::strcmp(resonanceInfo.module, "Filter") != 0)
+        return false;
+
     double cutoff = 0.0;
-    if (!params->get_value(plugin, kCutoffId, &cutoff) || cutoff != 6000.0)
+    double resonance = -1.0;
+    if (!params->get_value(plugin, kCutoffId, &cutoff) || cutoff != 6000.0 ||
+        !params->get_value(plugin, kResonanceId, &resonance) || resonance != 0.0)
         return false;
 
     char display[CLAP_NAME_SIZE]{};
@@ -181,16 +195,16 @@ bool checkCutoffHostContract(const clap_plugin_t *plugin) noexcept {
     if (!remote->get(plugin, 2u, &filterPage) || filterPage.page_id == CLAP_INVALID_ID ||
         filterPage.is_for_preset || std::strcmp(filterPage.section_name, "Filter") != 0 ||
         std::strcmp(filterPage.page_name, "Tone") != 0 ||
-        filterPage.param_ids[0] != kCutoffId)
+        filterPage.param_ids[0] != kCutoffId || filterPage.param_ids[1] != kResonanceId)
         return false;
-    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (filterPage.param_ids[index] != CLAP_INVALID_ID)
             return false;
     }
 
     MemoryOutputStream saved;
-    if (!state->save(plugin, &saved.stream) || saved.used != 40u ||
-        loadU32Le(saved.bytes.data() + 8) != 6u)
+    if (!state->save(plugin, &saved.stream) || saved.used != 44u ||
+        loadU32Le(saved.bytes.data() + 8) != 7u)
         return false;
 
     FlushInputEvents mutateCutoff(9876.0);
@@ -223,7 +237,7 @@ int main() {
         return 3;
     }
 
-    if (!checkCutoffHostContract(plugin)) {
+    if (!checkFilterHostContract(plugin)) {
         plugin->destroy(plugin);
         return 4;
     }
