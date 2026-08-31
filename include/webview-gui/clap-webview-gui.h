@@ -305,10 +305,14 @@ struct ClapWebviewGui {
 
 private:
     bool resolveHostWebviewExtension() noexcept {
-        if (!hostWebview && host && host->get_extension)
-            hostWebview = static_cast<const clap_host_webview *>(
-                host->get_extension(host, CLAP_EXT_WEBVIEW));
-        extHostWebview = hostWebview;
+        if (!hostWebviewResolved) {
+            hostWebviewResolved = true;
+            if (host && host->get_extension) {
+                hostWebview = static_cast<const clap_host_webview *>(
+                    host->get_extension(host, CLAP_EXT_WEBVIEW));
+            }
+            extHostWebview = hostWebview;
+        }
         return hostWebview != nullptr && hostWebview->send != nullptr;
     }
 
@@ -340,6 +344,7 @@ private:
         pluginWebview = nullptr;
         hostWebview = nullptr;
         extHostWebview = nullptr;
+        hostWebviewResolved = false;
 
 #if !defined(WEBVIEW_GUI_WEBVIEW_ONLY) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
     !defined(__wasm32__) && !defined(__wasm64__)
@@ -347,6 +352,7 @@ private:
             pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
         if (host && host->get_extension)
             hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
+        hostWebviewResolved = true;
         extHostWebview = hostWebview;
 #endif
         setSelf(plugin);
@@ -360,6 +366,7 @@ private:
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
     bool guiCreated = false;
     bool usingHostWebview = false;
+    bool hostWebviewResolved = false;
 
     inline static detail::CallbackRegistry<ClapWebviewGui> pluginRegistry;
 
