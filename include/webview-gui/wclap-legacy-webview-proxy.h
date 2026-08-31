@@ -26,21 +26,21 @@ struct LegacyWclapWebviewPluginProxy {
     clap_plugin_t plugin{};
 
     const clap_plugin_t *innerPlugin = nullptr;
-    bool(CLAP_ABI *originalInit)(const clap_plugin_t *) = nullptr;
-    void(CLAP_ABI *originalDestroy)(const clap_plugin_t *) = nullptr;
-    const void *(CLAP_ABI *originalGetExtension)(const clap_plugin_t *, const char *) = nullptr;
     const clap_plugin_webview *realWebview = nullptr;
     bool initialized = false;
 
     explicit LegacyWclapWebviewPluginProxy(const clap_plugin_t *inner) noexcept
-        : plugin(*inner),
-          innerPlugin(inner),
-          originalInit(inner->init),
-          originalDestroy(inner->destroy),
-          originalGetExtension(inner->get_extension) {
+        : plugin(*inner), innerPlugin(inner) {
         plugin.init = proxyInit;
         plugin.destroy = proxyDestroy;
+        plugin.activate = proxyActivate;
+        plugin.deactivate = proxyDeactivate;
+        plugin.start_processing = proxyStartProcessing;
+        plugin.stop_processing = proxyStopProcessing;
+        plugin.reset = proxyReset;
+        plugin.process = proxyProcess;
         plugin.get_extension = proxyGetExtension;
+        plugin.on_main_thread = proxyOnMainThread;
     }
 
     static LegacyWclapWebviewPluginProxy *from(const clap_plugin_t *plugin) noexcept {
@@ -50,19 +50,19 @@ struct LegacyWclapWebviewPluginProxy {
 
     static bool CLAP_ABI proxyInit(const clap_plugin_t *plugin) {
         auto *self = from(plugin);
-        if (!self || !self->innerPlugin || !self->originalInit || self->initialized)
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        if (!inner || !inner->init || self->initialized)
             return false;
 
-        if (!self->originalInit(self->innerPlugin))
+        if (!inner->init(inner))
             return false;
 
         // clap_plugin.get_extension() is legal after the original init returns.
         // Resolve once so WebView callbacks never perform repeated extension
         // discovery and the compatibility pointer remains stable for the bridge.
-        self->realWebview = self->originalGetExtension
+        self->realWebview = inner->get_extension
                                 ? static_cast<const clap_plugin_webview *>(
-                                      self->originalGetExtension(self->innerPlugin,
-                                                                 CLAP_EXT_WEBVIEW))
+                                      inner->get_extension(inner, CLAP_EXT_WEBVIEW))
                                 : nullptr;
         self->initialized = true;
         return true;
@@ -73,14 +73,57 @@ struct LegacyWclapWebviewPluginProxy {
         if (!self)
             return;
 
-        const auto destroy = self->originalDestroy;
         const auto *inner = self->innerPlugin;
         self->initialized = false;
         self->realWebview = nullptr;
         self->innerPlugin = nullptr;
-        if (destroy && inner)
-            destroy(inner);
+        if (inner && inner->destroy)
+            inner->destroy(inner);
         delete self;
+    }
+
+    static bool CLAP_ABI proxyActivate(const clap_plugin_t *plugin,
+                                       double sampleRate,
+                                       uint32_t minFramesCount,
+                                       uint32_t maxFramesCount) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        return inner && inner->activate &&
+               inner->activate(inner, sampleRate, minFramesCount, maxFramesCount);
+    }
+
+    static void CLAP_ABI proxyDeactivate(const clap_plugin_t *plugin) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        if (inner && inner->deactivate)
+            inner->deactivate(inner);
+    }
+
+    static bool CLAP_ABI proxyStartProcessing(const clap_plugin_t *plugin) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        return inner && inner->start_processing && inner->start_processing(inner);
+    }
+
+    static void CLAP_ABI proxyStopProcessing(const clap_plugin_t *plugin) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        if (inner && inner->stop_processing)
+            inner->stop_processing(inner);
+    }
+
+    static void CLAP_ABI proxyReset(const clap_plugin_t *plugin) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        if (inner && inner->reset)
+            inner->reset(inner);
+    }
+
+    static clap_process_status CLAP_ABI proxyProcess(const clap_plugin_t *plugin,
+                                                      const clap_process_t *process) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        return inner && inner->process ? inner->process(inner, process) : CLAP_PROCESS_ERROR;
     }
 
     static const void *CLAP_ABI proxyGetExtension(const clap_plugin_t *plugin,
@@ -94,9 +137,15 @@ struct LegacyWclapWebviewPluginProxy {
 
         // Deliberately do not broaden the compatibility exception. A non-WebView
         // pre-init request reaches the original strict implementation unchanged.
-        return self->innerPlugin && self->originalGetExtension
-                   ? self->originalGetExtension(self->innerPlugin, id)
-                   : nullptr;
+        const auto *inner = self->innerPlugin;
+        return inner && inner->get_extension ? inner->get_extension(inner, id) : nullptr;
+    }
+
+    static void CLAP_ABI proxyOnMainThread(const clap_plugin_t *plugin) {
+        auto *self = from(plugin);
+        const auto *inner = self ? self->innerPlugin : nullptr;
+        if (inner && inner->on_main_thread)
+            inner->on_main_thread(inner);
     }
 
     static int32_t CLAP_ABI proxyGetUri(const clap_plugin_t *plugin,
