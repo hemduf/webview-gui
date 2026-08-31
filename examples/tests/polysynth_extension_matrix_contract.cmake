@@ -50,8 +50,11 @@ require_absent(plugin_source
     "std::strlen(display)"
     "unbounded host parameter text scan")
 require_contains(plugin_source
-    "constexpr std::array<clap_id, 5> kPublishedHostParameterIds"
+    "constexpr std::array<clap_id, 6> kPublishedHostParameterIds"
     "published parameter table")
+require_contains(plugin_source
+    "kHostFilterCutoffParameterId"
+    "Filter Cutoff host parameter ID")
 require_contains(plugin_source
     "return static_cast<std::uint32_t>(kPublishedHostParameterIds.size());"
     "published parameter count")
@@ -59,8 +62,11 @@ require_contains(plugin_source
     "bool implementsState() const noexcept override { return true; }"
     "state implementation marker")
 require_contains(plugin_source
-    "constexpr std::uint32_t kStateVersion = 5u;"
-    "Pan state version")
+    "constexpr std::uint32_t kStateVersion = 6u;"
+    "Filter Cutoff state version")
+require_contains(plugin_source
+    "constexpr std::size_t kStateV5Size = 36u;"
+    "version-5 compatibility size")
 require_contains(plugin_source
     "bool implementsStateContext() const noexcept override { return true; }"
     "state-context implementation marker")
@@ -74,7 +80,7 @@ require_contains(plugin_source
     "bool implementRemoteControls() const noexcept override { return true; }"
     "remote-controls implementation marker")
 require_contains(plugin_source
-    "std::uint32_t remoteControlsPageCount() noexcept override { return 2u; }"
+    "std::uint32_t remoteControlsPageCount() noexcept override { return 3u; }"
     "remote-controls page count")
 require_contains(plugin_source
     "page->param_ids[1] = kHostWaveformParameterId;"
@@ -85,6 +91,9 @@ require_contains(plugin_source
 require_contains(plugin_source
     "page->param_ids[1] = kHostPanParameterId;"
     "Pan remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[0] = kHostFilterCutoffParameterId;"
+    "Filter Cutoff remote-controls mapping")
 require_contains(plugin_source
     "bool implementsNoteName() const noexcept override { return true; }"
     "note-name implementation marker")
@@ -109,16 +118,17 @@ require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix h
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
 require_contains(readme "| `clap.note-ports` | Implemented |" "note-ports matrix row")
 require_contains(readme "| `clap.params` | Partial |" "params matrix row")
-require_contains(readme "Fine Tune, Master Gain, Waveform, Coarse Tune, and Pan are published" "Pan parameter documentation")
+require_contains(readme "Fine Tune, Master Gain, Waveform, Coarse Tune, Pan, and Filter Cutoff are published" "Filter Cutoff parameter documentation")
 require_contains(readme "| `clap.state` | Implemented |" "state matrix row")
-require_contains(readme "36-byte version-5 payload" "Pan state documentation")
-require_contains(readme "Version-1 and version-2 24-byte payloads, version-3 28-byte payloads, and version-4 32-byte payloads remain loadable" "state backward compatibility")
+require_contains(readme "40-byte version-6 payload" "Filter Cutoff state documentation")
+require_contains(readme "version-5 36-byte payloads remain loadable" "state backward compatibility")
 require_contains(readme "| `clap.state-context/2` | Implemented |" "state-context matrix row")
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
 require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
 require_contains(readme "`Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune" "Coarse Tune remote-controls page")
 require_contains(readme "`Output / Performance` maps Master Gain and Pan" "Pan remote-controls page")
+require_contains(readme "`Filter / Tone` maps Filter Cutoff" "Filter Cutoff remote-controls page")
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
