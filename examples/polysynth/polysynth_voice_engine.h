@@ -402,6 +402,37 @@ public:
         return true;
     }
 
+    // Audio-thread resonance handoff for an already allocated voice. Resonance
+    // maps [0, 0.99] to the TPT damping range [2.0, 0.02]. The cutoff-derived g
+    // value is already prepared on the voice, so this path performs only bounded
+    // scalar coefficient algebra while preserving filter integrator state.
+    bool setVoiceFilterResonance(VoiceAllocator::VoiceIndex index,
+                                 float resonance) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(resonance) || resonance < 0.0f ||
+            resonance > kMaximumFilterResonance)
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        const double damping = 2.0 * (1.0 - static_cast<double>(resonance));
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        filterCoefficientsForG(voice.filterBaseG, damping, a1, a2, a3);
+        if (!std::isfinite(damping) || !std::isfinite(a1) ||
+            !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        voice.filterA1 = a1;
+        voice.filterA2 = a2;
+        voice.filterA3 = a3;
+        voice.filterDamping = damping;
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
