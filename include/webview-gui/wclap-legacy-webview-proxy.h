@@ -33,14 +33,14 @@ struct LegacyWclapWebviewPluginProxy {
         : plugin(*inner), innerPlugin(inner) {
         plugin.init = proxyInit;
         plugin.destroy = proxyDestroy;
-        plugin.activate = proxyActivate;
-        plugin.deactivate = proxyDeactivate;
-        plugin.start_processing = proxyStartProcessing;
-        plugin.stop_processing = proxyStopProcessing;
-        plugin.reset = proxyReset;
-        plugin.process = proxyProcess;
+        plugin.activate = inner->activate ? proxyActivate : nullptr;
+        plugin.deactivate = inner->deactivate ? proxyDeactivate : nullptr;
+        plugin.start_processing = inner->start_processing ? proxyStartProcessing : nullptr;
+        plugin.stop_processing = inner->stop_processing ? proxyStopProcessing : nullptr;
+        plugin.reset = inner->reset ? proxyReset : nullptr;
+        plugin.process = inner->process ? proxyProcess : nullptr;
         plugin.get_extension = proxyGetExtension;
-        plugin.on_main_thread = proxyOnMainThread;
+        plugin.on_main_thread = inner->on_main_thread ? proxyOnMainThread : nullptr;
     }
 
     static LegacyWclapWebviewPluginProxy *from(const clap_plugin_t *plugin) noexcept {
