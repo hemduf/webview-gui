@@ -155,6 +155,9 @@ inline constexpr std::array<ParameterSpec, kParameterCount> kParameterSpecs{{
      kPolyphonicParameterFlags},
 }};
 
+static_assert(kParameterCount == 13,
+              "PolySynth internal parameter model must reserve Amp Level after stable ID 1011");
+
 inline constexpr std::array<const char *, 3> kWaveformNames{{
     "Sine",
     "Saw",
