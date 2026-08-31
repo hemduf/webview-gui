@@ -271,9 +271,13 @@ bool matchesMasterGainStep(const RenderResult &audio,
 }
 
 int main() {
-    ParameterVoiceEngine reference;
-    ParameterVoiceEngine modulated;
-    ParameterVoiceEngine valued;
+    // ParameterVoiceEngine intentionally owns several large fixed-capacity RT
+    // arrays. Keep the many independent fixtures in static storage so this
+    // focused executable does not depend on the platform's default thread-stack
+    // size (notably the smaller Windows test stack).
+    static ParameterVoiceEngine reference;
+    static ParameterVoiceEngine modulated;
+    static ParameterVoiceEngine valued;
     if (!configure(reference) || !configure(modulated) || !configure(valued))
         return 1;
 
@@ -319,7 +323,7 @@ int main() {
     }
 
     modulated.reset();
-    ParameterVoiceEngine plain;
+    static ParameterVoiceEngine plain;
     if (!configure(plain))
         return 8;
     InputEvents plainEvents;
@@ -335,7 +339,7 @@ int main() {
         return 9;
     }
 
-    ParameterVoiceEngine midBlock;
+    static ParameterVoiceEngine midBlock;
     if (!configure(midBlock))
         return 10;
     InputEvents midBlockEvents;
@@ -348,7 +352,7 @@ int main() {
         return 11;
     }
 
-    ParameterVoiceEngine targeted;
+    static ParameterVoiceEngine targeted;
     if (!configure(targeted))
         return 12;
     InputEvents targetedEvents;
@@ -362,7 +366,7 @@ int main() {
         return 13;
     }
 
-    ParameterVoiceEngine sameSample;
+    static ParameterVoiceEngine sameSample;
     if (!configure(sameSample))
         return 14;
     InputEvents sameSampleEvents;
@@ -375,7 +379,7 @@ int main() {
         return 15;
     }
 
-    ParameterVoiceEngine gainValue;
+    static ParameterVoiceEngine gainValue;
     if (!configure(gainValue))
         return 16;
     InputEvents gainValueEvents;
@@ -393,7 +397,7 @@ int main() {
         return 17;
     }
 
-    ParameterVoiceEngine gainMod;
+    static ParameterVoiceEngine gainMod;
     if (!configure(gainMod))
         return 18;
     InputEvents gainModEvents;
@@ -422,7 +426,7 @@ int main() {
         return 21;
     }
 
-    ParameterVoiceEngine invalidMasterGain;
+    static ParameterVoiceEngine invalidMasterGain;
     if (!configure(invalidMasterGain))
         return 22;
     InputEvents invalidMasterGainEvents;
@@ -444,7 +448,7 @@ int main() {
         return 25;
     }
 
-    ParameterVoiceEngine waveform;
+    static ParameterVoiceEngine waveform;
     if (!configure(waveform))
         return 26;
     InputEvents waveformEvents;
@@ -466,7 +470,7 @@ int main() {
         return 29;
     }
 
-    ParameterVoiceEngine cutoff;
+    static ParameterVoiceEngine cutoff;
     if (!configure(cutoff))
         return 30;
     InputEvents cutoffEvents;
@@ -485,8 +489,8 @@ int main() {
         return 32;
     }
 
-    ParameterVoiceEngine cutoffBaseline;
-    ParameterVoiceEngine cutoffMoved;
+    static ParameterVoiceEngine cutoffBaseline;
+    static ParameterVoiceEngine cutoffMoved;
     if (!configureFiltered(cutoffBaseline) || !configureFiltered(cutoffMoved))
         return 33;
     InputEvents cutoffBaselineEvents;
@@ -510,9 +514,9 @@ int main() {
         return 36;
     }
 
-    ParameterVoiceEngine cutoffTargeted;
-    ParameterVoiceEngine cutoffTargetVoice;
-    ParameterVoiceEngine cutoffPlainVoice;
+    static ParameterVoiceEngine cutoffTargeted;
+    static ParameterVoiceEngine cutoffTargetVoice;
+    static ParameterVoiceEngine cutoffPlainVoice;
     if (!configureFiltered(cutoffTargeted) ||
         !configureFiltered(cutoffTargetVoice) ||
         !configureFiltered(cutoffPlainVoice))
@@ -546,9 +550,9 @@ int main() {
         return 40;
     }
 
-    ParameterVoiceEngine cutoffOnly;
-    ParameterVoiceEngine cutoffBrightness;
-    ParameterVoiceEngine brightnessOnly;
+    static ParameterVoiceEngine cutoffOnly;
+    static ParameterVoiceEngine cutoffBrightness;
+    static ParameterVoiceEngine brightnessOnly;
     if (!configureFiltered(cutoffOnly) ||
         !configureFiltered(cutoffBrightness) ||
         !configureFiltered(brightnessOnly))
