@@ -11,7 +11,7 @@ on:
       - 'examples/polysynth/**'
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
-      - 'include/webview-gui/wclap-legacy-webview-proxy.h'
+      - 'include/webview-gui/**'
       - '.github/workflows/polysynth-wclap.yml'
   workflow_dispatch:
 
