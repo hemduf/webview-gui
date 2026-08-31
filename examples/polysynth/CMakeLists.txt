@@ -117,6 +117,15 @@ target_include_directories(webview_gui_example_polysynth_amp_envelope_tests PRIV
 target_link_libraries(webview_gui_example_polysynth_amp_envelope_tests PRIVATE clap)
 target_compile_features(webview_gui_example_polysynth_amp_envelope_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_example_polysynth_amp_envelope_parameter_tests
+    ../tests/polysynth_amp_envelope_parameter_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_amp_envelope_parameter_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_amp_envelope_parameter_tests PRIVATE clap)
+target_compile_features(webview_gui_example_polysynth_amp_envelope_parameter_tests PRIVATE cxx_std_17)
+
 add_executable(webview_gui_example_polysynth_filter_tests
     ../tests/polysynth_filter_tests.cpp
 )
@@ -319,6 +328,8 @@ add_test(NAME webview_gui_examples_polysynth_voice_engine
     COMMAND webview_gui_example_polysynth_voice_engine_tests)
 add_test(NAME webview_gui_examples_polysynth_amp_envelope
     COMMAND webview_gui_example_polysynth_amp_envelope_tests)
+add_test(NAME webview_gui_examples_polysynth_amp_envelope_parameter
+    COMMAND webview_gui_example_polysynth_amp_envelope_parameter_tests)
 add_test(NAME webview_gui_examples_polysynth_filter
     COMMAND webview_gui_example_polysynth_filter_tests)
 add_test(NAME webview_gui_examples_polysynth_mix_controls
