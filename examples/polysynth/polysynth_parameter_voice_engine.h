@@ -34,6 +34,7 @@ public:
         coarseTuneBaseSemitones_ = 0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
+        filterCutoffBaseHz_ = 6000.0;
         panBase_ = 0.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
@@ -45,9 +46,12 @@ public:
         voicePanExpressions_.fill(0.5);
         clearTransientExpressionState();
         const auto fineSlot = fineTuneSlot();
+        const auto cutoffParameterSlot = filterCutoffSlot();
         const auto panParameterSlot = panSlot();
         return polyphonicState_.setGlobalBase(fineSlot, fineTuneBaseCents_) &&
                polyphonicState_.setGlobalModulation(fineSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(cutoffParameterSlot, filterCutoffBaseHz_) &&
+               polyphonicState_.setGlobalModulation(cutoffParameterSlot, 0.0) &&
                polyphonicState_.setGlobalBase(panParameterSlot, panBase_) &&
                polyphonicState_.setGlobalModulation(panParameterSlot, 0.0) &&
                VoiceEngine::setFineTuningCents(0.0f) &&
@@ -85,6 +89,10 @@ public:
             value = fineTuneBaseCents_;
             return true;
         }
+        if (spec->slot == ParameterSlot::FilterCutoff) {
+            value = filterCutoffBaseHz_;
+            return true;
+        }
         if (spec->slot == ParameterSlot::Pan) {
             value = panBase_;
             return true;
@@ -107,6 +115,8 @@ public:
         masterGainGlobalModulationDb_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
+        (void)polyphonicState_.setGlobalBase(filterCutoffSlot(), filterCutoffBaseHz_);
+        (void)polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0);
         (void)polyphonicState_.setGlobalBase(panSlot(), panBase_);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
         (void)VoiceEngine::setPan(static_cast<float>(panBase_));
@@ -222,6 +232,10 @@ private:
 
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
+    }
+
+    static constexpr std::size_t filterCutoffSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::FilterCutoff);
     }
 
     static constexpr std::size_t panSlot() noexcept {
@@ -928,6 +942,18 @@ private:
             if (event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
 
+            if (spec->slot == ParameterSlot::FilterCutoff) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyValue(filterCutoffSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    filterCutoffBaseHz_ = event.value;
+                return true;
+            }
+
             if (spec->slot == ParameterSlot::Pan) {
                 if (!syncVoices() || !polyphonicState_.applyValue(panSlot(), event))
                     return false;
@@ -971,6 +997,13 @@ private:
                     return true;
                 masterGainGlobalModulationDb_ = event.amount;
                 return applyMasterGainState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterCutoff) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(filterCutoffSlot(), event))
+                    return false;
+                return true;
             }
 
             if (spec->slot == ParameterSlot::Pan) {
@@ -1026,6 +1059,7 @@ private:
     int coarseTuneBaseSemitones_ = 0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
+    double filterCutoffBaseHz_ = 6000.0;
     double panBase_ = 0.0;
 };
 
