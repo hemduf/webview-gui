@@ -81,6 +81,22 @@ add_test(
     COMMAND webview_gui_wclap_init_negotiation_contract
 )
 
+add_executable(webview_gui_wclap_legacy_webview_proxy_contract
+    wclap_legacy_webview_proxy_contract.cpp
+)
+target_include_directories(webview_gui_wclap_legacy_webview_proxy_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+    "${clap_SOURCE_DIR}/include"
+)
+target_link_libraries(webview_gui_wclap_legacy_webview_proxy_contract PRIVATE
+    webview-gui
+)
+
+add_test(
+    NAME webview_gui_wclap_legacy_webview_proxy_contract
+    COMMAND webview_gui_wclap_legacy_webview_proxy_contract
+)
+
 add_executable(webview_gui_wclap_backend_selection_contract
     wclap_backend_selection_contract.cpp
 )
