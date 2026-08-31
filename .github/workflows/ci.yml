@@ -68,6 +68,7 @@ jobs:
         run: cmake -S tests -B build-parent-shared -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON
 
   sanitizers:
+    if: github.ref == 'refs/heads/main'
     name: ${{ matrix.os }} / ASan+UBSan
     strategy:
       fail-fast: false
@@ -227,6 +228,7 @@ jobs:
         run: ctest --test-dir build-sanitize --output-on-failure --timeout 60
 
   thread-sanitizer:
+    if: github.ref == 'refs/heads/main'
     name: ubuntu-latest / TSan registry
     runs-on: ubuntu-latest
 

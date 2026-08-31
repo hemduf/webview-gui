@@ -28,6 +28,9 @@ public:
             return false;
 
         sampleRate_ = sampleRate;
+        if (!prepareRealtimeFilterGTable() ||
+            !prepareRealtimeFilterEnvelopeMultiplierTable())
+            return false;
         oscillatorWaveform_ = OscillatorWaveform::Sine;
         coarseTuningSemitones_ = 0;
         fineTuningCents_ = 0.0f;
@@ -42,8 +45,11 @@ public:
         filterCutoffHz_ = 0.0f;
         filterResonance_ = 0.0f;
         filterEnvelopeAmount_ = 0.0f;
+        filterEnvelopeCutoffMultiplier_ = 1.0;
         filterBaseG_ = 0.0;
         filterEnvelopeGDelta_ = 0.0;
+        filterBrightnessGDelta_ = 0.0;
+        filterMaximumG_ = 0.0;
         filterDamping_ = 2.0;
         pan_ = 0.0f;
         masterGainCurrent_ = 1.0f;
@@ -139,13 +145,24 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        const double envelopeCutoffMultiplier =
+            std::exp2(kMaximumFilterEnvelopeOctaves *
+                      static_cast<double>(filterEnvelopeAmount_));
+        if (!std::isfinite(maximumG) || maximumG < baseG ||
+            !std::isfinite(envelopeCutoffMultiplier))
+            return false;
+
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
         filterCutoffHz_ = cutoffHz;
         filterResonance_ = resonance;
+        filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         filterEnabled_ = true;
         return true;
@@ -161,8 +178,14 @@ public:
         if (!configured_ || !std::isfinite(amount) || amount < -1.0f || amount > 1.0f)
             return false;
 
+        const double envelopeCutoffMultiplier =
+            std::exp2(kMaximumFilterEnvelopeOctaves * static_cast<double>(amount));
+        if (!std::isfinite(envelopeCutoffMultiplier))
+            return false;
+
         if (!filterEnabled_) {
             filterEnvelopeAmount_ = amount;
+            filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
             return true;
         }
 
@@ -183,12 +206,19 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        if (!std::isfinite(maximumG) || maximumG < baseG)
+            return false;
+
         filterEnvelopeAmount_ = amount;
+        filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         return true;
     }
@@ -244,6 +274,21 @@ public:
         return lifecycle_.activeCount();
     }
 
+    // Audio-thread/lifecycle-serialized query used by host tail publication. Each
+    // active generation owns an immutable NOTE_ON release snapshot, so the exact
+    // release tail floor is the maximum of those bounded fixed-array values. The
+    // caller must not race this scan against process() or configuration methods.
+    [[nodiscard]] std::uint32_t maximumActiveReleaseSamples() const noexcept {
+        std::uint32_t maximum = 0u;
+        for (VoiceAllocator::VoiceIndex index = 0;
+             index < lifecycle_.capacity(); ++index) {
+            const auto &voice = voices_[index];
+            if (voice.active)
+                maximum = std::max(maximum, voice.releaseSamples);
+        }
+        return maximum;
+    }
+
     [[nodiscard]] bool voiceIdentity(VoiceAllocator::VoiceIndex index,
                                      VoiceIdentity &identity) const noexcept {
         return lifecycle_.voiceIdentity(index, identity);
@@ -257,12 +302,215 @@ public:
         return true;
     }
 
+    // Audio-thread pitch update for an already allocated generation. Unlike the
+    // +/-100-cent host Fine Tune default, the voice-local effective value may
+    // include CLAP's +/-120-semitone TUNING note expression. It can also include
+    // up to 96 semitones of compensation when an active voice preserves its
+    // NOTE_ON Coarse Tune snapshot while the global default moves between -48
+    // and +48. Only the phase increment changes: oscillator phase, envelope,
+    // filter state and lifecycle generation remain continuous across the event.
+    bool setVoiceFineTuningCents(VoiceAllocator::VoiceIndex index,
+                                 float cents) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(cents) ||
+            cents < -kMaximumVoicePitchOffsetCents ||
+            cents > kMaximumVoicePitchOffsetCents)
+            return false;
+        voices_[index].phaseIncrement =
+            phaseIncrementForKeyAndFine(voices_[index].identity.key, cents);
+        return true;
+    }
+
+    // Stores the effective post-filter note-expression gain. CLAP VOLUME itself
+    // remains validated as (0, 4] by the host-facing adapter. EXPRESSION may
+    // produce exact silence, and the reference PRESSURE mapping contributes up
+    // to another 2x, so the legal composed internal range is [0, 8].
+    bool setVoiceVolumeExpression(VoiceAllocator::VoiceIndex index,
+                                  float gain) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(gain) || gain < 0.0f || gain > 8.0f)
+            return false;
+        voices_[index].noteExpressionGain = gain;
+        return true;
+    }
+
+    // CLAP PAN is an absolute per-note position in [0, 1]. Map it onto the
+    // example's existing center-preserving linear law without touching phase,
+    // envelope, filter or lifecycle state.
+    bool setVoicePanExpression(VoiceAllocator::VoiceIndex index,
+                               float pan) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(pan) || pan < 0.0f || pan > 1.0f)
+            return false;
+
+        auto &voice = voices_[index];
+        const float signedPan = pan * 2.0f - 1.0f;
+        if (signedPan <= 0.0f) {
+            voice.panLeftGain = 1.0f;
+            voice.panRightGain = 1.0f + signedPan;
+        } else {
+            voice.panLeftGain = 1.0f - signedPan;
+            voice.panRightGain = 1.0f;
+        }
+        return true;
+    }
+
+    // CLAP BRIGHTNESS is a normalized per-note timbral offset in [0, 1]. The
+    // example maps 0 to the configured filter cutoff and 1 to the highest legal
+    // cutoff. Both endpoints are prepared as TPT g values outside process(), so
+    // a sample-accurate event only updates one bounded voice-local scalar.
+    bool setVoiceBrightnessExpression(VoiceAllocator::VoiceIndex index,
+                                      float brightness) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(brightness) || brightness < 0.0f || brightness > 1.0f)
+            return false;
+        voices_[index].noteExpressionBrightness = brightness;
+        return true;
+    }
+
+    // Audio-thread cutoff handoff for an already allocated voice. configure()
+    // prepares a fixed lookup from cutoff Hz to the TPT g domain; this path uses
+    // only bounded indexing, interpolation and scalar coefficient algebra. It
+    // intentionally performs no tan/exp2, allocation, locking, logging or I/O.
+    // The filter integrator state is preserved so a sample-accurate event changes
+    // the coefficient target without restarting the voice generation.
+    bool setVoiceFilterCutoffHz(VoiceAllocator::VoiceIndex index,
+                                float cutoffHz) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(cutoffHz))
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double effectiveCutoff = std::clamp(
+            static_cast<double>(cutoffHz),
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double baseG = 0.0;
+        if (!realtimeFilterG(effectiveCutoff, baseG))
+            return false;
+
+        const double targetCutoff = std::clamp(
+            effectiveCutoff * voice.filterEnvelopeCutoffMultiplier,
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double targetG = 0.0;
+        if (!realtimeFilterG(targetCutoff, targetG))
+            return false;
+
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        filterCoefficientsForG(baseG, voice.filterDamping, a1, a2, a3);
+        if (!std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        voice.filterCutoffHz = static_cast<float>(effectiveCutoff);
+        voice.filterA1 = a1;
+        voice.filterA2 = a2;
+        voice.filterA3 = a3;
+        voice.filterBaseG = baseG;
+        voice.filterEnvelopeGDelta = targetG - baseG;
+        voice.filterBrightnessGDelta = voice.filterMaximumG - baseG;
+        return true;
+    }
+
+    // Audio-thread resonance handoff for an already allocated voice. Resonance
+    // maps [0, 0.99] to the TPT damping range [2.0, 0.02]. The cutoff-derived g
+    // value is already prepared on the voice, so this path performs only bounded
+    // scalar coefficient algebra while preserving filter integrator state.
+    bool setVoiceFilterResonance(VoiceAllocator::VoiceIndex index,
+                                 float resonance) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(resonance) || resonance < 0.0f ||
+            resonance > kMaximumFilterResonance)
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        const double damping = 2.0 * (1.0 - static_cast<double>(resonance));
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        filterCoefficientsForG(voice.filterBaseG, damping, a1, a2, a3);
+        if (!std::isfinite(damping) || !std::isfinite(a1) ||
+            !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        voice.filterA1 = a1;
+        voice.filterA2 = a2;
+        voice.filterA3 = a3;
+        voice.filterDamping = damping;
+        return true;
+    }
+
+    // Audio-thread Filter Envelope Amount handoff. The +/-4-octave multiplier
+    // is read from a configure-time lookup table, then the target cutoff reuses
+    // the existing cutoff->TPT-g lookup. This updates only voice-local scalar
+    // state and preserves the filter integrators and BRIGHTNESS expression.
+    bool setVoiceFilterEnvelopeAmount(VoiceAllocator::VoiceIndex index,
+                                      float amount) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(amount) || amount < -1.0f || amount > 1.0f)
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        double multiplier = 1.0;
+        if (!realtimeFilterEnvelopeMultiplier(static_cast<double>(amount), multiplier))
+            return false;
+
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double targetCutoff = std::clamp(
+            static_cast<double>(voice.filterCutoffHz) * multiplier,
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double targetG = 0.0;
+        if (!realtimeFilterG(targetCutoff, targetG))
+            return false;
+
+        voice.filterEnvelopeCutoffMultiplier = multiplier;
+        voice.filterEnvelopeGDelta = targetG - voice.filterBaseG;
+        voice.filterEnvelopeEnabled = amount != 0.0f;
+        return std::isfinite(voice.filterEnvelopeGDelta);
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
                  float *left,
                  float *right,
                  NoteEndSink &noteEndSink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithEvents(events,
+                                 framesCount,
+                                 left,
+                                 right,
+                                 ignoredCoreEvent,
+                                 noteEndSink);
+    }
+
+    template <typename CoreEventSink, typename NoteEndSink>
+    bool processWithEvents(const clap_input_events_t *events,
+                           std::uint32_t framesCount,
+                           float *left,
+                           float *right,
+                           CoreEventSink &coreEventSink,
+                           NoteEndSink &noteEndSink) noexcept {
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth voice engine core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth voice engine NOTE_END sink must be noexcept");
 
@@ -297,8 +545,12 @@ public:
             applyVoiceEvent(event);
         };
 
-        if (!lifecycle_.processWithBoundaries(
-                events, framesCount, boundarySink, voiceSink, noteEndSink))
+        if (!lifecycle_.processWithBoundariesAndEvents(events,
+                                                       framesCount,
+                                                       boundarySink,
+                                                       coreEventSink,
+                                                       voiceSink,
+                                                       noteEndSink))
             return false;
         if (!renderOk)
             return false;
@@ -323,13 +575,19 @@ private:
         double filterA3 = 0.0;
         double filterBaseG = 0.0;
         double filterEnvelopeGDelta = 0.0;
+        double filterBrightnessGDelta = 0.0;
+        double filterMaximumG = 0.0;
         double filterDamping = 2.0;
+        double filterEnvelopeCutoffMultiplier = 1.0;
         double filterIc1Eq = 0.0;
         double filterIc2Eq = 0.0;
+        float filterCutoffHz = 0.0f;
         float peakLevel = 0.0f;
         float sustainTarget = 0.0f;
         float level = 0.0f;
         float stageStep = 0.0f;
+        float noteExpressionGain = 1.0f;
+        float noteExpressionBrightness = 0.0f;
         float panLeftGain = 1.0f;
         float panRightGain = 1.0f;
         std::uint32_t stageRemaining = 0;
@@ -347,12 +605,17 @@ private:
     static constexpr double kPi = 3.1415926535897932384626433832795;
     static constexpr double kTwoPi = 6.283185307179586476925286766559;
     static constexpr double kMaximumPhaseIncrement = 0.49;
+    // Worst-case active-generation pitch handoff: 96 semitones of Coarse Tune
+    // snapshot compensation + 100 cents Fine Tune + 120 semitones CLAP TUNING.
+    static constexpr float kMaximumVoicePitchOffsetCents = 21700.0f;
     static constexpr float kEnvelopeDenormalFloor = 1.0e-20f;
     static constexpr double kFilterDenormalFloor = 1.0e-30;
     static constexpr float kMinimumFilterCutoffHz = 20.0f;
     static constexpr double kMaximumFilterCutoffFraction = 0.45;
     static constexpr float kMaximumFilterResonance = 0.99f;
     static constexpr double kMaximumFilterEnvelopeOctaves = 4.0;
+    static constexpr std::size_t kRealtimeFilterGTableSize = 2049;
+    static constexpr std::size_t kRealtimeFilterEnvelopeMultiplierTableSize = 257;
     static constexpr float kMinimumMasterGainDb = -60.0f;
     static constexpr float kMaximumMasterGainDb = 12.0f;
 
@@ -362,6 +625,91 @@ private:
 
     static double flushFilterDenormal(double value) noexcept {
         return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
+    }
+
+    static double maximumFilterG() noexcept {
+        return std::tan(kPi * kMaximumFilterCutoffFraction);
+    }
+
+    bool prepareRealtimeFilterGTable() noexcept {
+        const double minimumCutoff = static_cast<double>(kMinimumFilterCutoffHz);
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double span = maximumCutoff - minimumCutoff;
+        if (!std::isfinite(maximumCutoff) || !(span > 0.0))
+            return false;
+
+        for (std::size_t index = 0; index < realtimeFilterGTable_.size(); ++index) {
+            const double normalized = static_cast<double>(index) /
+                                      static_cast<double>(realtimeFilterGTable_.size() - 1u);
+            const double cutoff = minimumCutoff + span * normalized;
+            const double g = std::tan(kPi * cutoff / sampleRate_);
+            if (!std::isfinite(g) || g < 0.0)
+                return false;
+            realtimeFilterGTable_[index] = g;
+        }
+        return true;
+    }
+
+    bool realtimeFilterG(double cutoffHz, double &g) const noexcept {
+        const double minimumCutoff = static_cast<double>(kMinimumFilterCutoffHz);
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        if (!std::isfinite(cutoffHz) || cutoffHz < minimumCutoff ||
+            cutoffHz > maximumCutoff || !(maximumCutoff > minimumCutoff))
+            return false;
+
+        const double normalized =
+            (cutoffHz - minimumCutoff) / (maximumCutoff - minimumCutoff);
+        const double tablePosition =
+            normalized * static_cast<double>(realtimeFilterGTable_.size() - 1u);
+        std::size_t lower = static_cast<std::size_t>(tablePosition);
+        if (lower >= realtimeFilterGTable_.size() - 1u) {
+            g = realtimeFilterGTable_.back();
+            return std::isfinite(g);
+        }
+        const double fraction = tablePosition - static_cast<double>(lower);
+        const double lowerG = realtimeFilterGTable_[lower];
+        const double upperG = realtimeFilterGTable_[lower + 1u];
+        g = lowerG + (upperG - lowerG) * fraction;
+        return std::isfinite(g) && g >= 0.0;
+    }
+
+    bool prepareRealtimeFilterEnvelopeMultiplierTable() noexcept {
+        for (std::size_t index = 0;
+             index < realtimeFilterEnvelopeMultiplierTable_.size();
+             ++index) {
+            const double normalized =
+                static_cast<double>(index) /
+                static_cast<double>(realtimeFilterEnvelopeMultiplierTable_.size() - 1u);
+            const double amount = -1.0 + 2.0 * normalized;
+            const double multiplier =
+                std::exp2(kMaximumFilterEnvelopeOctaves * amount);
+            if (!std::isfinite(multiplier) || !(multiplier > 0.0))
+                return false;
+            realtimeFilterEnvelopeMultiplierTable_[index] = multiplier;
+        }
+        return true;
+    }
+
+    bool realtimeFilterEnvelopeMultiplier(double amount,
+                                          double &multiplier) const noexcept {
+        if (!std::isfinite(amount) || amount < -1.0 || amount > 1.0)
+            return false;
+
+        const double normalized = (amount + 1.0) * 0.5;
+        const double tablePosition =
+            normalized *
+            static_cast<double>(realtimeFilterEnvelopeMultiplierTable_.size() - 1u);
+        std::size_t lower = static_cast<std::size_t>(tablePosition);
+        if (lower >= realtimeFilterEnvelopeMultiplierTable_.size() - 1u) {
+            multiplier = realtimeFilterEnvelopeMultiplierTable_.back();
+            return std::isfinite(multiplier) && multiplier > 0.0;
+        }
+        const double fraction = tablePosition - static_cast<double>(lower);
+        const double lowerMultiplier = realtimeFilterEnvelopeMultiplierTable_[lower];
+        const double upperMultiplier = realtimeFilterEnvelopeMultiplierTable_[lower + 1u];
+        multiplier = lowerMultiplier +
+                     (upperMultiplier - lowerMultiplier) * fraction;
+        return std::isfinite(multiplier) && multiplier > 0.0;
     }
 
     // Compact polyBLEP correction keeps the discontinuities of the educational
@@ -419,7 +767,6 @@ private:
         if (!std::isfinite(baseG) || !std::isfinite(damping) ||
             !std::isfinite(denominator) || denominator <= 0.0)
             return false;
-
         a1 = 1.0 / denominator;
         a2 = baseG * a1;
         a3 = baseG * a2;
@@ -443,12 +790,17 @@ private:
             voice = {};
     }
 
-    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+    [[nodiscard]] double phaseIncrementForKeyAndFine(std::int16_t key,
+                                                     float fineCents) const noexcept {
         const double semitones = static_cast<double>(key - 69) +
                                  static_cast<double>(coarseTuningSemitones_) +
-                                 static_cast<double>(fineTuningCents_) / 100.0;
+                                 static_cast<double>(fineCents) / 100.0;
         const double frequency = kReferenceFrequency * std::exp2(semitones / 12.0);
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
+    }
+
+    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+        return phaseIncrementForKeyAndFine(key, fineTuningCents_);
     }
 
     static void enterDecayOrSustain(Voice &voice) noexcept {
@@ -480,9 +832,13 @@ private:
         voice.filterA1 = filterA1_;
         voice.filterA2 = filterA2_;
         voice.filterA3 = filterA3_;
+        voice.filterCutoffHz = filterCutoffHz_;
         voice.filterBaseG = filterBaseG_;
         voice.filterEnvelopeGDelta = filterEnvelopeGDelta_;
+        voice.filterBrightnessGDelta = filterBrightnessGDelta_;
+        voice.filterMaximumG = filterMaximumG_;
         voice.filterDamping = filterDamping_;
+        voice.filterEnvelopeCutoffMultiplier = filterEnvelopeCutoffMultiplier_;
         voice.filterEnvelopeEnabled = filterEnabled_ && filterEnvelopeAmount_ != 0.0f;
         if (pan_ <= 0.0f) {
             voice.panLeftGain = 1.0f;
@@ -519,6 +875,17 @@ private:
             voice.level / static_cast<float>(voice.releaseSamples));
     }
 
+    static void filterCoefficientsForG(double g,
+                                       double damping,
+                                       double &a1,
+                                       double &a2,
+                                       double &a3) noexcept {
+        const double denominator = 1.0 + g * (g + damping);
+        a1 = 1.0 / denominator;
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
     static double processFilter(Voice &voice, double input) noexcept {
         if (!voice.filterEnabled)
             return input;
@@ -526,18 +893,20 @@ private:
         double a1 = voice.filterA1;
         double a2 = voice.filterA2;
         double a3 = voice.filterA3;
-        if (voice.filterEnvelopeEnabled) {
+        if (voice.filterEnvelopeEnabled || voice.noteExpressionBrightness > 0.0f) {
             double normalizedEnvelope = 0.0;
-            if (voice.peakLevel > kEnvelopeDenormalFloor) {
+            if (voice.filterEnvelopeEnabled &&
+                voice.peakLevel > kEnvelopeDenormalFloor) {
                 normalizedEnvelope = std::clamp(
                     static_cast<double>(voice.level / voice.peakLevel), 0.0, 1.0);
             }
-            const double g = voice.filterBaseG +
-                             voice.filterEnvelopeGDelta * normalizedEnvelope;
-            const double denominator = 1.0 + g * (g + voice.filterDamping);
-            a1 = 1.0 / denominator;
-            a2 = g * a1;
-            a3 = g * a2;
+            const double requestedG =
+                voice.filterBaseG +
+                voice.filterEnvelopeGDelta * normalizedEnvelope +
+                voice.filterBrightnessGDelta *
+                    static_cast<double>(voice.noteExpressionBrightness);
+            const double g = std::min(voice.filterMaximumG, requestedG);
+            filterCoefficientsForG(g, voice.filterDamping, a1, a2, a3);
         }
 
         const double v3 = input - voice.filterIc2Eq;
@@ -701,9 +1070,9 @@ private:
                 const double oscillator =
                     oscillatorSample(voice) * static_cast<double>(voice.level);
                 const auto filteredSample = static_cast<float>(processFilter(voice, oscillator));
-                leftMix += filteredSample * voice.panLeftGain;
-                rightMix += filteredSample * voice.panRightGain;
-
+                const auto expressedSample = filteredSample * voice.noteExpressionGain;
+                leftMix += expressedSample * voice.panLeftGain;
+                rightMix += expressedSample * voice.panRightGain;
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
                     voice.phase -= 1.0;
@@ -721,6 +1090,9 @@ private:
 
     VoiceLifecycle lifecycle_{};
     std::array<Voice, VoiceAllocator::kMaximumVoices> voices_{};
+    std::array<double, kRealtimeFilterGTableSize> realtimeFilterGTable_{};
+    std::array<double, kRealtimeFilterEnvelopeMultiplierTableSize>
+        realtimeFilterEnvelopeMultiplierTable_{};
     double sampleRate_ = 0.0;
     OscillatorWaveform oscillatorWaveform_ = OscillatorWaveform::Sine;
     int coarseTuningSemitones_ = 0;
@@ -735,8 +1107,11 @@ private:
     float filterCutoffHz_ = 0.0f;
     float filterResonance_ = 0.0f;
     float filterEnvelopeAmount_ = 0.0f;
+    double filterEnvelopeCutoffMultiplier_ = 1.0;
     double filterBaseG_ = 0.0;
     double filterEnvelopeGDelta_ = 0.0;
+    double filterBrightnessGDelta_ = 0.0;
+    double filterMaximumG_ = 0.0;
     double filterDamping_ = 2.0;
     float pan_ = 0.0f;
     float masterGainCurrent_ = 1.0f;
