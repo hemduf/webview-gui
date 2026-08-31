@@ -15,6 +15,13 @@ struct FakeState {
     std::uint32_t pointerIdentityFailures = 0;
     std::uint32_t strictPreinitQueries = 0;
     std::uint32_t realWebviewQueries = 0;
+    std::uint32_t activateCalls = 0;
+    std::uint32_t deactivateCalls = 0;
+    std::uint32_t startCalls = 0;
+    std::uint32_t stopCalls = 0;
+    std::uint32_t resetCalls = 0;
+    std::uint32_t processCalls = 0;
+    std::uint32_t mainThreadCalls = 0;
     std::uint32_t uriCalls = 0;
     std::uint32_t resourceCalls = 0;
     std::uint32_t receiveCalls = 0;
@@ -88,6 +95,54 @@ void CLAP_ABI fakeDestroy(const clap_plugin_t *plugin) {
         state->destroyed = true;
 }
 
+bool CLAP_ABI fakeActivate(const clap_plugin_t *plugin,
+                           double,
+                           std::uint32_t,
+                           std::uint32_t) {
+    auto *state = checkedStateFor(plugin);
+    if (!state)
+        return false;
+    ++state->activateCalls;
+    return true;
+}
+
+void CLAP_ABI fakeDeactivate(const clap_plugin_t *plugin) {
+    if (auto *state = checkedStateFor(plugin))
+        ++state->deactivateCalls;
+}
+
+bool CLAP_ABI fakeStartProcessing(const clap_plugin_t *plugin) {
+    auto *state = checkedStateFor(plugin);
+    if (!state)
+        return false;
+    ++state->startCalls;
+    return true;
+}
+
+void CLAP_ABI fakeStopProcessing(const clap_plugin_t *plugin) {
+    if (auto *state = checkedStateFor(plugin))
+        ++state->stopCalls;
+}
+
+void CLAP_ABI fakeReset(const clap_plugin_t *plugin) {
+    if (auto *state = checkedStateFor(plugin))
+        ++state->resetCalls;
+}
+
+clap_process_status CLAP_ABI fakeProcess(const clap_plugin_t *plugin,
+                                         const clap_process_t *) {
+    auto *state = checkedStateFor(plugin);
+    if (!state)
+        return CLAP_PROCESS_ERROR;
+    ++state->processCalls;
+    return CLAP_PROCESS_CONTINUE;
+}
+
+void CLAP_ABI fakeOnMainThread(const clap_plugin_t *plugin) {
+    if (auto *state = checkedStateFor(plugin))
+        ++state->mainThreadCalls;
+}
+
 const void *CLAP_ABI fakeGetExtension(const clap_plugin_t *plugin, const char *id) {
     auto *state = checkedStateFor(plugin);
     if (!state || !id)
@@ -120,7 +175,14 @@ int main() {
     inner.plugin_data = &state;
     inner.init = fakeInit;
     inner.destroy = fakeDestroy;
+    inner.activate = fakeActivate;
+    inner.deactivate = fakeDeactivate;
+    inner.start_processing = fakeStartProcessing;
+    inner.stop_processing = fakeStopProcessing;
+    inner.reset = fakeReset;
+    inner.process = fakeProcess;
     inner.get_extension = fakeGetExtension;
+    inner.on_main_thread = fakeOnMainThread;
 
     const auto *plugin = webview_gui::wrapLegacyWclapWebviewPlugin(&inner);
     if (!expect(plugin && plugin != &inner,
@@ -167,37 +229,58 @@ int main() {
                 "init/WebView discovery did not preserve the inner plug-in pointer identity"))
         return 8;
 
+    // All CLAP core callbacks remain host-facing through the proxy table, but
+    // delegated implementations must receive the original plug-in pointer. This
+    // matters for valid implementations which use pointer identity/container_of
+    // rather than relying exclusively on plugin_data.
+    clap_process_t process{};
+    if (!expect(plugin->activate(plugin, 48000.0, 1, 64) &&
+                    plugin->start_processing(plugin) &&
+                    plugin->process(plugin, &process) == CLAP_PROCESS_CONTINUE,
+                "wrapped active/process lifecycle failed"))
+        return 9;
+    plugin->stop_processing(plugin);
+    plugin->reset(plugin);
+    plugin->deactivate(plugin);
+    plugin->on_main_thread(plugin);
+    if (!expect(state.activateCalls == 1 && state.startCalls == 1 &&
+                    state.processCalls == 1 && state.stopCalls == 1 &&
+                    state.resetCalls == 1 && state.deactivateCalls == 1 &&
+                    state.mainThreadCalls == 1 && state.pointerIdentityFailures == 0,
+                "CLAP core callback delegation did not preserve inner plug-in pointer identity"))
+        return 10;
+
     const auto *postInitWebview = static_cast<const webview_gui::clap_plugin_webview *>(
         plugin->get_extension(plugin, webview_gui::CLAP_EXT_WEBVIEW));
     if (!expect(postInitWebview == preInitWebview,
                 "WCLAP WebView compatibility extension pointer changed after init"))
-        return 9;
+        return 11;
     if (!expect(state.realWebviewQueries == 1,
                 "post-init compatibility lookup repeated real extension discovery"))
-        return 10;
+        return 12;
 
     if (!expect(postInitWebview->get_uri(plugin, uri, sizeof(uri)) > 0 &&
                     std::strcmp(uri, "/index.html") == 0,
                 "post-init WebView URI did not forward to the real extension"))
-        return 11;
+        return 13;
     if (!expect(postInitWebview->get_resource(plugin, "/index.html", nullptr, 0, nullptr) &&
                     postInitWebview->receive(plugin, nullptr, 0),
                 "post-init WebView callbacks did not forward to the real extension"))
-        return 12;
+        return 14;
     if (!expect(state.uriCalls == 1 && state.resourceCalls == 1 && state.receiveCalls == 1 &&
                     state.pointerIdentityFailures == 0,
                 "real WebView callbacks did not preserve the inner plug-in pointer identity"))
-        return 13;
+        return 15;
 
     if (!expect(plugin->get_extension(plugin, "clap.test") == &state &&
                     state.pointerIdentityFailures == 0,
                 "post-init non-WebView extension delegation changed plug-in pointer identity"))
-        return 14;
+        return 16;
 
     plugin->destroy(plugin);
     if (!expect(state.destroyed && state.pointerIdentityFailures == 0,
                 "wrapped destroy did not preserve the inner plug-in pointer identity"))
-        return 15;
+        return 17;
 
     return 0;
 }
