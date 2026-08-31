@@ -50,6 +50,31 @@ require_absent(plugin_source
     "std::strlen(display)"
     "unbounded host parameter text scan")
 
+# Post-merge #32 review contract (#78): the production plugin must actually
+# instantiate the filter that its CLAP parameter surface advertises. Unit-level
+# ParameterVoiceEngine tests are insufficient because they call setFilter()
+# explicitly and can hide an inactive production path.
+require_contains(plugin_source
+    "engine_.setFilter("
+    "production PolySynth filter activation")
+
+# One logical plugin state must not be represented to state.save/get_value/replay
+# as an unchecked collection of independent scalar atomics. Keep explicit
+# sequence markers for the live host snapshot and the main-thread loaded snapshot,
+# and route main-thread reads through a coherent effective-snapshot helper.
+require_contains(plugin_source
+    "hostSnapshotSequence_"
+    "coherent live parameter snapshot sequence")
+require_contains(plugin_source
+    "pendingSnapshotSequence_"
+    "coherent loaded-state snapshot sequence")
+require_contains(plugin_source
+    "readEffectiveParameterSnapshot"
+    "coherent effective parameter snapshot reader")
+require_contains(plugin_source
+    "publishHostParameterSnapshot"
+    "coherent live parameter snapshot publisher")
+
 # Existing host indices 0..8 are ABI and project-state compatibility surface.
 # The four Amp Envelope controls must therefore append at 9..12 even though their
 # stable parameter IDs numerically precede Filter Env / Pan / Amp Level.
