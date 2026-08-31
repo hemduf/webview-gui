@@ -36,6 +36,23 @@ function(require_workflow_check_name workflow_file expected_job_name)
     endif()
 endfunction()
 
+function(require_pinned_checkout workflow_file)
+    set(workflow_path "${CMAKE_CURRENT_LIST_DIR}/../.github/workflows/${workflow_file}")
+    file(READ "${workflow_path}" workflow_content)
+    set(checkout_pin "actions/checkout@11d5960a326750d5838078e36cf38b85af677262")
+    string(FIND "${workflow_content}" "${checkout_pin}" pinned_offset)
+    if(pinned_offset EQUAL -1)
+        message(FATAL_ERROR
+            "Policy workflow '${workflow_file}' must pin actions/checkout to ${checkout_pin}")
+    endif()
+
+    string(FIND "${workflow_content}" "actions/checkout@v4" floating_offset)
+    if(NOT floating_offset EQUAL -1)
+        message(FATAL_ERROR
+            "Policy workflow '${workflow_file}' must not use floating actions/checkout@v4")
+    endif()
+endfunction()
+
 require_workflow_contract("ci.yml" "CI")
 require_workflow_check_name("ci.yml" "\${{ matrix.os }} / Debug")
 require_workflow_check_name("ci.yml" "\${{ matrix.os }} / ASan+UBSan")
@@ -49,6 +66,8 @@ require_workflow_check_name("macos-diagnostics.yml" "macOS Zombies lifecycle")
 
 require_workflow_contract("header-only-contract.yml" "Header-only contract")
 require_workflow_check_name("header-only-contract.yml" "\${{ matrix.os }} standalone header-only diagnostic")
+require_pinned_checkout("header-only-contract.yml")
 
 require_workflow_contract("repository-policy.yml" "Repository policy")
 require_workflow_check_name("repository-policy.yml" "required main qualification contract")
+require_pinned_checkout("repository-policy.yml")
