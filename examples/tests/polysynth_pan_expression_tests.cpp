@@ -148,6 +148,19 @@ bool configure(ParameterVoiceEngine &engine) noexcept {
     return engine.configure(4, kSampleRate, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
 }
+
+template <std::size_t Frames>
+bool render(ParameterVoiceEngine &engine,
+            InputEvents &events,
+            std::array<float, Frames> &left,
+            std::array<float, Frames> &right) noexcept {
+    auto noteEnd = [](const clap_event_note_t &) noexcept {};
+    return engine.process(&events.input,
+                          static_cast<std::uint32_t>(Frames),
+                          left.data(),
+                          right.data(),
+                          noteEnd);
+}
 }
 
 int main() {
@@ -163,12 +176,7 @@ int main() {
 
     std::array<float, 32> left{};
     std::array<float, 32> right{};
-    auto noteEnd = [](const clap_event_note_t &) noexcept {};
-    if (!engine.process(&events.input,
-                        static_cast<std::uint32_t>(left.size()),
-                        left.data(),
-                        right.data(),
-                        noteEnd))
+    if (!render(engine, events, left, right))
         return 3;
 
     const double increment = incrementForKey(60.0);
@@ -195,11 +203,7 @@ int main() {
         return 6;
     std::array<float, 32> globalLeft{};
     std::array<float, 32> globalRight{};
-    if (!globalPan.process(&globalEvents.input,
-                           static_cast<std::uint32_t>(globalLeft.size()),
-                           globalLeft.data(),
-                           globalRight.data(),
-                           noteEnd))
+    if (!render(globalPan, globalEvents, globalLeft, globalRight))
         return 7;
     for (std::uint32_t frame = 0; frame < globalLeft.size(); ++frame) {
         const float sample = sineAt(0.25 + static_cast<double>(frame) * increment);
@@ -234,11 +238,7 @@ int main() {
         return 11;
     std::array<float, 32> composedLeft{};
     std::array<float, 32> composedRight{};
-    if (!composedPan.process(&composedEvents.input,
-                             static_cast<std::uint32_t>(composedLeft.size()),
-                             composedLeft.data(),
-                             composedRight.data(),
-                             noteEnd))
+    if (!render(composedPan, composedEvents, composedLeft, composedRight))
         return 12;
     for (std::uint32_t frame = 0; frame < composedLeft.size(); ++frame) {
         const float sample = sineAt(0.25 + static_cast<double>(frame) * increment);
