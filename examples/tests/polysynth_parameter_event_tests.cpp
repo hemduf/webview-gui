@@ -18,6 +18,8 @@ constexpr clap_id kWaveformId =
     1000u + static_cast<unsigned>(ParameterSlot::Waveform);
 constexpr clap_id kFineTuneId =
     1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
+constexpr clap_id kFilterCutoffId =
+    1000u + static_cast<unsigned>(ParameterSlot::FilterCutoff);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -73,7 +75,13 @@ struct InputEvents {
         return true;
     }
 
-    bool pushValue(std::uint32_t time, clap_id paramId, double value) noexcept {
+    bool pushValue(std::uint32_t time,
+                   clap_id paramId,
+                   double value,
+                   std::int32_t noteId = -1,
+                   std::int16_t portIndex = -1,
+                   std::int16_t channel = -1,
+                   std::int16_t key = -1) noexcept {
         if (count >= headers.size())
             return false;
         auto &event = values[count];
@@ -83,10 +91,10 @@ struct InputEvents {
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
         event.param_id = paramId;
-        event.note_id = -1;
-        event.port_index = -1;
-        event.channel = -1;
-        event.key = -1;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
         event.value = value;
         headers[count++] = &event.header;
         return true;
@@ -406,6 +414,25 @@ int main() {
         std::fabs(baseValue - 1.0) > 1.0e-12) {
         std::cerr << "Waveform PARAM_VALUE was not retained as the host-visible base\n";
         return 29;
+    }
+
+    ParameterVoiceEngine cutoff;
+    if (!configure(cutoff))
+        return 30;
+    InputEvents cutoffEvents;
+    cutoffEvents.pushValue(0, kFilterCutoffId, 1200.0);
+    cutoffEvents.pushNote(0, 41, 60);
+    cutoffEvents.pushValue(8, kFilterCutoffId, 2400.0, 41, 0, 0, 60);
+    cutoffEvents.pushMod(16, kFilterCutoffId, 300.0);
+    RenderResult cutoffAudio;
+    if (!render(cutoff, cutoffEvents, cutoffAudio)) {
+        std::cerr << "Filter Cutoff parameter state routing failed the process block\n";
+        return 31;
+    }
+    if (!cutoff.parameterBaseValue(kFilterCutoffId, baseValue) ||
+        std::fabs(baseValue - 1200.0) > 1.0e-9) {
+        std::cerr << "Filter Cutoff global base was not retained independently of targeted value/modulation\n";
+        return 32;
     }
 
     return 0;
