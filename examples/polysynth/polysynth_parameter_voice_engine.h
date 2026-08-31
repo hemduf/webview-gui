@@ -982,8 +982,11 @@ private:
                 return true;
             }
 
+            // flush() already ignores out-of-range finite PARAM_VALUE statements.
+            // process() must likewise keep the audio block alive rather than
+            // turning a malformed or fuzzed host statement into CLAP_PROCESS_ERROR.
             if (event.value < spec->minValue || event.value > spec->maxValue)
-                return false;
+                return true;
 
             if (spec->slot == ParameterSlot::FilterCutoff) {
                 if (!syncVoices() ||
