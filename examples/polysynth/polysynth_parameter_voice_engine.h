@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace webview_gui::examples::polysynth {
 
@@ -24,10 +25,21 @@ public:
     bool configure(std::size_t requestedVoices,
                    double sampleRate,
                    std::uint32_t releaseSamples) noexcept {
-        if (!VoiceEngine::configure(requestedVoices, sampleRate, releaseSamples) ||
+        // Amp Envelope host values are expressed in seconds and converted to the
+        // VoiceEngine's uint32 sample counters on the audio thread. Reject sample
+        // rates for which the existing legal 10-second parameter range cannot be
+        // represented, so a valid later PARAM_VALUE can never overflow in process().
+        constexpr double kMaximumEnvelopeSeconds = 10.0;
+        const double maximumRepresentableSampleRate =
+            static_cast<double>(std::numeric_limits<std::uint32_t>::max()) /
+            kMaximumEnvelopeSeconds;
+        if (!std::isfinite(sampleRate) || sampleRate <= 0.0 ||
+            sampleRate > maximumRepresentableSampleRate ||
+            !VoiceEngine::configure(requestedVoices, sampleRate, releaseSamples) ||
             !polyphonicState_.configure(requestedVoices))
             return false;
 
+        sampleRate_ = sampleRate;
         masterGainBaseDb_ = 0.0;
         masterGainGlobalModulationDb_ = 0.0;
         waveformBaseValue_ = 0.0;
@@ -37,6 +49,13 @@ public:
         filterCutoffBaseHz_ = 6000.0;
         filterResonanceBase_ = 0.0;
         filterEnvelopeAmountBase_ = 0.0;
+        // Preserve the pre-publication VoiceEngine baseline exactly. The next
+        // host-publication slice will replay the metadata defaults before these
+        // IDs become visible through clap.params.
+        ampAttackBaseSeconds_ = 0.0;
+        ampDecayBaseSeconds_ = 0.0;
+        ampSustainBase_ = 1.0;
+        ampReleaseBaseSeconds_ = static_cast<double>(releaseSamples) / sampleRate;
         panBase_ = 0.0;
         ampLevelBase_ = 1.0;
         trackedVoices_.fill(false);
@@ -130,6 +149,22 @@ public:
         }
         if (spec->slot == ParameterSlot::FilterResonance) {
             value = filterResonanceBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpAttack) {
+            value = ampAttackBaseSeconds_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpDecay) {
+            value = ampDecayBaseSeconds_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpSustain) {
+            value = ampSustainBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpRelease) {
+            value = ampReleaseBaseSeconds_;
             return true;
         }
         if (spec->slot == ParameterSlot::FilterEnvelopeAmount) {
@@ -352,6 +387,80 @@ private:
 
     static double pressureGain(double pressure) noexcept {
         return 1.0 + pressure;
+    }
+
+    // Convert the public seconds domain into the VoiceEngine's bounded sample
+    // counters using only finite scalar arithmetic. Avoid round()/llround() so
+    // the audio-thread path has no dependency on libm rounding-mode state.
+    bool secondsToSamples(double seconds,
+                          bool allowZero,
+                          std::uint32_t &samples) const noexcept {
+        if (!std::isfinite(seconds) || seconds < 0.0 ||
+            !std::isfinite(sampleRate_) || sampleRate_ <= 0.0)
+            return false;
+
+        const double scaled = seconds * sampleRate_;
+        const auto maximum = std::numeric_limits<std::uint32_t>::max();
+        if (!std::isfinite(scaled) || scaled < 0.0 ||
+            scaled > static_cast<double>(maximum))
+            return false;
+
+        auto rounded = static_cast<std::uint32_t>(scaled);
+        if (scaled - static_cast<double>(rounded) >= 0.5) {
+            if (rounded == maximum)
+                return false;
+            ++rounded;
+        }
+        if (!allowZero && rounded == 0u)
+            rounded = 1u;
+        samples = rounded;
+        return true;
+    }
+
+    // Amp Envelope automation is deliberately global-only and updates the
+    // VoiceEngine defaults atomically at one event boundary. VoiceEngine copies
+    // those four values into each NOTE_ON generation, so changing a default never
+    // splices timing into an already-active attack/decay/release lifecycle.
+    bool applyAmpEnvelopeValue(ParameterSlot slot, double value) noexcept {
+        double attackSeconds = ampAttackBaseSeconds_;
+        double decaySeconds = ampDecayBaseSeconds_;
+        double sustain = ampSustainBase_;
+        double releaseSeconds = ampReleaseBaseSeconds_;
+
+        switch (slot) {
+            case ParameterSlot::AmpAttack:
+                attackSeconds = value;
+                break;
+            case ParameterSlot::AmpDecay:
+                decaySeconds = value;
+                break;
+            case ParameterSlot::AmpSustain:
+                sustain = value;
+                break;
+            case ParameterSlot::AmpRelease:
+                releaseSeconds = value;
+                break;
+            default:
+                return false;
+        }
+
+        std::uint32_t attackSamples = 0;
+        std::uint32_t decaySamples = 0;
+        std::uint32_t releaseSamples = 0;
+        if (!secondsToSamples(attackSeconds, true, attackSamples) ||
+            !secondsToSamples(decaySeconds, true, decaySamples) ||
+            !secondsToSamples(releaseSeconds, false, releaseSamples) ||
+            !VoiceEngine::setAmpEnvelope(attackSamples,
+                                         decaySamples,
+                                         static_cast<float>(sustain),
+                                         releaseSamples))
+            return false;
+
+        ampAttackBaseSeconds_ = attackSeconds;
+        ampDecayBaseSeconds_ = decaySeconds;
+        ampSustainBase_ = sustain;
+        ampReleaseBaseSeconds_ = releaseSeconds;
+        return true;
     }
 
     void clearPendingExpressionEntries() noexcept {
@@ -1137,6 +1246,18 @@ private:
             if (event.value < spec->minValue || event.value > spec->maxValue)
                 return true;
 
+            if (spec->slot == ParameterSlot::AmpAttack ||
+                spec->slot == ParameterSlot::AmpDecay ||
+                spec->slot == ParameterSlot::AmpSustain ||
+                spec->slot == ParameterSlot::AmpRelease) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                return applyAmpEnvelopeValue(spec->slot, event.value);
+            }
+
             if (spec->slot == ParameterSlot::FilterCutoff) {
                 if (!syncVoices() ||
                     !polyphonicState_.applyValue(filterCutoffSlot(), event))
@@ -1304,6 +1425,7 @@ private:
         pendingBrightnessExpressions_{};
     std::uint32_t pendingExpressionTime_ = 0;
     bool pendingExpressionTimeValid_ = false;
+    double sampleRate_ = 0.0;
     double masterGainBaseDb_ = 0.0;
     double masterGainGlobalModulationDb_ = 0.0;
     double waveformBaseValue_ = 0.0;
@@ -1312,6 +1434,10 @@ private:
     double fineTuneGlobalModulationCents_ = 0.0;
     double filterCutoffBaseHz_ = 6000.0;
     double filterResonanceBase_ = 0.0;
+    double ampAttackBaseSeconds_ = 0.0;
+    double ampDecayBaseSeconds_ = 0.0;
+    double ampSustainBase_ = 1.0;
+    double ampReleaseBaseSeconds_ = 0.0;
     double filterEnvelopeAmountBase_ = 0.0;
     double panBase_ = 0.0;
     double ampLevelBase_ = 1.0;
