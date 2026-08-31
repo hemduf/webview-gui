@@ -9,17 +9,18 @@
 #include <iostream>
 
 namespace {
+using webview_gui::examples::polysynth::kFirstParameterId;
 using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
 constexpr clap_id kMasterGainId =
-    1000u + static_cast<unsigned>(ParameterSlot::MasterGain);
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::MasterGain);
 constexpr clap_id kWaveformId =
-    1000u + static_cast<unsigned>(ParameterSlot::Waveform);
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::Waveform);
 constexpr clap_id kFineTuneId =
-    1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::FineTuning);
 constexpr clap_id kFilterCutoffId =
-    1000u + static_cast<unsigned>(ParameterSlot::FilterCutoff);
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::FilterCutoff);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
