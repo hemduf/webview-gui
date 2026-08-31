@@ -43,6 +43,7 @@ set_target_properties(webview_gui_example_gain_wclap PROPERTIES
 include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiWclap.cmake")
 webview_gui_configure_wclap_target(webview_gui_example_gain_wclap
     OUTPUT_NAME WebviewGuiGain
+    COMPILE_TARGETS webview_gui_example_gain_clap_core
 )
 
 # Review contract: WebView-only is a per-WCLAP compilation profile. It must be
