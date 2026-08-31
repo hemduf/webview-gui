@@ -1,1 +1,2 @@
 Temporary validation trigger for the WCLAP init-negotiation increment.
+Revalidate current PR #39 base after deferred host-params discovery and negative WebView caching.
