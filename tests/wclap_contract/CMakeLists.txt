@@ -97,6 +97,28 @@ add_test(
     COMMAND webview_gui_wclap_legacy_webview_proxy_contract
 )
 
+add_executable(webview_gui_polysynth_wclap_proxy_contract
+    polysynth_wclap_proxy_contract.cpp
+)
+target_include_directories(webview_gui_polysynth_wclap_proxy_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth"
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth/wclap"
+    "${clap_SOURCE_DIR}/include"
+)
+target_compile_definitions(webview_gui_polysynth_wclap_proxy_contract PRIVATE
+    WEBVIEW_GUI_TESTING=1
+    WEBVIEW_GUI_WEBVIEW_ONLY=1
+)
+target_link_libraries(webview_gui_polysynth_wclap_proxy_contract PRIVATE
+    webview-gui
+)
+
+add_test(
+    NAME webview_gui_polysynth_wclap_proxy_contract
+    COMMAND webview_gui_polysynth_wclap_proxy_contract
+)
+
 add_executable(webview_gui_wclap_backend_selection_contract
     wclap_backend_selection_contract.cpp
 )
