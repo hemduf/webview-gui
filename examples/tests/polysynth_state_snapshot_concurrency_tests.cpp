@@ -4,6 +4,7 @@
 #include <clap/clap.h>
 #include <clap/ext/params.h>
 #include <clap/ext/state.h>
+#include <clap/ext/tail.h>
 
 #include <algorithm>
 #include <array>
@@ -286,10 +287,31 @@ int main() {
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
+    const auto *tail = static_cast<const clap_plugin_tail_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_TAIL));
     if (!params || !params->get_value || !state || !state->load || !state->save ||
-        !plugin->activate(plugin, 48000.0, 1, 32) || !plugin->start_processing(plugin)) {
+        !tail || !tail->get || !plugin->activate(plugin, 48000.0, 1, 32)) {
         plugin->destroy(plugin);
         return 3;
+    }
+
+    // state.load() is a main-thread operation and is legal while active. The
+    // host-visible state becomes the loaded snapshot immediately, so tail.get()
+    // must not keep advertising the previous shorter Release until process().
+    // State A has Release=0.4s, which is 19,200 samples at 48 kHz.
+    MemoryInputStream initialInput(kStateABytes);
+    if (!state->load(plugin, &initialInput.stream) ||
+        !parametersMatch(plugin, params, kStateA) ||
+        !saveMatches(plugin, state, kStateABytes) || tail->get(plugin) != 19200u) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 4;
+    }
+
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 5;
     }
 
     std::atomic<bool> keepProcessing{true};
@@ -337,5 +359,5 @@ int main() {
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
 
-    return mainOk && audioOk.load(std::memory_order_acquire) ? 0 : 4;
+    return mainOk && audioOk.load(std::memory_order_acquire) ? 0 : 6;
 }
