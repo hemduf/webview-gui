@@ -34,6 +34,7 @@ public:
         coarseTuneBaseSemitones_ = 0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
+        panBase_ = 0.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
         voiceCoarseTuningSemitones_.fill(0);
@@ -41,11 +42,16 @@ public:
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
         voicePressureExpressions_.fill(0.0);
+        voicePanExpressions_.fill(0.5);
         clearTransientExpressionState();
-        const auto slot = fineTuneSlot();
-        return polyphonicState_.setGlobalBase(slot, fineTuneBaseCents_) &&
-               polyphonicState_.setGlobalModulation(slot, 0.0) &&
+        const auto fineSlot = fineTuneSlot();
+        const auto panParameterSlot = panSlot();
+        return polyphonicState_.setGlobalBase(fineSlot, fineTuneBaseCents_) &&
+               polyphonicState_.setGlobalModulation(fineSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(panParameterSlot, panBase_) &&
+               polyphonicState_.setGlobalModulation(panParameterSlot, 0.0) &&
                VoiceEngine::setFineTuningCents(0.0f) &&
+               VoiceEngine::setPan(0.0f) &&
                applyMasterGainState();
     }
 
@@ -79,6 +85,10 @@ public:
             value = fineTuneBaseCents_;
             return true;
         }
+        if (spec->slot == ParameterSlot::Pan) {
+            value = panBase_;
+            return true;
+        }
         return false;
     }
 
@@ -92,11 +102,14 @@ public:
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
         voicePressureExpressions_.fill(0.0);
+        voicePanExpressions_.fill(0.5);
         clearTransientExpressionState();
         masterGainGlobalModulationDb_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
+        (void)polyphonicState_.setGlobalBase(panSlot(), panBase_);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
+        (void)VoiceEngine::setPan(static_cast<float>(panBase_));
         (void)applyMasterGainState();
     }
 
@@ -209,6 +222,10 @@ private:
 
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
+    }
+
+    static constexpr std::size_t panSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::Pan);
     }
 
     static bool isGlobalAddress(std::int32_t noteId,
@@ -530,6 +547,36 @@ private:
         return VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(gain));
     }
 
+    bool applyPanState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto slot = panSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto parameterPan = std::clamp(base + modulation, -1.0, 1.0);
+            // CLAP PAN note expression is centered at 0.5 and is defined as an
+            // offset from the voice's non-note-expression default. Convert the
+            // expression to signed [-1, 1], compose, then map back to the
+            // VoiceEngine's normalized note-expression input.
+            const auto expressionOffset = 2.0 * (voicePanExpressions_[index] - 0.5);
+            const auto effectivePan = std::clamp(parameterPan + expressionOffset, -1.0, 1.0);
+            const auto normalizedPan = (effectivePan + 1.0) * 0.5;
+            if (!VoiceEngine::setVoicePanExpression(
+                    index, static_cast<float>(normalizedPan)))
+                return false;
+        }
+        return true;
+    }
+
     // The scheduler supplies the exact allocated slot after lifecycle/DSP NOTE_ON
     // dispatch but before rendering resumes. Reset adapter-local state for every
     // generation, even when a host without note IDs reuses the identical visible
@@ -551,6 +598,7 @@ private:
         voiceVolumeExpressions_[index] = 1.0;
         voicePerformanceExpressions_[index] = 1.0;
         voicePressureExpressions_[index] = 0.0;
+        voicePanExpressions_[index] = 0.5;
 
         double expressionSemitones = 0.0;
         if (pendingTuningFor(event.identity, event.time, expressionSemitones))
@@ -575,8 +623,9 @@ private:
             return false;
 
         double pan = 0.5;
-        if (pendingPanFor(event.identity, event.time, pan) &&
-            !VoiceEngine::setVoicePanExpression(index, static_cast<float>(pan)))
+        if (pendingPanFor(event.identity, event.time, pan))
+            voicePanExpressions_[index] = pan;
+        if (!applyPanState())
             return false;
 
         double brightness = 0.0;
@@ -602,6 +651,7 @@ private:
                     voiceVolumeExpressions_[index] = 1.0;
                     voicePerformanceExpressions_[index] = 1.0;
                     voicePressureExpressions_[index] = 0.0;
+                    voicePanExpressions_[index] = 0.5;
                 }
                 continue;
             }
@@ -616,6 +666,7 @@ private:
                 voiceVolumeExpressions_[index] = 1.0;
                 voicePerformanceExpressions_[index] = 1.0;
                 voicePressureExpressions_[index] = 0.0;
+                voicePanExpressions_[index] = 0.5;
             }
         }
         return true;
@@ -749,15 +800,17 @@ private:
             return false;
 
         const auto address = addressFrom(event);
+        bool matched = false;
         for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
             if (!trackedVoices_[index] ||
                 !addressMatches(trackedIdentities_[index], address))
                 continue;
-            if (!VoiceEngine::setVoicePanExpression(
-                    index, static_cast<float>(event.value)))
-                return false;
+            voicePanExpressions_[index] = event.value;
+            matched = true;
         }
-        return storePendingPan(event);
+        if (!storePendingPan(event))
+            return false;
+        return matched ? applyPanState() : true;
     }
 
     bool applyBrightnessExpression(const clap_event_note_expression_t &event) noexcept {
@@ -874,6 +927,18 @@ private:
 
             if (event.value < spec->minValue || event.value > spec->maxValue)
                 return false;
+
+            if (spec->slot == ParameterSlot::Pan) {
+                if (!syncVoices() || !polyphonicState_.applyValue(panSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    panBase_ = event.value;
+                return applyPanState();
+            }
+
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
@@ -908,6 +973,13 @@ private:
                 return applyMasterGainState();
             }
 
+            if (spec->slot == ParameterSlot::Pan) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(panSlot(), event))
+                    return false;
+                return applyPanState();
+            }
+
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!syncVoices() ||
@@ -933,6 +1005,7 @@ private:
     std::array<double, VoiceAllocator::kMaximumVoices> voiceVolumeExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePerformanceExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePressureExpressions_{};
+    std::array<double, VoiceAllocator::kMaximumVoices> voicePanExpressions_{};
     std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
         pendingTuningExpressions_{};
     std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices>
@@ -953,6 +1026,7 @@ private:
     int coarseTuneBaseSemitones_ = 0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
+    double panBase_ = 0.0;
 };
 
 } // namespace webview_gui::examples::polysynth
