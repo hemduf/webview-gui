@@ -109,6 +109,19 @@ jobs:
           print(f'patched {load_count} loader call(s) and {entry_count} native entry guard(s)')
           PY
 
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.ci/clap-trap/wclap-bridge/source/_generic/wclap-plugin.h')
+          text = path.read_text()
+          needle = 'const void * pluginGetExtension(const char *pluginExtId) {\n\t\tauto scoped = module.arenaPool.scoped();'
+          replacement = 'const void * pluginGetExtension(const char *pluginExtId) {\n\t\tstd::cerr << "WCLAP_PLUGIN_GET_EXTENSION=" << pluginExtId << std::endl;\n\t\tauto scoped = module.arenaPool.scoped();'
+          count = text.count(needle)
+          if count != 1:
+              raise SystemExit(f'expected one bridge pluginGetExtension pattern, found {count}')
+          path.write_text(text.replace(needle, replacement))
+          print('instrumented pinned bridge pluginGetExtension')
+          PY
+
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_TRAP_BUILD_TESTS=OFF
