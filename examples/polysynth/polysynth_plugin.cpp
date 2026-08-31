@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -683,52 +682,17 @@ protected:
                            double value,
                            char *display,
                            std::uint32_t size) noexcept override {
-        const auto *spec = parameterSpecForId(paramId);
-        if (!spec || !isPublishedHostParameter(paramId) || !display || size == 0 ||
-            !std::isfinite(value) || value < spec->minValue || value > spec->maxValue)
+        if (!isPublishedHostParameter(paramId))
             return false;
-
-        if (paramId == kHostWaveformParameterId)
-            return waveformTextForValue(value, display, size);
-        if (paramId == kHostCoarseTuneParameterId)
-            return coarseTuningTextForValue(value, display, size);
-
-        auto result = std::to_chars(display,
-                                    display + size - 1,
-                                    value,
-                                    std::chars_format::general,
-                                    8);
-        if (result.ec != std::errc())
-            return false;
-        *result.ptr = '\0';
-        return true;
+        return parameterTextForValue(paramId, value, display, size);
     }
 
     bool paramsTextToValue(clap_id paramId,
                            const char *display,
                            double *value) noexcept override {
-        const auto *spec = parameterSpecForId(paramId);
-        if (!spec || !isPublishedHostParameter(paramId) || !display || !value)
+        if (!value || !isPublishedHostParameter(paramId))
             return false;
-
-        if (paramId == kHostWaveformParameterId) {
-            double parsedWaveform = 0.0;
-            if (!waveformValueFromName(display, parsedWaveform))
-                return false;
-            *value = parsedWaveform;
-            return true;
-        }
-        if (paramId == kHostCoarseTuneParameterId)
-            return coarseTuningValueFromText(display, *value);
-
-        const char *end = display + std::strlen(display);
-        double parsed = 0.0;
-        const auto result = std::from_chars(display, end, parsed, std::chars_format::general);
-        if (result.ec != std::errc() || result.ptr != end || !std::isfinite(parsed) ||
-            parsed < spec->minValue || parsed > spec->maxValue)
-            return false;
-        *value = parsed;
-        return true;
+        return parameterValueFromText(paramId, display, *value);
     }
 
     void paramsFlush(const clap_input_events_t *in,
