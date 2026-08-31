@@ -41,6 +41,15 @@ require_contains(plugin_source
     "bool implementsParams() const noexcept override { return true; }"
     "params implementation marker")
 require_contains(plugin_source
+    "return parameterTextForValue(paramId, value, display, size);"
+    "canonical params value-to-text dispatch")
+require_contains(plugin_source
+    "return parameterValueFromText(paramId, display, *value);"
+    "canonical params text-to-value dispatch")
+require_absent(plugin_source
+    "std::strlen(display)"
+    "unbounded host parameter text scan")
+require_contains(plugin_source
     "constexpr std::array<clap_id, 4> kPublishedHostParameterIds"
     "published parameter table")
 require_contains(plugin_source
