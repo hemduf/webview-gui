@@ -375,5 +375,14 @@ int main() {
         return 29;
     }
 
+    // Specialist-review regression: the non-RT configuration setter inherited
+    // from VoiceEngine must keep the adapter's retained model synchronized.
+    if (!adapter.setFilterEnvelopeAmount(-0.375f) ||
+        !adapter.parameterBaseValue(kFilterEnvelopeAmountId, retainedAmount) ||
+        std::fabs(retainedAmount + 0.375) > 1.0e-12) {
+        std::cerr << "configuration Filter Env Amount setter diverged from retained state\n";
+        return 30;
+    }
+
     return 0;
 }
