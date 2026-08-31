@@ -32,6 +32,9 @@ constexpr clap_id kFineTuneId =
 constexpr clap_id kCutoffId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FilterCutoff);
+constexpr clap_id kResonanceId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FilterResonance);
 constexpr clap_id kPanId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::Pan);
@@ -289,8 +292,8 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Preserve all existing host indices while appending Cutoff at stable index 5.
-    if (params->count(plugin) != 6u)
+    // Preserve all existing host indices while appending Resonance at stable index 6.
+    if (params->count(plugin) != 7u)
         return nullptr;
 
     clap_param_info_t info{};
@@ -358,13 +361,25 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(cutoffInfo.module, "Filter") != 0)
         return nullptr;
 
+    clap_param_info_t resonanceInfo{};
+    const auto *resonanceSpec = webview_gui::examples::polysynth::parameterSpecForId(kResonanceId);
+    if (!resonanceSpec || !params->get_info(plugin, 6, &resonanceInfo) ||
+        resonanceInfo.id != kResonanceId || !resonanceInfo.cookie ||
+        resonanceInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        resonanceInfo.min_value != 0.0 || resonanceInfo.max_value != 0.99 ||
+        resonanceInfo.default_value != 0.0 ||
+        std::strcmp(resonanceInfo.name, "Resonance") != 0 ||
+        std::strcmp(resonanceInfo.module, "Filter") != 0)
+        return nullptr;
+
     double value = -1.0;
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
         !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
         !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kPanId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kCutoffId, &value) || value != 6000.0)
+        !params->get_value(plugin, kCutoffId, &value) || value != 6000.0 ||
+        !params->get_value(plugin, kResonanceId, &value) || value != 0.0)
         return nullptr;
 
     char text[32]{};
@@ -389,7 +404,11 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::fabs(parsed + 0.25) > 1.0e-9 ||
         !params->value_to_text(plugin, kCutoffId, 12345.5, text, sizeof(text)) ||
         text[0] == '\0' ||
-        !params->text_to_value(plugin, kCutoffId, text, &parsed) || parsed != 12345.5)
+        !params->text_to_value(plugin, kCutoffId, text, &parsed) || parsed != 12345.5 ||
+        !params->value_to_text(plugin, kResonanceId, 0.75, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kResonanceId, text, &parsed) ||
+        std::fabs(parsed - 0.75) > 1.0e-12)
         return nullptr;
 
     RejectingOutputEvents output;
@@ -418,6 +437,11 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_value(plugin, kCutoffId, &value) || value != 4321.5)
         return nullptr;
 
+    FlushInputEvents setResonance(kResonanceId, 0.5);
+    params->flush(plugin, &setResonance.input, &output.output);
+    if (!params->get_value(plugin, kResonanceId, &value) || value != 0.5)
+        return nullptr;
+
     FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &output.output);
     FlushInputEvents restoreSine(kWaveformId, 0.0);
@@ -428,11 +452,14 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     params->flush(plugin, &restorePan.input, &output.output);
     FlushInputEvents restoreCutoff(kCutoffId, 6000.0);
     params->flush(plugin, &restoreCutoff.input, &output.output);
+    FlushInputEvents restoreResonance(kResonanceId, 0.0);
+    params->flush(plugin, &restoreResonance.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
         !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kPanId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kCutoffId, &value) || value != 6000.0)
+        !params->get_value(plugin, kCutoffId, &value) || value != 6000.0 ||
+        !params->get_value(plugin, kResonanceId, &value) || value != 0.0)
         return nullptr;
 
     return params;
@@ -509,9 +536,11 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         std::strcmp(filterPage.page_name, "Tone") != 0 ||
         std::strcmp(compatibleFilterPage.section_name, filterPage.section_name) != 0 ||
         std::strcmp(compatibleFilterPage.page_name, filterPage.page_name) != 0 ||
-        filterPage.param_ids[0] != kCutoffId || compatibleFilterPage.param_ids[0] != kCutoffId)
+        filterPage.param_ids[0] != kCutoffId || compatibleFilterPage.param_ids[0] != kCutoffId ||
+        filterPage.param_ids[1] != kResonanceId ||
+        compatibleFilterPage.param_ids[1] != kResonanceId)
         return false;
-    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (filterPage.param_ids[index] != CLAP_INVALID_ID ||
             compatibleFilterPage.param_ids[index] != CLAP_INVALID_ID)
             return false;
@@ -523,18 +552,21 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
     clap_param_info_t mappedCoarseInfo{};
     clap_param_info_t mappedPanInfo{};
     clap_param_info_t mappedCutoffInfo{};
+    clap_param_info_t mappedResonanceInfo{};
     return params->get_info(plugin, 0u, &mappedFineInfo) &&
            params->get_info(plugin, 1u, &mappedMasterInfo) &&
            params->get_info(plugin, 2u, &mappedWaveformInfo) &&
            params->get_info(plugin, 3u, &mappedCoarseInfo) &&
            params->get_info(plugin, 4u, &mappedPanInfo) &&
            params->get_info(plugin, 5u, &mappedCutoffInfo) &&
+           params->get_info(plugin, 6u, &mappedResonanceInfo) &&
            mappedFineInfo.id == first.param_ids[0] &&
            mappedWaveformInfo.id == first.param_ids[1] &&
            mappedCoarseInfo.id == first.param_ids[2] &&
            mappedMasterInfo.id == outputPage.param_ids[0] &&
            mappedPanInfo.id == outputPage.param_ids[1] &&
-           mappedCutoffInfo.id == filterPage.param_ids[0];
+           mappedCutoffInfo.id == filterPage.param_ids[0] &&
+           mappedResonanceInfo.id == filterPage.param_ids[1];
 }
 
 bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
