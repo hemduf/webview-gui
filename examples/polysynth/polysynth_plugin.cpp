@@ -39,9 +39,11 @@ constexpr clap_id kHostFilterCutoffParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterCutoff);
 constexpr clap_id kHostFilterResonanceParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterResonance);
+constexpr clap_id kHostFilterEnvelopeAmountParameterId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
 constexpr clap_id kHostPanParameterId =
     kFirstParameterId + static_cast<clap_id>(ParameterSlot::Pan);
-constexpr std::array<clap_id, 7> kPublishedHostParameterIds{{
+constexpr std::array<clap_id, 8> kPublishedHostParameterIds{{
     kHostFineTuneParameterId,
     kHostMasterGainParameterId,
     kHostWaveformParameterId,
@@ -49,6 +51,7 @@ constexpr std::array<clap_id, 7> kPublishedHostParameterIds{{
     kHostPanParameterId,
     kHostFilterCutoffParameterId,
     kHostFilterResonanceParameterId,
+    kHostFilterEnvelopeAmountParameterId,
 }};
 constexpr clap_id kTuningRemoteControlsPageId = 0x3200u;
 constexpr clap_id kPerformanceRemoteControlsPageId = 0x3201u;
@@ -104,13 +107,14 @@ const clap_plugin_descriptor_t kDescriptor{
 };
 
 constexpr std::array<std::uint8_t, 8> kStateMagic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-constexpr std::uint32_t kStateVersion = 7u;
+constexpr std::uint32_t kStateVersion = 8u;
 constexpr std::size_t kLegacyStateSize = 24u;
 constexpr std::size_t kStateV3Size = 28u;
 constexpr std::size_t kStateV4Size = 32u;
 constexpr std::size_t kStateV5Size = 36u;
 constexpr std::size_t kStateV6Size = 40u;
-constexpr std::size_t kStateSize = 44u;
+constexpr std::size_t kStateV7Size = 44u;
+constexpr std::size_t kStateSize = 48u;
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -194,7 +198,8 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
                                                   std::int32_t coarseTuneSemitones,
                                                   float pan,
                                                   float filterCutoffHz,
-                                                  float filterResonance) noexcept {
+                                                  float filterResonance,
+                                                  float filterEnvelopeAmount) noexcept {
     std::array<std::uint8_t, kStateSize> bytes{};
     std::copy(kStateMagic.begin(), kStateMagic.end(), bytes.begin());
     storeU32Le(bytes.data() + 8, kStateVersion);
@@ -223,6 +228,10 @@ std::array<std::uint8_t, kStateSize> encodeState(double fineTuneCents,
     std::uint32_t resonanceBits = 0;
     std::memcpy(&resonanceBits, &filterResonance, sizeof(resonanceBits));
     storeU32Le(bytes.data() + 40, resonanceBits);
+
+    std::uint32_t filterEnvelopeBits = 0;
+    std::memcpy(&filterEnvelopeBits, &filterEnvelopeAmount, sizeof(filterEnvelopeBits));
+    storeU32Le(bytes.data() + 44, filterEnvelopeBits);
     return bytes;
 }
 
@@ -234,7 +243,8 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
                  std::int32_t &coarseTuneSemitones,
                  float &pan,
                  float &filterCutoffHz,
-                 float &filterResonance) noexcept {
+                 float &filterResonance,
+                 float &filterEnvelopeAmount) noexcept {
     if (!std::equal(kStateMagic.begin(), kStateMagic.end(), bytes.begin()))
         return false;
 
@@ -246,6 +256,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
                               : version == 4u ? kStateV4Size
                               : version == 5u ? kStateV5Size
                               : version == 6u ? kStateV6Size
+                              : version == 7u ? kStateV7Size
                                               : kStateSize;
     if (encodedSize != expectedSize)
         return false;
@@ -262,6 +273,7 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     pan = 0.0f;
     filterCutoffHz = 6000.0f;
     filterResonance = 0.0f;
+    filterEnvelopeAmount = 0.0f;
     if (version == 1u) {
         if (bytes[20] != 0u || bytes[21] != 0u || bytes[22] != 0u || bytes[23] != 0u)
             return false;
@@ -321,9 +333,19 @@ bool decodeState(const std::array<std::uint8_t, kStateSize> &bytes,
     const auto resonanceBits = loadU32Le(bytes.data() + 40);
     std::memcpy(&filterResonance, &resonanceBits, sizeof(filterResonance));
     const auto *resonanceSpec = parameterSpecForId(kHostFilterResonanceParameterId);
-    return resonanceSpec && std::isfinite(filterResonance) &&
-           static_cast<double>(filterResonance) >= resonanceSpec->minValue &&
-           static_cast<double>(filterResonance) <= resonanceSpec->maxValue;
+    if (!resonanceSpec || !std::isfinite(filterResonance) ||
+        static_cast<double>(filterResonance) < resonanceSpec->minValue ||
+        static_cast<double>(filterResonance) > resonanceSpec->maxValue)
+        return false;
+    if (version == 7u)
+        return true;
+
+    const auto filterEnvelopeBits = loadU32Le(bytes.data() + 44);
+    std::memcpy(&filterEnvelopeAmount, &filterEnvelopeBits, sizeof(filterEnvelopeAmount));
+    const auto *filterEnvelopeSpec = parameterSpecForId(kHostFilterEnvelopeAmountParameterId);
+    return filterEnvelopeSpec && std::isfinite(filterEnvelopeAmount) &&
+           static_cast<double>(filterEnvelopeAmount) >= filterEnvelopeSpec->minValue &&
+           static_cast<double>(filterEnvelopeAmount) <= filterEnvelopeSpec->maxValue;
 }
 
 struct NoteEndOutputSink {
@@ -350,7 +372,8 @@ struct PendingParameterStateInput {
                  std::int32_t coarseTuneSemitones,
                  float pan,
                  float filterCutoffHz,
-                 float filterResonance) noexcept {
+                 float filterResonance,
+                 float filterEnvelopeAmount) noexcept {
         hostInput = newHostInput;
         hostCount = 0;
         valid = true;
@@ -362,6 +385,7 @@ struct PendingParameterStateInput {
         prepareEvent(events[4], kHostPanParameterId, pan);
         prepareEvent(events[5], kHostFilterCutoffParameterId, filterCutoffHz);
         prepareEvent(events[6], kHostFilterResonanceParameterId, filterResonance);
+        prepareEvent(events[7], kHostFilterEnvelopeAmountParameterId, filterEnvelopeAmount);
 
         if (hostInput && hostInput->size && hostInput->get)
             hostCount = hostInput->size(hostInput);
@@ -412,7 +436,7 @@ struct PendingParameterStateInput {
     }
 
     const clap_input_events_t *hostInput = nullptr;
-    std::array<clap_event_param_value_t, 7> events{};
+    std::array<clap_event_param_value_t, 8> events{};
     clap_input_events_t input{};
     std::uint32_t hostCount = 0;
     bool valid = false;
@@ -462,7 +486,10 @@ protected:
                 hostFilterCutoffHz_.load(std::memory_order_acquire)) ||
             !applyRetainedParameterBaseToEngine(
                 kHostFilterResonanceParameterId,
-                hostFilterResonance_.load(std::memory_order_acquire)))
+                hostFilterResonance_.load(std::memory_order_acquire)) ||
+            !applyRetainedParameterBaseToEngine(
+                kHostFilterEnvelopeAmountParameterId,
+                hostFilterEnvelopeAmount_.load(std::memory_order_acquire)))
             return false;
 
         appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
@@ -505,7 +532,8 @@ protected:
                     hostCoarseTuneSemitones_.load(std::memory_order_acquire),
                     hostPan_.load(std::memory_order_acquire),
                     hostFilterCutoffHz_.load(std::memory_order_acquire),
-                    hostFilterResonance_.load(std::memory_order_acquire)))
+                    hostFilterResonance_.load(std::memory_order_acquire),
+                    hostFilterEnvelopeAmount_.load(std::memory_order_acquire)))
                 return CLAP_PROCESS_ERROR;
             inputEvents = &pendingInput.input;
         }
@@ -544,7 +572,8 @@ protected:
             hostCoarseTuneSemitones_.load(std::memory_order_relaxed),
             hostPan_.load(std::memory_order_relaxed),
             hostFilterCutoffHz_.load(std::memory_order_relaxed),
-            hostFilterResonance_.load(std::memory_order_relaxed));
+            hostFilterResonance_.load(std::memory_order_relaxed),
+            hostFilterEnvelopeAmount_.load(std::memory_order_relaxed));
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -591,7 +620,14 @@ protected:
         if (version >= 7u) {
             if (!readAll(stream,
                          bytes.data() + kStateV6Size,
-                         kStateSize - kStateV6Size))
+                         kStateV7Size - kStateV6Size))
+                return false;
+            encodedSize = kStateV7Size;
+        }
+        if (version >= 8u) {
+            if (!readAll(stream,
+                         bytes.data() + kStateV7Size,
+                         kStateSize - kStateV7Size))
                 return false;
             encodedSize = kStateSize;
         }
@@ -608,6 +644,7 @@ protected:
         float pan = 0.0f;
         float filterCutoffHz = 6000.0f;
         float filterResonance = 0.0f;
+        float filterEnvelopeAmount = 0.0f;
         if (!decodeState(bytes,
                          encodedSize,
                          fineTuneCents,
@@ -616,7 +653,8 @@ protected:
                          coarseTuneSemitones,
                          pan,
                          filterCutoffHz,
-                         filterResonance))
+                         filterResonance,
+                         filterEnvelopeAmount))
             return false;
 
         const auto fineTune = static_cast<float>(fineTuneCents);
@@ -627,7 +665,8 @@ protected:
             hostCoarseTuneSemitones_.load(std::memory_order_relaxed) != coarseTuneSemitones ||
             hostPan_.load(std::memory_order_relaxed) != pan ||
             hostFilterCutoffHz_.load(std::memory_order_relaxed) != filterCutoffHz ||
-            hostFilterResonance_.load(std::memory_order_relaxed) != filterResonance;
+            hostFilterResonance_.load(std::memory_order_relaxed) != filterResonance ||
+            hostFilterEnvelopeAmount_.load(std::memory_order_relaxed) != filterEnvelopeAmount;
 
         pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
@@ -637,6 +676,7 @@ protected:
         pendingLoadedPan_.store(pan, std::memory_order_relaxed);
         pendingLoadedFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
         pendingLoadedFilterResonance_.store(filterResonance, std::memory_order_relaxed);
+        pendingLoadedFilterEnvelopeAmount_.store(filterEnvelopeAmount, std::memory_order_relaxed);
         hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
         hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
         hostWaveform_.store(waveform, std::memory_order_relaxed);
@@ -644,6 +684,7 @@ protected:
         hostPan_.store(pan, std::memory_order_relaxed);
         hostFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
         hostFilterResonance_.store(filterResonance, std::memory_order_relaxed);
+        hostFilterEnvelopeAmount_.store(filterEnvelopeAmount, std::memory_order_relaxed);
         loadedStateRevision_.fetch_add(1u, std::memory_order_release);
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
@@ -771,6 +812,7 @@ protected:
         page->page_id = kFilterRemoteControlsPageId;
         page->param_ids[0] = kHostFilterCutoffParameterId;
         page->param_ids[1] = kHostFilterResonanceParameterId;
+        page->param_ids[2] = kHostFilterEnvelopeAmountParameterId;
         return copyName(page->section_name, sizeof(page->section_name), "Filter") &&
                copyName(page->page_name, sizeof(page->page_name), "Tone");
     }
@@ -827,6 +869,10 @@ protected:
         }
         if (paramId == kHostFilterResonanceParameterId) {
             *value = static_cast<double>(hostFilterResonance_.load(std::memory_order_acquire));
+            return true;
+        }
+        if (paramId == kHostFilterEnvelopeAmountParameterId) {
+            *value = static_cast<double>(hostFilterEnvelopeAmount_.load(std::memory_order_acquire));
             return true;
         }
         *value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
@@ -917,6 +963,8 @@ private:
             hostFilterCutoffHz_.store(static_cast<float>(value), std::memory_order_release);
         } else if (paramId == kHostFilterResonanceParameterId) {
             hostFilterResonance_.store(static_cast<float>(value), std::memory_order_release);
+        } else if (paramId == kHostFilterEnvelopeAmountParameterId) {
+            hostFilterEnvelopeAmount_.store(static_cast<float>(value), std::memory_order_release);
         } else {
             hostMasterGainDb_.store(static_cast<float>(value), std::memory_order_release);
         }
@@ -960,6 +1008,9 @@ private:
             hostFilterResonance_.store(
                 pendingLoadedFilterResonance_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostFilterEnvelopeAmount_.store(
+                pendingLoadedFilterEnvelopeAmount_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
             return true;
         }
 
@@ -970,13 +1021,16 @@ private:
         double pan = 0.0;
         double filterCutoff = 0.0;
         double filterResonance = 0.0;
+        double filterEnvelopeAmount = 0.0;
         if (!engine_.parameterBaseValue(kHostFineTuneParameterId, fineTune) ||
             !engine_.parameterBaseValue(kHostMasterGainParameterId, masterGain) ||
             !engine_.parameterBaseValue(kHostWaveformParameterId, waveform) ||
             !engine_.parameterBaseValue(kHostCoarseTuneParameterId, coarseTune) ||
             !engine_.parameterBaseValue(kHostPanParameterId, pan) ||
             !engine_.parameterBaseValue(kHostFilterCutoffParameterId, filterCutoff) ||
-            !engine_.parameterBaseValue(kHostFilterResonanceParameterId, filterResonance))
+            !engine_.parameterBaseValue(kHostFilterResonanceParameterId, filterResonance) ||
+            !engine_.parameterBaseValue(kHostFilterEnvelopeAmountParameterId,
+                                        filterEnvelopeAmount))
             return false;
         hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
         hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
@@ -987,6 +1041,8 @@ private:
         hostFilterCutoffHz_.store(static_cast<float>(filterCutoff), std::memory_order_relaxed);
         hostFilterResonance_.store(static_cast<float>(filterResonance),
                                    std::memory_order_relaxed);
+        hostFilterEnvelopeAmount_.store(static_cast<float>(filterEnvelopeAmount),
+                                        std::memory_order_relaxed);
 
         const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
         if (revisionAfter != revisionBefore) {
@@ -1010,6 +1066,9 @@ private:
             hostFilterResonance_.store(
                 pendingLoadedFilterResonance_.load(std::memory_order_relaxed),
                 std::memory_order_relaxed);
+            hostFilterEnvelopeAmount_.store(
+                pendingLoadedFilterEnvelopeAmount_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
         }
         return true;
     }
@@ -1024,6 +1083,7 @@ private:
     std::atomic<float> hostPan_{0.0f};
     std::atomic<float> hostFilterCutoffHz_{6000.0f};
     std::atomic<float> hostFilterResonance_{0.0f};
+    std::atomic<float> hostFilterEnvelopeAmount_{0.0f};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
@@ -1031,6 +1091,7 @@ private:
     std::atomic<float> pendingLoadedPan_{0.0f};
     std::atomic<float> pendingLoadedFilterCutoffHz_{6000.0f};
     std::atomic<float> pendingLoadedFilterResonance_{0.0f};
+    std::atomic<float> pendingLoadedFilterEnvelopeAmount_{0.0f};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;
