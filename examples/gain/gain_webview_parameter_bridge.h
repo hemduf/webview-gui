@@ -21,15 +21,12 @@ public:
     void init(const clap_host_t *host) noexcept {
         host_ = host;
         hostParams_ = nullptr;
+        hostParamsResolved_ = false;
         writeIndex_.store(0, std::memory_order_relaxed);
         readIndex_.store(0, std::memory_order_relaxed);
         gainGestureOpen_ = false;
         bypassGestureOpen_ = false;
         active_.store(false, std::memory_order_relaxed);
-        if (host_ && host_->get_extension) {
-            hostParams_ = static_cast<const clap_host_params_t *>(
-                host_->get_extension(host_, CLAP_EXT_PARAMS));
-        }
     }
 
     void setActive(bool active) noexcept {
@@ -157,10 +154,21 @@ private:
         return command.value == 0.0 || command.value == 1.0;
     }
 
+    [[nodiscard]] bool resolveHostParams() const noexcept {
+        if (!hostParamsResolved_) {
+            hostParamsResolved_ = true;
+            if (host_ && host_->get_extension) {
+                hostParams_ = static_cast<const clap_host_params_t *>(
+                    host_->get_extension(host_, CLAP_EXT_PARAMS));
+            }
+        }
+        return hostParams_ != nullptr && hostParams_->request_flush != nullptr;
+    }
+
     [[nodiscard]] bool canSchedule() const noexcept {
         if (active_.load(std::memory_order_acquire))
             return host_ && host_->request_process;
-        if (hostParams_ && hostParams_->request_flush)
+        if (resolveHostParams())
             return true;
         return host_ && host_->request_process;
     }
@@ -172,7 +180,7 @@ private:
             return;
         }
 
-        if (hostParams_ && hostParams_->request_flush) {
+        if (resolveHostParams()) {
             hostParams_->request_flush(host_);
             return;
         }
@@ -322,7 +330,8 @@ private:
     }
 
     const clap_host_t *host_ = nullptr;
-    const clap_host_params_t *hostParams_ = nullptr;
+    mutable const clap_host_params_t *hostParams_ = nullptr;
+    mutable bool hostParamsResolved_ = false;
     std::array<Command, kQueueCapacity> commands_{};
     std::atomic<uint32_t> writeIndex_{0};
     std::atomic<uint32_t> readIndex_{0};
