@@ -35,6 +35,7 @@ public:
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         filterCutoffBaseHz_ = 6000.0;
+        filterResonanceBase_ = 0.0;
         panBase_ = 0.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
@@ -47,11 +48,14 @@ public:
         clearTransientExpressionState();
         const auto fineSlot = fineTuneSlot();
         const auto cutoffParameterSlot = filterCutoffSlot();
+        const auto resonanceParameterSlot = filterResonanceSlot();
         const auto panParameterSlot = panSlot();
         return polyphonicState_.setGlobalBase(fineSlot, fineTuneBaseCents_) &&
                polyphonicState_.setGlobalModulation(fineSlot, 0.0) &&
                polyphonicState_.setGlobalBase(cutoffParameterSlot, filterCutoffBaseHz_) &&
                polyphonicState_.setGlobalModulation(cutoffParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(resonanceParameterSlot, filterResonanceBase_) &&
+               polyphonicState_.setGlobalModulation(resonanceParameterSlot, 0.0) &&
                polyphonicState_.setGlobalBase(panParameterSlot, panBase_) &&
                polyphonicState_.setGlobalModulation(panParameterSlot, 0.0) &&
                VoiceEngine::setFineTuningCents(0.0f) &&
@@ -74,8 +78,11 @@ public:
             return false;
 
         filterCutoffBaseHz_ = static_cast<double>(cutoffHz);
+        filterResonanceBase_ = static_cast<double>(resonance);
         return polyphonicState_.setGlobalBase(filterCutoffSlot(), filterCutoffBaseHz_) &&
-               polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0);
+               polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0) &&
+               polyphonicState_.setGlobalBase(filterResonanceSlot(), filterResonanceBase_) &&
+               polyphonicState_.setGlobalModulation(filterResonanceSlot(), 0.0);
     }
 
     [[nodiscard]] bool parameterBaseValue(clap_id id, double &value) const noexcept {
@@ -102,6 +109,10 @@ public:
             value = filterCutoffBaseHz_;
             return true;
         }
+        if (spec->slot == ParameterSlot::FilterResonance) {
+            value = filterResonanceBase_;
+            return true;
+        }
         if (spec->slot == ParameterSlot::Pan) {
             value = panBase_;
             return true;
@@ -126,6 +137,8 @@ public:
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
         (void)polyphonicState_.setGlobalBase(filterCutoffSlot(), filterCutoffBaseHz_);
         (void)polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0);
+        (void)polyphonicState_.setGlobalBase(filterResonanceSlot(), filterResonanceBase_);
+        (void)polyphonicState_.setGlobalModulation(filterResonanceSlot(), 0.0);
         (void)polyphonicState_.setGlobalBase(panSlot(), panBase_);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
         (void)VoiceEngine::setPan(static_cast<float>(panBase_));
@@ -243,12 +256,20 @@ private:
         return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterCutoff);
     }
 
+    static constexpr clap_id filterResonanceId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterResonance);
+    }
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
 
     static constexpr std::size_t filterCutoffSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FilterCutoff);
+    }
+
+    static constexpr std::size_t filterResonanceSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::FilterResonance);
     }
 
     static constexpr std::size_t panSlot() noexcept {
@@ -601,6 +622,33 @@ private:
         return true;
     }
 
+    bool applyFilterResonanceState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto *spec = parameterSpecForId(filterResonanceId());
+        if (!spec)
+            return false;
+        const auto slot = filterResonanceSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto effectiveResonance =
+                std::clamp(base + modulation, spec->minValue, spec->maxValue);
+            if (!VoiceEngine::setVoiceFilterResonance(
+                    index, static_cast<float>(effectiveResonance)))
+                return false;
+        }
+        return true;
+    }
+
     bool applyPanState() noexcept {
         if (!syncVoices())
             return false;
@@ -682,7 +730,7 @@ private:
         if (!applyPanState())
             return false;
 
-        if (!applyFilterCutoffState())
+        if (!applyFilterCutoffState() || !applyFilterResonanceState())
             return false;
 
         double brightness = 0.0;
@@ -1000,6 +1048,18 @@ private:
                 return applyFilterCutoffState();
             }
 
+            if (spec->slot == ParameterSlot::FilterResonance) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyValue(filterResonanceSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    filterResonanceBase_ = event.value;
+                return applyFilterResonanceState();
+            }
+
             if (spec->slot == ParameterSlot::Pan) {
                 if (!syncVoices() || !polyphonicState_.applyValue(panSlot(), event))
                     return false;
@@ -1050,6 +1110,13 @@ private:
                     !polyphonicState_.applyModulation(filterCutoffSlot(), event))
                     return false;
                 return applyFilterCutoffState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterResonance) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(filterResonanceSlot(), event))
+                    return false;
+                return applyFilterResonanceState();
             }
 
             if (spec->slot == ParameterSlot::Pan) {
@@ -1106,6 +1173,7 @@ private:
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
     double filterCutoffBaseHz_ = 6000.0;
+    double filterResonanceBase_ = 0.0;
     double panBase_ = 0.0;
 };
 
