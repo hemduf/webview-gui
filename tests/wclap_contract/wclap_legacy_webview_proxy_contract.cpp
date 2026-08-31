@@ -282,5 +282,28 @@ int main() {
                 "wrapped destroy did not preserve the inner plug-in pointer identity"))
         return 17;
 
+    // The compatibility layer must not synthesize core capabilities which the
+    // inner table did not expose. Preserving nullness makes validator/host
+    // diagnostics observe the same core callback topology as the wrapped plug-in.
+    FakeState sparseState{};
+    clap_plugin_t sparse{};
+    sparseState.expectedPlugin = &sparse;
+    sparse.plugin_data = &sparseState;
+    sparse.init = fakeInit;
+    sparse.destroy = fakeDestroy;
+    sparse.get_extension = fakeGetExtension;
+
+    const auto *sparsePlugin = webview_gui::wrapLegacyWclapWebviewPlugin(&sparse);
+    if (!expect(sparsePlugin && !sparsePlugin->activate && !sparsePlugin->deactivate &&
+                    !sparsePlugin->start_processing && !sparsePlugin->stop_processing &&
+                    !sparsePlugin->reset && !sparsePlugin->process &&
+                    !sparsePlugin->on_main_thread,
+                "legacy WCLAP proxy synthesized missing CLAP core callbacks"))
+        return 18;
+    sparsePlugin->destroy(sparsePlugin);
+    if (!expect(sparseState.destroyed && sparseState.pointerIdentityFailures == 0,
+                "sparse wrapped destroy did not preserve inner plug-in pointer identity"))
+        return 19;
+
     return 0;
 }
