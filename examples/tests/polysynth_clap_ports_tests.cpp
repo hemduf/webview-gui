@@ -240,12 +240,17 @@ struct PluginFixture {
         return !immediateEnvelope || configureImmediateEnvelope(plugin, params);
     }
 
-    bool activate(std::uint32_t maximumFrames = 128) noexcept {
-        activated = plugin->activate(plugin, kSampleRate, 1, maximumFrames);
+    bool activateAt(double sampleRate,
+                    std::uint32_t maximumFrames = 128) noexcept {
+        activated = plugin->activate(plugin, sampleRate, 1, maximumFrames);
         if (!activated)
             return false;
         processing = plugin->start_processing(plugin);
         return processing;
+    }
+
+    bool activate(std::uint32_t maximumFrames = 128) noexcept {
+        return activateAt(kSampleRate, maximumFrames);
     }
 
     bool stop() noexcept {
@@ -624,6 +629,41 @@ bool checkProductionFilterProcess(const clap_plugin_factory_t *factory) noexcept
     return prefixEqual && delta > 1.0e-4 && hostValueOk;
 }
 
+bool checkSampleRateSafeFilterBootstrap(const clap_plugin_factory_t *factory) noexcept {
+    PluginFixture lowRate;
+    if (!lowRate.create(factory, false)) {
+        lowRate.destroy();
+        return false;
+    }
+    double cutoff = 0.0;
+    if (!lowRate.params->get_value(lowRate.plugin, kCutoffId, &cutoff) ||
+        cutoff != 6000.0 || !lowRate.activateAt(8000.0, 64)) {
+        lowRate.destroy();
+        return false;
+    }
+    double retainedLowRateCutoff = 0.0;
+    const bool lowRateOk =
+        lowRate.params->get_value(lowRate.plugin, kCutoffId, &retainedLowRateCutoff) &&
+        retainedLowRateCutoff == 6000.0;
+    lowRate.destroy();
+    if (!lowRateOk)
+        return false;
+
+    PluginFixture upperBound;
+    if (!upperBound.create(factory, false) ||
+        !setGlobalParameter(upperBound.plugin, upperBound.params, kCutoffId, 20000.0) ||
+        !upperBound.activateAt(44100.0, 64)) {
+        upperBound.destroy();
+        return false;
+    }
+    double retainedUpperCutoff = 0.0;
+    const bool upperBoundOk =
+        upperBound.params->get_value(upperBound.plugin, kCutoffId, &retainedUpperCutoff) &&
+        retainedUpperCutoff == 20000.0;
+    upperBound.destroy();
+    return upperBoundOk;
+}
+
 } // namespace
 
 int main() {
@@ -658,5 +698,7 @@ int main() {
         return 7;
     if (!checkProductionFilterProcess(factory))
         return 8;
+    if (!checkSampleRateSafeFilterBootstrap(factory))
+        return 9;
     return 0;
 }
