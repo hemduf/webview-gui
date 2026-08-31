@@ -50,7 +50,7 @@ require_absent(plugin_source
     "std::strlen(display)"
     "unbounded host parameter text scan")
 require_contains(plugin_source
-    "constexpr std::array<clap_id, 8> kPublishedHostParameterIds"
+    "constexpr std::array<clap_id, 9> kPublishedHostParameterIds"
     "published parameter table")
 require_contains(plugin_source
     "kHostFilterCutoffParameterId"
@@ -62,17 +62,20 @@ require_contains(plugin_source
     "kHostFilterEnvelopeAmountParameterId"
     "Filter Envelope Amount host parameter ID")
 require_contains(plugin_source
+    "kHostAmpLevelParameterId"
+    "Amp Level host parameter ID")
+require_contains(plugin_source
     "return static_cast<std::uint32_t>(kPublishedHostParameterIds.size());"
     "published parameter count")
 require_contains(plugin_source
     "bool implementsState() const noexcept override { return true; }"
     "state implementation marker")
 require_contains(plugin_source
-    "constexpr std::uint32_t kStateVersion = 8u;"
-    "Filter Envelope Amount state version")
+    "constexpr std::uint32_t kStateVersion = 9u;"
+    "Amp Level state version")
 require_contains(plugin_source
-    "constexpr std::size_t kStateV7Size = 44u;"
-    "version-7 compatibility size")
+    "constexpr std::size_t kStateV8Size = 48u;"
+    "version-8 compatibility size")
 require_contains(plugin_source
     "bool implementsStateContext() const noexcept override { return true; }"
     "state-context implementation marker")
@@ -97,6 +100,9 @@ require_contains(plugin_source
 require_contains(plugin_source
     "page->param_ids[1] = kHostPanParameterId;"
     "Pan remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[2] = kHostAmpLevelParameterId;"
+    "Amp Level remote-controls mapping")
 require_contains(plugin_source
     "page->param_ids[0] = kHostFilterCutoffParameterId;"
     "Filter Cutoff remote-controls mapping")
@@ -130,18 +136,18 @@ require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix h
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
 require_contains(readme "| `clap.note-ports` | Implemented |" "note-ports matrix row")
 require_contains(readme "| `clap.params` | Partial |" "params matrix row")
-require_contains(readme "Fine Tune, Master Gain, Waveform, Coarse Tune, Pan, Filter Cutoff, Filter Resonance, and Filter Env are published" "Filter Envelope Amount parameter documentation")
-require_contains(readme "stable ID 1010 / host index 7" "Filter Envelope Amount host index documentation")
+require_contains(readme "Fine Tune, Master Gain, Waveform, Coarse Tune, Pan, Filter Cutoff, Filter Resonance, Filter Env, and Amp Level are published" "Amp Level parameter documentation")
+require_contains(readme "stable ID 1012 / host index 8" "Amp Level host index documentation")
 require_contains(readme "| `clap.state` | Implemented |" "state matrix row")
-require_contains(readme "48-byte version-8 payload" "Filter Envelope Amount state documentation")
-require_contains(readme "version-7 44-byte payloads remain loadable" "state backward compatibility")
-require_contains(readme "Filter Env defaults to 0 when loading pre-v8 state" "Filter Envelope Amount state migration")
+require_contains(readme "52-byte version-9 payload" "Amp Level state documentation")
+require_contains(readme "version-8 48-byte payloads remain loadable" "state backward compatibility")
+require_contains(readme "Amp Level defaults to 1 when loading pre-v9 state" "Amp Level state migration")
 require_contains(readme "| `clap.state-context/2` | Implemented |" "state-context matrix row")
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
 require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
 require_contains(readme "`Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune" "Coarse Tune remote-controls page")
-require_contains(readme "`Output / Performance` maps Master Gain and Pan" "Pan remote-controls page")
+require_contains(readme "`Output / Performance` maps Master Gain, Pan, and Amp Level" "Amp Level remote-controls page")
 require_contains(readme "`Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env" "Filter Envelope Amount remote-controls page")
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
