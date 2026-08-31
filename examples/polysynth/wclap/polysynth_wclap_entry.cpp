@@ -1,5 +1,5 @@
 #include "../polysynth_plugin.h"
-#include "webview-gui/wclap-legacy-webview-proxy.h"
+#include "polysynth_wclap_proxy.h"
 
 #include <clap/clap.h>
 
@@ -37,11 +37,12 @@ const clap_plugin_t *CLAP_ABI wclapFactoryCreatePlugin(
     if (!inner)
         return nullptr;
 
-    // The pinned WCLAP bridge probes clap.webview/3 before module init even for
-    // plug-ins which do not currently advertise a GUI. Keep strict clap-helpers
-    // lifecycle semantics inside PolySynth and tolerate only that historical
-    // bridge probe at the WCLAP factory boundary.
-    const auto *wrapped = ::webview_gui::wrapLegacyWclapWebviewPlugin(inner);
+    // The WCLAP-only proxy keeps the already-qualified PolySynth DSP/CLAP
+    // implementation unchanged while adding host-owned clap.gui + clap.webview,
+    // bounded GUI parameter events and read-only RT telemetry. It also contains
+    // the single historical pre-init clap.webview/3 compatibility exception
+    // required by the pinned bridge.
+    const auto *wrapped = wclap::wrapPolySynthWclapPlugin(inner, host);
     if (wrapped)
         return wrapped;
 
