@@ -291,11 +291,12 @@ bool checkContinuousParameterTextContract() {
         const char *text;
         double expected;
     };
-    constexpr std::array<ParseCase, 4> valid{{
+    constexpr std::array<ParseCase, 5> valid{{
         {1000u, "-6.0205999", -6.0205999},
         {1003u, "99.5", 99.5},
         {1004u, "6000.25", 6000.25},
         {1011u, "-0.5", -0.5},
+        {1012u, "0.75", 0.75},
     }};
 
     for (const auto &item : valid) {
@@ -326,6 +327,7 @@ bool checkContinuousParameterTextContract() {
     if (continuousParameterValueFromText(1001u, "1", preserved) ||
         continuousParameterValueFromText(1002u, "12", preserved) ||
         continuousParameterValueFromText(1003u, "101", preserved) ||
+        continuousParameterValueFromText(1012u, "1.01", preserved) ||
         preserved != 17.0) {
         std::cerr << "continuous parser accepted stepped or out-of-range parameter text\n";
         return false;
@@ -347,11 +349,12 @@ bool checkContinuousParameterValueToTextContract() {
         clap_id id;
         double value;
     };
-    constexpr std::array<FormatCase, 4> valid{{
+    constexpr std::array<FormatCase, 5> valid{{
         {1000u, -6.0205999},
         {1003u, 99.5},
         {1004u, 6000.25},
         {1011u, -0.5},
+        {1012u, 0.75},
     }};
 
     for (const auto &item : valid) {
@@ -427,11 +430,12 @@ bool checkCanonicalParameterTextDispatch() {
         double value;
         const char *expected;
     };
-    constexpr std::array<FormatCase, 4> formatted{{
+    constexpr std::array<FormatCase, 5> formatted{{
         {1001u, 1.9, "Saw"},
         {1002u, -12.9, "-12"},
         {1004u, 6000.25, "6000.25"},
         {1011u, 0.5, "0.5"},
+        {1012u, 0.75, "0.75"},
     }};
 
     for (const auto &item : formatted) {
@@ -451,11 +455,12 @@ bool checkCanonicalParameterTextDispatch() {
         const char *text;
         double expected;
     };
-    constexpr std::array<ParseCase, 4> parsedCases{{
+    constexpr std::array<ParseCase, 5> parsedCases{{
         {1001u, "Square", 2.0},
         {1002u, "24", 24.0},
         {1003u, "12.3456789012345", 12.3456789012345},
         {1004u, "12345.6789", 12345.6789},
+        {1012u, "0.25", 0.25},
     }};
 
     for (const auto &item : parsedCases) {
@@ -511,7 +516,7 @@ bool checkCanonicalParameterTextDispatch() {
 }
 
 int main() {
-    if (kParameterCount != 12) {
+    if (kParameterCount != 13) {
         std::cerr << "unexpected PolySynth parameter count\n";
         return 1;
     }
@@ -553,7 +558,8 @@ int main() {
         !requirePolyphonic(ParameterSlot::FilterCutoff, "filter cutoff") ||
         !requirePolyphonic(ParameterSlot::FilterResonance, "filter resonance") ||
         !requirePolyphonic(ParameterSlot::FilterEnvelopeAmount, "filter envelope") ||
-        !requirePolyphonic(ParameterSlot::Pan, "pan")) {
+        !requirePolyphonic(ParameterSlot::Pan, "pan") ||
+        !requirePolyphonic(ParameterSlot::AmpLevel, "amp level")) {
         return 6;
     }
 
@@ -576,13 +582,19 @@ int main() {
     const auto *waveform = parameterSpecForId(1001u);
     const auto *coarse = parameterSpecForId(1002u);
     const auto *master = parameterSpecForId(1000u);
-    if (!waveform || !coarse || !master ||
+    const auto *ampLevel = parameterSpecForId(1012u);
+    if (!waveform || !coarse || !master || !ampLevel ||
         (waveform->flags & (CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM)) !=
             (CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM) ||
         (coarse->flags & CLAP_PARAM_IS_STEPPED) == 0 ||
         (master->flags & CLAP_PARAM_IS_MODULATABLE) == 0 ||
-        supportsPolyphonicAddressing(*master)) {
-        std::cerr << "global parameter capabilities are inconsistent\n";
+        supportsPolyphonicAddressing(*master) ||
+        ampLevel->slot != ParameterSlot::AmpLevel ||
+        std::strcmp(ampLevel->name, "Amp Level") != 0 ||
+        std::strcmp(ampLevel->module, "Amp") != 0 ||
+        ampLevel->minValue != 0.0 || ampLevel->maxValue != 1.0 ||
+        ampLevel->defaultValue != 1.0) {
+        std::cerr << "global or Amp Level parameter capabilities are inconsistent\n";
         return 8;
     }
 
