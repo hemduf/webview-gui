@@ -49,9 +49,13 @@ require_contains(plugin_source
 require_absent(plugin_source
     "std::strlen(display)"
     "unbounded host parameter text scan")
+
+# Existing host indices 0..8 are ABI and project-state compatibility surface.
+# The four Amp Envelope controls must therefore append at 9..12 even though their
+# stable parameter IDs numerically precede Filter Env / Pan / Amp Level.
 require_contains(plugin_source
-    "constexpr std::array<clap_id, 9> kPublishedHostParameterIds"
-    "published parameter table")
+    "constexpr std::array<clap_id, 13> kPublishedHostParameterIds"
+    "append-only published parameter table")
 require_contains(plugin_source
     "kHostFilterCutoffParameterId"
     "Filter Cutoff host parameter ID")
@@ -65,17 +69,34 @@ require_contains(plugin_source
     "kHostAmpLevelParameterId"
     "Amp Level host parameter ID")
 require_contains(plugin_source
+    "kHostAmpAttackParameterId"
+    "Amp Attack host parameter ID")
+require_contains(plugin_source
+    "kHostAmpDecayParameterId"
+    "Amp Decay host parameter ID")
+require_contains(plugin_source
+    "kHostAmpSustainParameterId"
+    "Amp Sustain host parameter ID")
+require_contains(plugin_source
+    "kHostAmpReleaseParameterId"
+    "Amp Release host parameter ID")
+require_contains(plugin_source
     "return static_cast<std::uint32_t>(kPublishedHostParameterIds.size());"
     "published parameter count")
+
 require_contains(plugin_source
     "bool implementsState() const noexcept override { return true; }"
     "state implementation marker")
 require_contains(plugin_source
-    "constexpr std::uint32_t kStateVersion = 9u;"
-    "Amp Level state version")
+    "constexpr std::uint32_t kStateVersion = 10u;"
+    "Amp Envelope state version")
 require_contains(plugin_source
-    "constexpr std::size_t kStateV8Size = 48u;"
-    "version-8 compatibility size")
+    "constexpr std::size_t kStateV9Size = 52u;"
+    "version-9 compatibility size")
+require_contains(plugin_source
+    "constexpr std::size_t kStateSize = 68u;"
+    "version-10 state size")
+
 require_contains(plugin_source
     "bool implementsStateContext() const noexcept override { return true; }"
     "state-context implementation marker")
@@ -86,10 +107,17 @@ require_contains(plugin_source
     "bool implementsTail() const noexcept override { return true; }"
     "tail implementation marker")
 require_contains(plugin_source
+    "currentTailSamples_.load(std::memory_order_acquire)"
+    "dynamic lock-free tail publication")
+require_contains(plugin_source
+    "hostTail_->changed(host_)"
+    "audio-thread tail-change notification")
+
+require_contains(plugin_source
     "bool implementRemoteControls() const noexcept override { return true; }"
     "remote-controls implementation marker")
 require_contains(plugin_source
-    "std::uint32_t remoteControlsPageCount() noexcept override { return 3u; }"
+    "std::uint32_t remoteControlsPageCount() noexcept override { return 4u; }"
     "remote-controls page count")
 require_contains(plugin_source
     "page->param_ids[1] = kHostWaveformParameterId;"
@@ -112,6 +140,19 @@ require_contains(plugin_source
 require_contains(plugin_source
     "page->param_ids[2] = kHostFilterEnvelopeAmountParameterId;"
     "Filter Envelope Amount remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[0] = kHostAmpAttackParameterId;"
+    "Amp Attack remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[1] = kHostAmpDecayParameterId;"
+    "Amp Decay remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[2] = kHostAmpSustainParameterId;"
+    "Amp Sustain remote-controls mapping")
+require_contains(plugin_source
+    "page->param_ids[3] = kHostAmpReleaseParameterId;"
+    "Amp Release remote-controls mapping")
+
 require_contains(plugin_source
     "bool implementsNoteName() const noexcept override { return true; }"
     "note-name implementation marker")
@@ -136,19 +177,21 @@ require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix h
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
 require_contains(readme "| `clap.note-ports` | Implemented |" "note-ports matrix row")
 require_contains(readme "| `clap.params` | Partial |" "params matrix row")
-require_contains(readme "Fine Tune, Master Gain, Waveform, Coarse Tune, Pan, Filter Cutoff, Filter Resonance, Filter Env, and Amp Level are published" "Amp Level parameter documentation")
-require_contains(readme "stable ID 1012 / host index 8" "Amp Level host index documentation")
+require_contains(readme "Amp Attack, Amp Decay, Amp Sustain, and Amp Release are appended at host indices 9..12" "Amp Envelope parameter documentation")
+require_contains(readme "stable IDs 1006..1009" "Amp Envelope stable ID documentation")
 require_contains(readme "| `clap.state` | Implemented |" "state matrix row")
-require_contains(readme "52-byte version-9 payload" "Amp Level state documentation")
-require_contains(readme "version-8 48-byte payloads remain loadable" "state backward compatibility")
-require_contains(readme "Amp Level defaults to 1 when loading pre-v9 state" "Amp Level state migration")
+require_contains(readme "68-byte version-10 payload" "Amp Envelope state documentation")
+require_contains(readme "version-9 52-byte payloads remain loadable" "state backward compatibility")
+require_contains(readme "Amp Envelope defaults to Attack 0.01 s, Decay 0.1 s, Sustain 0.8, and Release 0.25 s when loading pre-v10 state" "Amp Envelope state migration")
 require_contains(readme "| `clap.state-context/2` | Implemented |" "state-context matrix row")
 require_contains(readme "| `clap.voice-info` | Implemented |" "voice-info matrix row")
 require_contains(readme "| `clap.tail` | Implemented |" "tail matrix row")
+require_contains(readme "Release parameter converted to samples at the active sample rate" "dynamic tail documentation")
 require_contains(readme "| `clap.remote-controls/2` | Partial |" "remote-controls matrix row")
 require_contains(readme "`Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune" "Coarse Tune remote-controls page")
 require_contains(readme "`Output / Performance` maps Master Gain, Pan, and Amp Level" "Amp Level remote-controls page")
 require_contains(readme "`Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env" "Filter Envelope Amount remote-controls page")
+require_contains(readme "`Amp Envelope / ADSR` maps Attack, Decay, Sustain, and Release" "Amp Envelope remote-controls page")
 require_contains(readme "| `clap.gui` | Pending |" "GUI matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
