@@ -1,0 +1,1 @@
+Temporary exact-head validation trigger for the host-eager / plug-in-lazy WCLAP lifecycle correction.
