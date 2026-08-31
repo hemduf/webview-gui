@@ -240,9 +240,9 @@ int main() {
         plugin->destroy(plugin);
         return 9;
     }
-    NoteInputEvents noteOn(CLAP_EVENT_NOTE_ON, 700);
-    AcceptingOutputEvents noteOnOutput;
-    if (!processNoteEvent(plugin, &noteOn.input, noteOnOutput)) {
+    NoteInputEvents longNoteOn(CLAP_EVENT_NOTE_ON, 700);
+    AcceptingOutputEvents longNoteOnOutput;
+    if (!processNoteEvent(plugin, &longNoteOn.input, longNoteOnOutput)) {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
@@ -260,21 +260,41 @@ int main() {
         return 11;
     }
 
-    // Once the old generation is choked and retired, process() observes an empty
-    // active set, publishes the new 6,000-sample default and notifies the host.
+    // A new generation now snapshots the shorter 6,000-sample Release. Keeping
+    // it active after the long generation is retired distinguishes the exact
+    // max-active-snapshot contract from a coarse "any voice active" hold.
     if (!plugin->start_processing(plugin)) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 12;
     }
-    NoteInputEvents choke(CLAP_EVENT_NOTE_CHOKE, 700);
-    AcceptingOutputEvents chokeOutput;
-    if (!processNoteEvent(plugin, &choke.input, chokeOutput) ||
-        tail->get(plugin) != 6000u || hostState.changedCalls != 2u) {
+    NoteInputEvents shortNoteOn(CLAP_EVENT_NOTE_ON, 701);
+    AcceptingOutputEvents shortNoteOnOutput;
+    if (!processNoteEvent(plugin, &shortNoteOn.input, shortNoteOnOutput) ||
+        tail->get(plugin) != 24000u || hostState.changedCalls != 1u) {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 13;
+    }
+    plugin->stop_processing(plugin);
+
+    // Retiring only the old long generation must immediately lower the published
+    // tail to max(default=6000, remaining active snapshot=6000), even though the
+    // shorter generation is still active. This is the exact CLAP tail contract.
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 14;
+    }
+    NoteInputEvents chokeLong(CLAP_EVENT_NOTE_CHOKE, 700);
+    AcceptingOutputEvents chokeLongOutput;
+    if (!processNoteEvent(plugin, &chokeLong.input, chokeLongOutput) ||
+        tail->get(plugin) != 6000u || hostState.changedCalls != 2u) {
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 15;
     }
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
@@ -285,12 +305,12 @@ int main() {
     if (!setRelease(plugin, params, 0.125) || hostState.changedCalls != 2u ||
         !plugin->activate(plugin, 96000.0, 1, 128)) {
         plugin->destroy(plugin);
-        return 14;
+        return 16;
     }
     if (tail->get(plugin) != 12000u || hostState.changedCalls != 2u) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 15;
+        return 17;
     }
 
     plugin->deactivate(plugin);
