@@ -185,6 +185,16 @@ inline constexpr bool supportsPolyphonicAddressing(const ParameterSpec &spec) no
 }
 
 namespace detail {
+inline bool boundedParameterDisplayLength(const char *text,
+                                          std::size_t &length) noexcept {
+    length = 0;
+    if (!text)
+        return false;
+    while (length < CLAP_NAME_SIZE && text[length] != '\0')
+        ++length;
+    return length > 0 && length < CLAP_NAME_SIZE;
+}
+
 inline bool copyStaticParameterDisplayText(const char *text,
                                            char *display,
                                            std::uint32_t size) noexcept {
@@ -218,11 +228,14 @@ inline bool waveformTextForValue(double value,
 }
 
 inline bool waveformValueFromName(const char *name, double &value) noexcept {
-    if (!name)
+    std::size_t length = 0;
+    if (!detail::boundedParameterDisplayLength(name, length))
         return false;
 
     for (std::size_t index = 0; index < kWaveformNames.size(); ++index) {
-        if (std::strcmp(name, kWaveformNames[index]) == 0) {
+        const auto *expected = kWaveformNames[index];
+        const auto expectedLength = std::strlen(expected);
+        if (length == expectedLength && std::memcmp(name, expected, length) == 0) {
             value = static_cast<double>(index);
             return true;
         }
@@ -248,18 +261,13 @@ inline bool coarseTuningTextForValue(double value,
 }
 
 inline bool coarseTuningValueFromText(const char *display, double &value) noexcept {
-    if (!display || *display == '\0')
-        return false;
-
     const auto *spec = parameterSpecForId(
         kFirstParameterId + static_cast<clap_id>(ParameterSlot::CoarseTuning));
     if (!spec)
         return false;
 
     std::size_t length = 0;
-    while (length < CLAP_NAME_SIZE && display[length] != '\0')
-        ++length;
-    if (length == 0 || length == CLAP_NAME_SIZE)
+    if (!detail::boundedParameterDisplayLength(display, length))
         return false;
 
     const char *end = display + length;
@@ -299,14 +307,11 @@ inline bool continuousParameterValueFromText(clap_id id,
                                              const char *display,
                                              double &value) noexcept {
     const auto *spec = parameterSpecForId(id);
-    if (!spec || (spec->flags & CLAP_PARAM_IS_STEPPED) != 0u ||
-        !display || *display == '\0')
+    if (!spec || (spec->flags & CLAP_PARAM_IS_STEPPED) != 0u)
         return false;
 
     std::size_t length = 0;
-    while (length < CLAP_NAME_SIZE && display[length] != '\0')
-        ++length;
-    if (length == 0 || length == CLAP_NAME_SIZE)
+    if (!detail::boundedParameterDisplayLength(display, length))
         return false;
 
     const char *end = display + length;
