@@ -1258,9 +1258,19 @@ private:
             !releaseSecondsToTailSamples(releaseSeconds, activeSampleRate_, tailSamples))
             return false;
 
-        const auto previous = currentTailSamples_.exchange(tailSamples,
-                                                            std::memory_order_acq_rel);
-        if (notifyHost && previous != tailSamples && hostTail_ && hostTail_->changed)
+        const auto previous = currentTailSamples_.load(std::memory_order_acquire);
+        // Existing voices snapshot Release at NOTE_ON. If the default Release is
+        // shortened while any generation remains active, lowering the advertised
+        // tail immediately could under-report that older generation. Keep the
+        // previous (conservative) tail until the active set drains; process() calls
+        // this again after every block and then publishes the lower default.
+        if (tailSamples < previous && engine_.activeCount() != 0)
+            tailSamples = previous;
+        if (tailSamples == previous)
+            return true;
+
+        currentTailSamples_.store(tailSamples, std::memory_order_release);
+        if (notifyHost && hostTail_ && hostTail_->changed)
             hostTail_->changed(host_);
         return true;
     }
