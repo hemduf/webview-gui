@@ -3,6 +3,7 @@
 
 #include <clap/clap.h>
 #include <clap/ext/params.h>
+#include <clap/ext/remote-controls.h>
 #include <clap/ext/state.h>
 
 #include <algorithm>
@@ -24,6 +25,7 @@ constexpr clap_id kWaveformId = paramId(ParameterSlot::Waveform);
 constexpr clap_id kCoarseTuneId = paramId(ParameterSlot::CoarseTuning);
 constexpr clap_id kFineTuneId = paramId(ParameterSlot::FineTuning);
 constexpr clap_id kCutoffId = paramId(ParameterSlot::FilterCutoff);
+constexpr clap_id kResonanceId = paramId(ParameterSlot::FilterResonance);
 constexpr clap_id kPanId = paramId(ParameterSlot::Pan);
 constexpr double kQuarterGainDb = -12.041199826559248;
 
@@ -209,6 +211,20 @@ std::array<std::uint8_t, 36> version5State(double fineTune,
     return bytes;
 }
 
+std::array<std::uint8_t, 40> version6State(double fineTune,
+                                           float masterGainDb,
+                                           std::uint32_t waveform,
+                                           std::int32_t coarseTune,
+                                           float pan,
+                                           float cutoff) noexcept {
+    std::array<std::uint8_t, 40> bytes{};
+    const auto v5 = version5State(fineTune, masterGainDb, waveform, coarseTune, pan);
+    std::copy(v5.begin(), v5.end(), bytes.begin());
+    storeU32Le(bytes.data() + 8, 6u);
+    storeFloat(bytes, 36, cutoff);
+    return bytes;
+}
+
 bool setParameter(const clap_plugin_t *plugin,
                   const clap_plugin_params_t *params,
                   clap_id paramId,
@@ -239,7 +255,8 @@ bool verifyLegacyState(const clap_plugin_factory_t *factory,
                        double waveform,
                        double coarse,
                        double pan,
-                       double cutoff) noexcept {
+                       double cutoff,
+                       double resonance) noexcept {
     const auto *plugin = factory->create_plugin(
         factory, &kHost, webview_gui::examples::polysynth::kPolySynthPluginId);
     if (!plugin || !plugin->init(plugin)) {
@@ -258,7 +275,8 @@ bool verifyLegacyState(const clap_plugin_factory_t *factory,
                     getParameter(plugin, params, kWaveformId, waveform) &&
                     getParameter(plugin, params, kCoarseTuneId, coarse) &&
                     getParameter(plugin, params, kPanId, pan) &&
-                    getParameter(plugin, params, kCutoffId, cutoff);
+                    getParameter(plugin, params, kCutoffId, cutoff) &&
+                    getParameter(plugin, params, kResonanceId, resonance);
     plugin->destroy(plugin);
     return ok;
 }
@@ -281,29 +299,74 @@ int main() {
 
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+    const auto *remote = static_cast<const clap_plugin_remote_controls_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
-    if (!params || !params->get_value || !params->flush || params->count(plugin) != 6u ||
+    if (!params || !params->get_value || !params->flush || !params->get_info ||
+        !params->value_to_text || !params->text_to_value || params->count(plugin) != 7u ||
+        !remote || !remote->count || !remote->get || remote->count(plugin) != 3u ||
         !state || !state->save || !state->load) {
         plugin->destroy(plugin);
         return 4;
     }
+
+    clap_param_info_t resonanceInfo{};
+    if (!params->get_info(plugin, 6u, &resonanceInfo) || resonanceInfo.id != kResonanceId ||
+        std::strcmp(resonanceInfo.name, "Resonance") != 0 ||
+        std::strcmp(resonanceInfo.module, "Filter") != 0 ||
+        resonanceInfo.min_value != 0.0 || resonanceInfo.max_value != 0.99 ||
+        resonanceInfo.default_value != 0.0 ||
+        (resonanceInfo.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
+        (resonanceInfo.flags & CLAP_PARAM_REQUIRES_PROCESS) == 0u) {
+        plugin->destroy(plugin);
+        return 5;
+    }
+
+    std::array<char, CLAP_NAME_SIZE> resonanceText{};
+    double parsedResonance = -1.0;
+    if (!params->value_to_text(plugin,
+                               kResonanceId,
+                               0.75,
+                               resonanceText.data(),
+                               static_cast<std::uint32_t>(resonanceText.size())) ||
+        !params->text_to_value(plugin, kResonanceId, resonanceText.data(), &parsedResonance) ||
+        std::fabs(parsedResonance - 0.75) > 1.0e-12) {
+        plugin->destroy(plugin);
+        return 6;
+    }
+
+    clap_remote_controls_page filterPage{};
+    if (!remote->get(plugin, 2u, &filterPage) || filterPage.param_ids[0] != kCutoffId ||
+        filterPage.param_ids[1] != kResonanceId) {
+        plugin->destroy(plugin);
+        return 7;
+    }
+
+    if (!setParameter(plugin, params, kResonanceId, 0.25) ||
+        !plugin->activate(plugin, 48000.0, 1, 64) ||
+        !setParameter(plugin, params, kResonanceId, 0.5)) {
+        plugin->destroy(plugin);
+        return 8;
+    }
+    plugin->deactivate(plugin);
 
     if (!setParameter(plugin, params, kFineTuneId, 37.5) ||
         !setParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
         !setParameter(plugin, params, kWaveformId, 2.0) ||
         !setParameter(plugin, params, kCoarseTuneId, -17.0) ||
         !setParameter(plugin, params, kPanId, 0.625) ||
-        !setParameter(plugin, params, kCutoffId, 4321.5)) {
+        !setParameter(plugin, params, kCutoffId, 4321.5) ||
+        !setParameter(plugin, params, kResonanceId, 0.875)) {
         plugin->destroy(plugin);
-        return 5;
+        return 9;
     }
 
     ChunkedOutputStream saved(3);
-    if (!state->save(plugin, &saved.stream) || saved.used != 40u || saved.calls < 2 ||
-        loadU32Le(saved.bytes.data() + 8) != 6u) {
+    if (!state->save(plugin, &saved.stream) || saved.used != 44u || saved.calls < 2 ||
+        loadU32Le(saved.bytes.data() + 8) != 7u) {
         plugin->destroy(plugin);
-        return 6;
+        return 10;
     }
 
     if (!setParameter(plugin, params, kFineTuneId, -25.0) ||
@@ -311,9 +374,10 @@ int main() {
         !setParameter(plugin, params, kWaveformId, 1.0) ||
         !setParameter(plugin, params, kCoarseTuneId, 12.0) ||
         !setParameter(plugin, params, kPanId, -0.25) ||
-        !setParameter(plugin, params, kCutoffId, 9876.0)) {
+        !setParameter(plugin, params, kCutoffId, 9876.0) ||
+        !setParameter(plugin, params, kResonanceId, 0.125)) {
         plugin->destroy(plugin);
-        return 7;
+        return 11;
     }
 
     ChunkedInputStream restore(saved.bytes.data(), saved.used, 2);
@@ -323,30 +387,31 @@ int main() {
         !getParameter(plugin, params, kWaveformId, 2.0) ||
         !getParameter(plugin, params, kCoarseTuneId, -17.0) ||
         !getParameter(plugin, params, kPanId, 0.625) ||
-        !getParameter(plugin, params, kCutoffId, 4321.5)) {
+        !getParameter(plugin, params, kCutoffId, 4321.5) ||
+        !getParameter(plugin, params, kResonanceId, 0.875)) {
         plugin->destroy(plugin);
-        return 8;
+        return 12;
     }
 
     ChunkedInputStream truncated(saved.bytes.data(), saved.used - 1, 2);
     if (state->load(plugin, &truncated.stream) ||
-        !getParameter(plugin, params, kCutoffId, 4321.5)) {
+        !getParameter(plugin, params, kResonanceId, 0.875)) {
         plugin->destroy(plugin);
-        return 9;
+        return 13;
     }
 
     auto corruptedBytes = saved.bytes;
     corruptedBytes[0] ^= 0x7f;
     ChunkedInputStream corrupted(corruptedBytes.data(), saved.used, 2);
     if (state->load(plugin, &corrupted.stream) ||
-        !getParameter(plugin, params, kCutoffId, 4321.5)) {
+        !getParameter(plugin, params, kResonanceId, 0.875)) {
         plugin->destroy(plugin);
-        return 10;
+        return 14;
     }
 
     if (state->save(plugin, nullptr) || state->load(plugin, nullptr)) {
         plugin->destroy(plugin);
-        return 11;
+        return 15;
     }
 
     const auto *clone = factory->create_plugin(factory, &kHost, kPolySynthPluginId);
@@ -354,7 +419,7 @@ int main() {
         if (clone)
             clone->destroy(clone);
         plugin->destroy(plugin);
-        return 12;
+        return 16;
     }
     const auto *cloneParams = static_cast<const clap_plugin_params_t *>(
         clone->get_extension(clone, CLAP_EXT_PARAMS));
@@ -364,10 +429,11 @@ int main() {
     if (!cloneParams || !cloneState || !cloneState->load(clone, &cloneRestore.stream) ||
         !getParameter(clone, cloneParams, kPanId, 0.625) ||
         !getParameter(clone, cloneParams, kCutoffId, 4321.5) ||
+        !getParameter(clone, cloneParams, kResonanceId, 0.875) ||
         !clone->activate(clone, 48000.0, 1, 64)) {
         clone->destroy(clone);
         plugin->destroy(plugin);
-        return 13;
+        return 17;
     }
     clone->deactivate(clone);
     clone->destroy(clone);
@@ -377,19 +443,23 @@ int main() {
     const auto v3 = version3State(-9.0, -4.0f, 1u);
     const auto v4 = version4State(11.0, -2.0f, 2u, -7);
     const auto v5 = version5State(13.0, -1.0f, 1u, 5, -0.375f);
+    const auto v6 = version6State(-15.0, -5.0f, 2u, -11, 0.25f, 8765.0f);
     constexpr double kLegacyCutoffDefault = 6000.0;
+    constexpr double kLegacyResonanceDefault = 0.0;
     if (!verifyLegacyState(factory, v1.data(), v1.size(), -12.5, 0.0, 0.0, 0.0, 0.0,
-                           kLegacyCutoffDefault) ||
+                           kLegacyCutoffDefault, kLegacyResonanceDefault) ||
         !verifyLegacyState(factory, v2.data(), v2.size(), 21.0, -6.0, 0.0, 0.0, 0.0,
-                           kLegacyCutoffDefault) ||
+                           kLegacyCutoffDefault, kLegacyResonanceDefault) ||
         !verifyLegacyState(factory, v3.data(), v3.size(), -9.0, -4.0, 1.0, 0.0, 0.0,
-                           kLegacyCutoffDefault) ||
+                           kLegacyCutoffDefault, kLegacyResonanceDefault) ||
         !verifyLegacyState(factory, v4.data(), v4.size(), 11.0, -2.0, 2.0, -7.0, 0.0,
-                           kLegacyCutoffDefault) ||
+                           kLegacyCutoffDefault, kLegacyResonanceDefault) ||
         !verifyLegacyState(factory, v5.data(), v5.size(), 13.0, -1.0, 1.0, 5.0, -0.375,
-                           kLegacyCutoffDefault)) {
+                           kLegacyCutoffDefault, kLegacyResonanceDefault) ||
+        !verifyLegacyState(factory, v6.data(), v6.size(), -15.0, -5.0, 2.0, -11.0, 0.25,
+                           8765.0, kLegacyResonanceDefault)) {
         plugin->destroy(plugin);
-        return 14;
+        return 18;
     }
 
     plugin->destroy(plugin);
