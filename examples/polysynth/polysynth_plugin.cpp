@@ -694,10 +694,16 @@ protected:
         if (!std::isfinite(maximumFilterCutoffHz) ||
             maximumFilterCutoffHz < kMinimumFilterCutoffHz)
             return false;
-        const auto initialFilterCutoffHz = static_cast<float>(
-            std::clamp(static_cast<double>(retained.filterCutoffHz),
-                       kMinimumFilterCutoffHz,
-                       maximumFilterCutoffHz));
+        auto maximumFilterCutoffForEngine = static_cast<float>(maximumFilterCutoffHz);
+        if (static_cast<double>(maximumFilterCutoffForEngine) > maximumFilterCutoffHz)
+            maximumFilterCutoffForEngine =
+                std::nextafter(maximumFilterCutoffForEngine, 0.0f);
+        if (maximumFilterCutoffForEngine < static_cast<float>(kMinimumFilterCutoffHz))
+            return false;
+        const auto initialFilterCutoffHz =
+            std::clamp(retained.filterCutoffHz,
+                       static_cast<float>(kMinimumFilterCutoffHz),
+                       maximumFilterCutoffForEngine);
 
         activeSampleRate_ = sampleRate;
         if (!engine_.configure(kPolySynthDefaultVoiceCount,
