@@ -9,8 +9,10 @@
 namespace {
 
 struct FakeState {
+    const clap_plugin_t *expectedPlugin = nullptr;
     bool initialized = false;
     bool destroyed = false;
+    std::uint32_t pointerIdentityFailures = 0;
     std::uint32_t strictPreinitQueries = 0;
     std::uint32_t realWebviewQueries = 0;
     std::uint32_t uriCalls = 0;
@@ -22,10 +24,17 @@ FakeState *stateFor(const clap_plugin_t *plugin) noexcept {
     return plugin ? static_cast<FakeState *>(plugin->plugin_data) : nullptr;
 }
 
+FakeState *checkedStateFor(const clap_plugin_t *plugin) noexcept {
+    auto *state = stateFor(plugin);
+    if (state && plugin != state->expectedPlugin)
+        ++state->pointerIdentityFailures;
+    return state;
+}
+
 int32_t CLAP_ABI realGetUri(const clap_plugin_t *plugin,
                             char *uri,
                             std::uint32_t capacity) {
-    auto *state = stateFor(plugin);
+    auto *state = checkedStateFor(plugin);
     if (!state || !state->initialized)
         return -1;
     ++state->uriCalls;
@@ -43,7 +52,7 @@ bool CLAP_ABI realGetResource(const clap_plugin_t *plugin,
                               char *,
                               std::uint32_t,
                               const clap_ostream_t *) {
-    auto *state = stateFor(plugin);
+    auto *state = checkedStateFor(plugin);
     if (!state || !state->initialized)
         return false;
     ++state->resourceCalls;
@@ -53,7 +62,7 @@ bool CLAP_ABI realGetResource(const clap_plugin_t *plugin,
 bool CLAP_ABI realReceive(const clap_plugin_t *plugin,
                           const void *,
                           std::uint32_t) {
-    auto *state = stateFor(plugin);
+    auto *state = checkedStateFor(plugin);
     if (!state || !state->initialized)
         return false;
     ++state->receiveCalls;
@@ -67,7 +76,7 @@ const webview_gui::clap_plugin_webview kRealWebview{
 };
 
 bool CLAP_ABI fakeInit(const clap_plugin_t *plugin) {
-    auto *state = stateFor(plugin);
+    auto *state = checkedStateFor(plugin);
     if (!state || state->initialized)
         return false;
     state->initialized = true;
@@ -75,12 +84,12 @@ bool CLAP_ABI fakeInit(const clap_plugin_t *plugin) {
 }
 
 void CLAP_ABI fakeDestroy(const clap_plugin_t *plugin) {
-    if (auto *state = stateFor(plugin))
+    if (auto *state = checkedStateFor(plugin))
         state->destroyed = true;
 }
 
 const void *CLAP_ABI fakeGetExtension(const clap_plugin_t *plugin, const char *id) {
-    auto *state = stateFor(plugin);
+    auto *state = checkedStateFor(plugin);
     if (!state || !id)
         return nullptr;
     if (!state->initialized) {
@@ -107,6 +116,7 @@ bool expect(bool condition, const char *message) {
 int main() {
     FakeState state{};
     clap_plugin_t inner{};
+    state.expectedPlugin = &inner;
     inner.plugin_data = &state;
     inner.init = fakeInit;
     inner.destroy = fakeDestroy;
@@ -141,16 +151,20 @@ int main() {
         return 5;
 
     // No broad lifecycle relaxation: any other pre-init extension query still
-    // delegates to the original strict get_extension implementation.
+    // delegates to the original strict get_extension implementation. The inner
+    // implementation must receive its original clap_plugin_t pointer rather than
+    // the host-facing compatibility table.
     if (!expect(plugin->get_extension(plugin, "clap.test") == nullptr &&
-                    state.strictPreinitQueries == 1,
-                "non-WebView pre-init extension query bypassed the strict inner contract"))
+                    state.strictPreinitQueries == 1 &&
+                    state.pointerIdentityFailures == 0,
+                "non-WebView delegation did not preserve the inner plug-in pointer identity"))
         return 6;
 
     if (!expect(plugin->init(plugin), "wrapped plug-in init failed"))
         return 7;
-    if (!expect(state.initialized && state.realWebviewQueries == 1,
-                "real WebView extension was not resolved exactly once after init"))
+    if (!expect(state.initialized && state.realWebviewQueries == 1 &&
+                    state.pointerIdentityFailures == 0,
+                "init/WebView discovery did not preserve the inner plug-in pointer identity"))
         return 8;
 
     const auto *postInitWebview = static_cast<const webview_gui::clap_plugin_webview *>(
@@ -170,17 +184,19 @@ int main() {
                     postInitWebview->receive(plugin, nullptr, 0),
                 "post-init WebView callbacks did not forward to the real extension"))
         return 12;
-    if (!expect(state.uriCalls == 1 && state.resourceCalls == 1 && state.receiveCalls == 1,
-                "real WebView callbacks were not forwarded exactly once"))
+    if (!expect(state.uriCalls == 1 && state.resourceCalls == 1 && state.receiveCalls == 1 &&
+                    state.pointerIdentityFailures == 0,
+                "real WebView callbacks did not preserve the inner plug-in pointer identity"))
         return 13;
 
-    if (!expect(plugin->get_extension(plugin, "clap.test") == &state,
-                "post-init non-WebView extension was not delegated"))
+    if (!expect(plugin->get_extension(plugin, "clap.test") == &state &&
+                    state.pointerIdentityFailures == 0,
+                "post-init non-WebView extension delegation changed plug-in pointer identity"))
         return 14;
 
     plugin->destroy(plugin);
-    if (!expect(state.destroyed,
-                "wrapped destroy did not delegate to the original plug-in"))
+    if (!expect(state.destroyed && state.pointerIdentityFailures == 0,
+                "wrapped destroy did not preserve the inner plug-in pointer identity"))
         return 15;
 
     return 0;
