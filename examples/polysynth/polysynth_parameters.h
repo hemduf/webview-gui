@@ -24,6 +24,7 @@ enum class ParameterSlot : std::uint8_t {
     AmpRelease,
     FilterEnvelopeAmount,
     Pan,
+    AmpLevel,
 };
 
 struct ParameterSpec {
@@ -37,7 +38,7 @@ struct ParameterSpec {
     std::uint32_t flags = 0;
 };
 
-inline constexpr std::size_t kParameterCount = 12;
+inline constexpr std::size_t kParameterCount = 13;
 inline constexpr clap_id kFirstParameterId = 1000u;
 
 inline constexpr std::uint32_t kBaseAutomatableFlags =
@@ -153,10 +154,25 @@ inline constexpr std::array<ParameterSpec, kParameterCount> kParameterSpecs{{
      1.0,
      0.0,
      kPolyphonicParameterFlags},
+    {1012u,
+     ParameterSlot::AmpLevel,
+     "Amp Level",
+     "Amp",
+     0.0,
+     1.0,
+     1.0,
+     kPolyphonicParameterFlags},
 }};
 
 static_assert(kParameterCount == 13,
               "PolySynth internal parameter model must reserve Amp Level after stable ID 1011");
+static_assert(static_cast<std::uint8_t>(ParameterSlot::Pan) == 11u,
+              "existing PolySynth parameter slots must remain stable");
+static_assert(static_cast<std::uint8_t>(ParameterSlot::AmpLevel) == 12u,
+              "Amp Level must append after the existing stable parameter slots");
+static_assert(kParameterSpecs[12].id == 1012u &&
+                  kParameterSpecs[12].slot == ParameterSlot::AmpLevel,
+              "Amp Level must keep stable internal ID 1012");
 
 inline constexpr std::array<const char *, 3> kWaveformNames{{
     "Sine",
