@@ -21,6 +21,8 @@ using webview_gui::examples::polysynth::kParameterCount;
 using webview_gui::examples::polysynth::parameterSpecByIndex;
 using webview_gui::examples::polysynth::parameterSpecForId;
 using webview_gui::examples::polysynth::parameterSlotForId;
+using webview_gui::examples::polysynth::parameterTextForValue;
+using webview_gui::examples::polysynth::parameterValueFromText;
 using webview_gui::examples::polysynth::supportsPolyphonicAddressing;
 using webview_gui::examples::polysynth::waveformNameForValue;
 using webview_gui::examples::polysynth::waveformTextForValue;
@@ -418,6 +420,94 @@ bool checkContinuousParameterValueToTextContract() {
 
     return true;
 }
+
+bool checkCanonicalParameterTextDispatch() {
+    struct FormatCase {
+        clap_id id;
+        double value;
+        const char *expected;
+    };
+    constexpr std::array<FormatCase, 4> formatted{{
+        {1001u, 1.9, "Saw"},
+        {1002u, -12.9, "-12"},
+        {1004u, 6000.25, "6000.25"},
+        {1011u, 0.5, "0.5"},
+    }};
+
+    for (const auto &item : formatted) {
+        std::array<char, CLAP_NAME_SIZE> display{};
+        if (!parameterTextForValue(item.id,
+                                   item.value,
+                                   display.data(),
+                                   static_cast<std::uint32_t>(display.size())) ||
+            std::strcmp(display.data(), item.expected) != 0) {
+            std::cerr << "canonical parameter value-to-text dispatch mismatch\n";
+            return false;
+        }
+    }
+
+    struct ParseCase {
+        clap_id id;
+        const char *text;
+        double expected;
+    };
+    constexpr std::array<ParseCase, 4> parsedCases{{
+        {1001u, "Square", 2.0},
+        {1002u, "24", 24.0},
+        {1003u, "12.3456789012345", 12.3456789012345},
+        {1004u, "12345.6789", 12345.6789},
+    }};
+
+    for (const auto &item : parsedCases) {
+        double parsed = -999.0;
+        if (!parameterValueFromText(item.id, item.text, parsed) || parsed != item.expected) {
+            std::cerr << "canonical parameter text-to-value dispatch mismatch\n";
+            return false;
+        }
+    }
+
+    constexpr double preciseFineTune = 12.3456789012345;
+    std::array<char, CLAP_NAME_SIZE> preciseDisplay{};
+    double preciseRoundTrip = 0.0;
+    if (!parameterTextForValue(1003u,
+                               preciseFineTune,
+                               preciseDisplay.data(),
+                               static_cast<std::uint32_t>(preciseDisplay.size())) ||
+        !parameterValueFromText(1003u, preciseDisplay.data(), preciseRoundTrip) ||
+        preciseRoundTrip != preciseFineTune) {
+        std::cerr << "canonical continuous dispatch lost round-trip precision\n";
+        return false;
+    }
+
+    std::array<char, 8> preservedDisplay{{'u', 'n', 'c', 'h', 'a', 'n', 'g', 'e'}};
+    const auto originalDisplay = preservedDisplay;
+    double preservedValue = 17.0;
+    if (parameterTextForValue(CLAP_INVALID_ID,
+                              0.0,
+                              preservedDisplay.data(),
+                              static_cast<std::uint32_t>(preservedDisplay.size())) ||
+        parameterTextForValue(1003u,
+                              std::numeric_limits<double>::quiet_NaN(),
+                              preservedDisplay.data(),
+                              static_cast<std::uint32_t>(preservedDisplay.size())) ||
+        preservedDisplay != originalDisplay ||
+        parameterValueFromText(CLAP_INVALID_ID, "0", preservedValue) ||
+        parameterValueFromText(1002u, "12.5", preservedValue) ||
+        preservedValue != 17.0) {
+        std::cerr << "canonical dispatch accepted invalid input or mutated caller output\n";
+        return false;
+    }
+
+    std::array<char, CLAP_NAME_SIZE> unterminated{};
+    unterminated.fill('1');
+    if (parameterValueFromText(1003u, unterminated.data(), preservedValue) ||
+        preservedValue != 17.0) {
+        std::cerr << "canonical dispatch accepted unterminated host text\n";
+        return false;
+    }
+
+    return true;
+}
 }
 
 int main() {
@@ -510,6 +600,9 @@ int main() {
 
     if (!checkContinuousParameterValueToTextContract())
         return 13;
+
+    if (!checkCanonicalParameterTextDispatch())
+        return 14;
 
     return 0;
 }
