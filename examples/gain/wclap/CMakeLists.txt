@@ -27,8 +27,12 @@ target_compile_options(webview_gui_example_gain_clap_core PRIVATE
     -fno-exceptions
 )
 
+# The pinned WCLAP bridge embeds an older webview-gui helper which probes the
+# wrapper's clap.webview/3 extension before calling the module's clap_plugin.init().
+# Use a WCLAP-only entry/factory proxy which tolerates exactly that legacy probe;
+# the normal native Gain entry remains unchanged and fully strict.
 add_executable(webview_gui_example_gain_wclap
-    "${CMAKE_CURRENT_LIST_DIR}/../gain_entry.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/gain_wclap_entry.cpp"
 )
 target_link_libraries(webview_gui_example_gain_wclap PRIVATE
     webview_gui_example_gain_clap_core
