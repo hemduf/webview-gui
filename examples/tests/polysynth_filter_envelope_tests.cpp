@@ -1,3 +1,4 @@
+#include "polysynth_parameter_voice_engine.h"
 #include "polysynth_voice_engine.h"
 
 #include <clap/clap.h>
@@ -11,7 +12,13 @@
 
 namespace {
 
+using webview_gui::examples::polysynth::kFirstParameterId;
+using webview_gui::examples::polysynth::ParameterSlot;
+using webview_gui::examples::polysynth::ParameterVoiceEngine;
 using webview_gui::examples::polysynth::VoiceEngine;
+
+constexpr clap_id kFilterEnvelopeAmountId =
+    kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
 
 struct InputEvents {
     InputEvents() noexcept {
@@ -103,6 +110,21 @@ bool finiteBlock(const std::array<float, Frames> &left,
             return false;
     }
     return true;
+}
+
+clap_event_param_value_t globalFilterEnvelopeValue(double value) noexcept {
+    clap_event_param_value_t event{};
+    event.header.size = sizeof(event);
+    event.header.time = 0;
+    event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    event.header.type = CLAP_EVENT_PARAM_VALUE;
+    event.param_id = kFilterEnvelopeAmountId;
+    event.note_id = -1;
+    event.port_index = -1;
+    event.channel = -1;
+    event.key = -1;
+    event.value = value;
+    return event;
 }
 
 } // namespace
@@ -315,6 +337,42 @@ int main() {
         !finiteBlock(extremeLeft, extremeRight)) {
         std::cerr << "legal resonant filter-envelope excursion produced NaN/Inf\n";
         return 24;
+    }
+
+    // #32 CLAP adapter contract: Filter Env Amount first enters the retained
+    // parameter model before a later increment wires voice-local DSP composition.
+    ParameterVoiceEngine adapter;
+    if (!adapter.configure(1, sampleRate, 64))
+        return 25;
+
+    double retainedAmount = 99.0;
+    if (!adapter.parameterBaseValue(kFilterEnvelopeAmountId, retainedAmount) ||
+        std::fabs(retainedAmount) > 1.0e-12) {
+        std::cerr << "Filter Env Amount is missing from the retained parameter model\n";
+        return 26;
+    }
+
+    const auto setAmount = globalFilterEnvelopeValue(0.625);
+    if (!adapter.applyParameterFlushEvent(setAmount.header) ||
+        !adapter.parameterBaseValue(kFilterEnvelopeAmountId, retainedAmount) ||
+        std::fabs(retainedAmount - 0.625) > 1.0e-12) {
+        std::cerr << "Filter Env Amount PARAM_VALUE was not retained as the global base\n";
+        return 27;
+    }
+
+    const auto invalidAmount = globalFilterEnvelopeValue(1.5);
+    if (!adapter.applyParameterFlushEvent(invalidAmount.header) ||
+        !adapter.parameterBaseValue(kFilterEnvelopeAmountId, retainedAmount) ||
+        std::fabs(retainedAmount - 0.625) > 1.0e-12) {
+        std::cerr << "out-of-range Filter Env Amount mutated the retained base\n";
+        return 28;
+    }
+
+    adapter.reset();
+    if (!adapter.parameterBaseValue(kFilterEnvelopeAmountId, retainedAmount) ||
+        std::fabs(retainedAmount - 0.625) > 1.0e-12) {
+        std::cerr << "reset discarded the retained Filter Env Amount base\n";
+        return 29;
     }
 
     return 0;
