@@ -80,6 +80,8 @@ constexpr std::uint32_t kPolySynthBootstrapReleaseSamples = 64u;
 constexpr std::uint32_t kMaximumFiniteTailSamples =
     static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 1u;
 constexpr double kMaximumPublishedReleaseSeconds = 10.0;
+constexpr double kMinimumFilterCutoffHz = 20.0;
+constexpr double kMaximumFilterCutoffFraction = 0.45;
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires lock-free host-visible float parameter snapshots");
@@ -688,11 +690,20 @@ protected:
                                          initialTailSamples))
             return false;
 
+        const double maximumFilterCutoffHz = sampleRate * kMaximumFilterCutoffFraction;
+        if (!std::isfinite(maximumFilterCutoffHz) ||
+            maximumFilterCutoffHz < kMinimumFilterCutoffHz)
+            return false;
+        const auto initialFilterCutoffHz = static_cast<float>(
+            std::clamp(static_cast<double>(retained.filterCutoffHz),
+                       kMinimumFilterCutoffHz,
+                       maximumFilterCutoffHz));
+
         activeSampleRate_ = sampleRate;
         if (!engine_.configure(kPolySynthDefaultVoiceCount,
                                sampleRate,
                                kPolySynthBootstrapReleaseSamples) ||
-            !engine_.setFilter(retained.filterCutoffHz, retained.filterResonance) ||
+            !engine_.setFilter(initialFilterCutoffHz, retained.filterResonance) ||
             !engine_.setFineTuningCents(retained.fineTuneCents) ||
             !applyRetainedParameterBaseToEngine(
                 kHostMasterGainParameterId, retained.masterGainDb) ||
