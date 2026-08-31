@@ -15,14 +15,17 @@ namespace detail {
 // Compatibility boundary for historical WCLAP bridges which query only the
 // draft clap.webview/3 plug-in extension before calling clap_plugin.init().
 //
-// The wrapped clap_plugin_t preserves the original plugin_data and all core
-// callbacks. Only get_extension(clap.webview/3) is intercepted before init; every
-// other extension ID is delegated to the original implementation, preserving its
-// lifecycle checks. After successful init the real WebView extension is resolved
-// once and the stable compatibility table forwards to it.
+// The host-facing clap_plugin_t is a compatibility table, while every delegated
+// inner callback retains the original clap_plugin_t pointer identity expected by
+// the wrapped implementation. Only get_extension(clap.webview/3) is intercepted
+// before init; every other extension ID is delegated to the original
+// implementation, preserving its lifecycle checks. After successful init the
+// real WebView extension is resolved once and the stable compatibility table
+// forwards to it.
 struct LegacyWclapWebviewPluginProxy {
     clap_plugin_t plugin{};
 
+    const clap_plugin_t *innerPlugin = nullptr;
     bool(CLAP_ABI *originalInit)(const clap_plugin_t *) = nullptr;
     void(CLAP_ABI *originalDestroy)(const clap_plugin_t *) = nullptr;
     const void *(CLAP_ABI *originalGetExtension)(const clap_plugin_t *, const char *) = nullptr;
@@ -31,6 +34,7 @@ struct LegacyWclapWebviewPluginProxy {
 
     explicit LegacyWclapWebviewPluginProxy(const clap_plugin_t *inner) noexcept
         : plugin(*inner),
+          innerPlugin(inner),
           originalInit(inner->init),
           originalDestroy(inner->destroy),
           originalGetExtension(inner->get_extension) {
@@ -46,10 +50,10 @@ struct LegacyWclapWebviewPluginProxy {
 
     static bool CLAP_ABI proxyInit(const clap_plugin_t *plugin) {
         auto *self = from(plugin);
-        if (!self || !self->originalInit || self->initialized)
+        if (!self || !self->innerPlugin || !self->originalInit || self->initialized)
             return false;
 
-        if (!self->originalInit(plugin))
+        if (!self->originalInit(self->innerPlugin))
             return false;
 
         // clap_plugin.get_extension() is legal after the original init returns.
@@ -57,7 +61,8 @@ struct LegacyWclapWebviewPluginProxy {
         // discovery and the compatibility pointer remains stable for the bridge.
         self->realWebview = self->originalGetExtension
                                 ? static_cast<const clap_plugin_webview *>(
-                                      self->originalGetExtension(plugin, CLAP_EXT_WEBVIEW))
+                                      self->originalGetExtension(self->innerPlugin,
+                                                                 CLAP_EXT_WEBVIEW))
                                 : nullptr;
         self->initialized = true;
         return true;
@@ -69,10 +74,12 @@ struct LegacyWclapWebviewPluginProxy {
             return;
 
         const auto destroy = self->originalDestroy;
+        const auto *inner = self->innerPlugin;
         self->initialized = false;
         self->realWebview = nullptr;
-        if (destroy)
-            destroy(plugin);
+        self->innerPlugin = nullptr;
+        if (destroy && inner)
+            destroy(inner);
         delete self;
     }
 
@@ -87,8 +94,8 @@ struct LegacyWclapWebviewPluginProxy {
 
         // Deliberately do not broaden the compatibility exception. A non-WebView
         // pre-init request reaches the original strict implementation unchanged.
-        return self->originalGetExtension
-                   ? self->originalGetExtension(plugin, id)
+        return self->innerPlugin && self->originalGetExtension
+                   ? self->originalGetExtension(self->innerPlugin, id)
                    : nullptr;
     }
 
@@ -96,10 +103,10 @@ struct LegacyWclapWebviewPluginProxy {
                                         char *uri,
                                         uint32_t uriCapacity) {
         auto *self = from(plugin);
-        if (!self || !self->initialized || !self->realWebview ||
+        if (!self || !self->initialized || !self->innerPlugin || !self->realWebview ||
             !self->realWebview->get_uri)
             return -1;
-        return self->realWebview->get_uri(plugin, uri, uriCapacity);
+        return self->realWebview->get_uri(self->innerPlugin, uri, uriCapacity);
     }
 
     static bool CLAP_ABI proxyGetResource(const clap_plugin_t *plugin,
@@ -108,9 +115,9 @@ struct LegacyWclapWebviewPluginProxy {
                                           uint32_t mimeCapacity,
                                           const clap_ostream_t *stream) {
         auto *self = from(plugin);
-        return self && self->initialized && self->realWebview &&
+        return self && self->initialized && self->innerPlugin && self->realWebview &&
                self->realWebview->get_resource &&
-               self->realWebview->get_resource(plugin,
+               self->realWebview->get_resource(self->innerPlugin,
                                                 path,
                                                 mime,
                                                 mimeCapacity,
@@ -121,9 +128,9 @@ struct LegacyWclapWebviewPluginProxy {
                                       const void *buffer,
                                       uint32_t size) {
         auto *self = from(plugin);
-        return self && self->initialized && self->realWebview &&
+        return self && self->initialized && self->innerPlugin && self->realWebview &&
                self->realWebview->receive &&
-               self->realWebview->receive(plugin, buffer, size);
+               self->realWebview->receive(self->innerPlugin, buffer, size);
     }
 
     inline static const clap_plugin_webview webviewProxy{
@@ -140,9 +147,9 @@ static_assert(offsetof(LegacyWclapWebviewPluginProxy, plugin) == 0,
 
 } // namespace detail
 
-// Takes ownership of the original plug-in through its destroy callback. The
-// caller must use this only for a plug-in known to implement clap.webview/3.
-// Returns nullptr on allocation failure or an invalid mandatory CLAP callback set.
+// On success, the wrapper assumes ownership of the original plug-in through its
+// destroy callback. On nullptr, ownership remains with the caller. Use this only
+// for a plug-in known to implement clap.webview/3.
 inline const clap_plugin_t *wrapLegacyWclapWebviewPlugin(
     const clap_plugin_t *plugin) noexcept {
     if (!plugin || !plugin->init || !plugin->destroy || !plugin->get_extension)
