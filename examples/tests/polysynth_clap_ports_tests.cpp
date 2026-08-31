@@ -29,6 +29,9 @@ constexpr clap_id kCoarseTuneId =
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr clap_id kPanId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Pan);
 constexpr double kHalfGainDb = -6.020599913279624;
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
@@ -283,8 +286,8 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Preserve existing host indices while adding Coarse Tune at index 3.
-    if (params->count(plugin) != 4u)
+    // Preserve existing host indices while adding Pan at index 4.
+    if (params->count(plugin) != 5u)
         return nullptr;
 
     clap_param_info_t info{};
@@ -330,11 +333,23 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(coarseInfo.module, "Oscillator") != 0)
         return nullptr;
 
+    clap_param_info_t panInfo{};
+    const auto *panSpec = webview_gui::examples::polysynth::parameterSpecForId(kPanId);
+    if (!panSpec || !params->get_info(plugin, 4, &panInfo) ||
+        panInfo.id != kPanId || !panInfo.cookie ||
+        panInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        panInfo.min_value != -1.0 || panInfo.max_value != 1.0 ||
+        panInfo.default_value != 0.0 ||
+        std::strcmp(panInfo.name, "Pan") != 0 ||
+        std::strcmp(panInfo.module, "Output") != 0)
+        return nullptr;
+
     double value = -1.0;
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
         !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0)
+        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kPanId, &value) || value != 0.0)
         return nullptr;
 
     char text[32]{};
@@ -352,7 +367,11 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->text_to_value(plugin, kWaveformId, "Square", &parsed) || parsed != 2.0 ||
         !params->value_to_text(plugin, kCoarseTuneId, -12.9, text, sizeof(text)) ||
         std::strcmp(text, "-12") != 0 ||
-        !params->text_to_value(plugin, kCoarseTuneId, "24", &parsed) || parsed != 24.0)
+        !params->text_to_value(plugin, kCoarseTuneId, "24", &parsed) || parsed != 24.0 ||
+        !params->value_to_text(plugin, kPanId, -0.25, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kPanId, text, &parsed) ||
+        std::fabs(parsed + 0.25) > 1.0e-9)
         return nullptr;
 
     RejectingOutputEvents output;
@@ -371,15 +390,23 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_value(plugin, kCoarseTuneId, &value) || value != 12.0)
         return nullptr;
 
+    FlushInputEvents setPan(kPanId, 0.5);
+    params->flush(plugin, &setPan.input, &output.output);
+    if (!params->get_value(plugin, kPanId, &value) || value != 0.5)
+        return nullptr;
+
     FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &output.output);
     FlushInputEvents restoreSine(kWaveformId, 0.0);
     params->flush(plugin, &restoreSine.input, &output.output);
     FlushInputEvents restoreCoarse(kCoarseTuneId, 0.0);
     params->flush(plugin, &restoreCoarse.input, &output.output);
+    FlushInputEvents restorePan(kPanId, 0.0);
+    params->flush(plugin, &restorePan.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0)
+        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kPanId, &value) || value != 0.0)
         return nullptr;
 
     return params;
@@ -434,9 +461,11 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         std::strcmp(compatibleOutputPage.section_name, outputPage.section_name) != 0 ||
         std::strcmp(compatibleOutputPage.page_name, outputPage.page_name) != 0 ||
         outputPage.param_ids[0] != kMasterGainId ||
-        compatibleOutputPage.param_ids[0] != kMasterGainId)
+        compatibleOutputPage.param_ids[0] != kMasterGainId ||
+        outputPage.param_ids[1] != kPanId ||
+        compatibleOutputPage.param_ids[1] != kPanId)
         return false;
-    for (std::size_t index = 1; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (outputPage.param_ids[index] != CLAP_INVALID_ID ||
             compatibleOutputPage.param_ids[index] != CLAP_INVALID_ID)
             return false;
@@ -446,14 +475,17 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
     clap_param_info_t mappedMasterInfo{};
     clap_param_info_t mappedWaveformInfo{};
     clap_param_info_t mappedCoarseInfo{};
+    clap_param_info_t mappedPanInfo{};
     return params->get_info(plugin, 0u, &mappedFineInfo) &&
            params->get_info(plugin, 1u, &mappedMasterInfo) &&
            params->get_info(plugin, 2u, &mappedWaveformInfo) &&
            params->get_info(plugin, 3u, &mappedCoarseInfo) &&
+           params->get_info(plugin, 4u, &mappedPanInfo) &&
            mappedFineInfo.id == first.param_ids[0] &&
            mappedWaveformInfo.id == first.param_ids[1] &&
            mappedCoarseInfo.id == first.param_ids[2] &&
-           mappedMasterInfo.id == outputPage.param_ids[0];
+           mappedMasterInfo.id == outputPage.param_ids[0] &&
+           mappedPanInfo.id == outputPage.param_ids[1];
 }
 
 bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
