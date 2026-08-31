@@ -1253,19 +1253,20 @@ private:
 
     bool syncTailFromEngine(bool notifyHost) noexcept {
         double releaseSeconds = 0.0;
-        std::uint32_t tailSamples = 0;
+        std::uint32_t defaultTailSamples = 0;
         if (!engine_.parameterBaseValue(kHostAmpReleaseParameterId, releaseSeconds) ||
-            !releaseSecondsToTailSamples(releaseSeconds, activeSampleRate_, tailSamples))
+            !releaseSecondsToTailSamples(releaseSeconds,
+                                         activeSampleRate_,
+                                         defaultTailSamples))
             return false;
 
+        // Release is a NOTE_ON snapshot. The exact advertised tail must cover the
+        // current default for future generations and every release snapshot that
+        // is still owned by an active generation. VoiceEngine performs a bounded
+        // fixed-capacity scan on this same serialized audio-thread path.
+        const auto tailSamples = std::max(defaultTailSamples,
+                                          engine_.maximumActiveReleaseSamples());
         const auto previous = currentTailSamples_.load(std::memory_order_acquire);
-        // Existing voices snapshot Release at NOTE_ON. If the default Release is
-        // shortened while any generation remains active, lowering the advertised
-        // tail immediately could under-report that older generation. Keep the
-        // previous (conservative) tail until the active set drains; process() calls
-        // this again after every block and then publishes the lower default.
-        if (tailSamples < previous && engine_.activeCount() != 0)
-            tailSamples = previous;
         if (tailSamples == previous)
             return true;
 
