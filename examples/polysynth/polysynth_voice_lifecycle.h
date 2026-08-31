@@ -74,19 +74,50 @@ public:
                                BoundarySink &boundarySink,
                                VoiceSink &voiceSink,
                                NoteEndSink &noteEndSink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithBoundariesAndEvents(events,
+                                              framesCount,
+                                              boundarySink,
+                                              ignoredCoreEvent,
+                                              voiceSink,
+                                              noteEndSink);
+    }
+
+    template <typename BoundarySink,
+              typename CoreEventSink,
+              typename VoiceSink,
+              typename NoteEndSink>
+    bool processWithBoundariesAndEvents(const clap_input_events_t *events,
+                                        std::uint32_t framesCount,
+                                        BoundarySink &boundarySink,
+                                        CoreEventSink &coreEventSink,
+                                        VoiceSink &voiceSink,
+                                        NoteEndSink &noteEndSink) noexcept {
         static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
                       "PolySynth voice lifecycle boundary sink must be noexcept");
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth lifecycle core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<VoiceSink &, const VoiceLifecycleEvent &>,
                       "PolySynth voice lifecycle sink must be noexcept");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth NOTE_END sink must be noexcept");
 
-        auto scheduledSink = [this, &voiceSink, &noteEndSink](
+        bool dispatchOk = true;
+        auto scheduledSink = [this, &coreEventSink, &voiceSink, &noteEndSink, &dispatchOk](
                                  const ScheduledNoteEvent &event) noexcept {
             applyScheduled(event, voiceSink, noteEndSink);
+            if (event.kind == ScheduledNoteKind::NoteOn &&
+                !notifyNoteOnDispatched(coreEventSink, event, 0))
+                dispatchOk = false;
         };
-        return scheduler_.processWithBoundaries(
-            events, framesCount, boundarySink, scheduledSink);
+        const bool processed = scheduler_.processWithBoundariesAndEvents(
+            events, framesCount, boundarySink, coreEventSink, scheduledSink);
+        return processed && dispatchOk;
     }
 
     template <typename NoteEndSink>
@@ -116,6 +147,23 @@ private:
         std::uint64_t generation = 0;
         VoiceStage stage = VoiceStage::Inactive;
     };
+
+    template <typename CoreEventSink>
+    static auto notifyNoteOnDispatched(CoreEventSink &sink,
+                                       const ScheduledNoteEvent &event,
+                                       int) noexcept
+        -> decltype(static_cast<bool>(sink.noteOnDispatched(event))) {
+        static_assert(noexcept(sink.noteOnDispatched(event)),
+                      "PolySynth NOTE_ON dispatch hook must be noexcept");
+        return static_cast<bool>(sink.noteOnDispatched(event));
+    }
+
+    template <typename CoreEventSink>
+    static bool notifyNoteOnDispatched(CoreEventSink &,
+                                       const ScheduledNoteEvent &,
+                                       long) noexcept {
+        return true;
+    }
 
     void clearStages() noexcept {
         for (auto &slot : slots_)

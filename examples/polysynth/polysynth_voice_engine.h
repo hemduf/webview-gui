@@ -44,6 +44,8 @@ public:
         filterEnvelopeAmount_ = 0.0f;
         filterBaseG_ = 0.0;
         filterEnvelopeGDelta_ = 0.0;
+        filterBrightnessGDelta_ = 0.0;
+        filterMaximumG_ = 0.0;
         filterDamping_ = 2.0;
         pan_ = 0.0f;
         masterGainCurrent_ = 1.0f;
@@ -139,6 +141,10 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        if (!std::isfinite(maximumG) || maximumG < baseG)
+            return false;
+
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
@@ -146,6 +152,8 @@ public:
         filterResonance_ = resonance;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         filterEnabled_ = true;
         return true;
@@ -183,12 +191,18 @@ public:
                            damping))
             return false;
 
+        const double maximumG = maximumFilterG();
+        if (!std::isfinite(maximumG) || maximumG < baseG)
+            return false;
+
         filterEnvelopeAmount_ = amount;
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
+        filterMaximumG_ = maximumG;
+        filterBrightnessGDelta_ = maximumG - baseG;
         filterDamping_ = damping;
         return true;
     }
@@ -257,12 +271,99 @@ public:
         return true;
     }
 
+    // Audio-thread pitch update for an already allocated generation. Unlike the
+    // +/-100-cent host Fine Tune default, the voice-local effective value may
+    // include CLAP's +/-120-semitone TUNING note expression. Only the phase
+    // increment changes: oscillator phase, envelope, filter state and lifecycle
+    // generation remain continuous across the event boundary.
+    bool setVoiceFineTuningCents(VoiceAllocator::VoiceIndex index,
+                                 float cents) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(cents) ||
+            cents < -kMaximumVoicePitchOffsetCents ||
+            cents > kMaximumVoicePitchOffsetCents)
+            return false;
+        voices_[index].phaseIncrement =
+            phaseIncrementForKeyAndFine(voices_[index].identity.key, cents);
+        return true;
+    }
+
+    // Stores the effective post-filter note-expression gain. CLAP VOLUME itself
+    // remains validated as (0, 4] by the host-facing adapter. EXPRESSION may
+    // produce exact silence, and the reference PRESSURE mapping contributes up
+    // to another 2x, so the legal composed internal range is [0, 8].
+    bool setVoiceVolumeExpression(VoiceAllocator::VoiceIndex index,
+                                  float gain) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(gain) || gain < 0.0f || gain > 8.0f)
+            return false;
+        voices_[index].noteExpressionGain = gain;
+        return true;
+    }
+
+    // CLAP PAN is an absolute per-note position in [0, 1]. Map it onto the
+    // example's existing center-preserving linear law without touching phase,
+    // envelope, filter or lifecycle state.
+    bool setVoicePanExpression(VoiceAllocator::VoiceIndex index,
+                               float pan) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(pan) || pan < 0.0f || pan > 1.0f)
+            return false;
+
+        auto &voice = voices_[index];
+        const float signedPan = pan * 2.0f - 1.0f;
+        if (signedPan <= 0.0f) {
+            voice.panLeftGain = 1.0f;
+            voice.panRightGain = 1.0f + signedPan;
+        } else {
+            voice.panLeftGain = 1.0f - signedPan;
+            voice.panRightGain = 1.0f;
+        }
+        return true;
+    }
+
+    // CLAP BRIGHTNESS is a normalized per-note timbral offset in [0, 1]. The
+    // example maps 0 to the configured filter cutoff and 1 to the highest legal
+    // cutoff. Both endpoints are prepared as TPT g values outside process(), so
+    // a sample-accurate event only updates one bounded voice-local scalar.
+    bool setVoiceBrightnessExpression(VoiceAllocator::VoiceIndex index,
+                                      float brightness) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(brightness) || brightness < 0.0f || brightness > 1.0f)
+            return false;
+        voices_[index].noteExpressionBrightness = brightness;
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
                  float *left,
                  float *right,
                  NoteEndSink &noteEndSink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithEvents(events,
+                                 framesCount,
+                                 left,
+                                 right,
+                                 ignoredCoreEvent,
+                                 noteEndSink);
+    }
+
+    template <typename CoreEventSink, typename NoteEndSink>
+    bool processWithEvents(const clap_input_events_t *events,
+                           std::uint32_t framesCount,
+                           float *left,
+                           float *right,
+                           CoreEventSink &coreEventSink,
+                           NoteEndSink &noteEndSink) noexcept {
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth voice engine core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth voice engine NOTE_END sink must be noexcept");
 
@@ -297,8 +398,12 @@ public:
             applyVoiceEvent(event);
         };
 
-        if (!lifecycle_.processWithBoundaries(
-                events, framesCount, boundarySink, voiceSink, noteEndSink))
+        if (!lifecycle_.processWithBoundariesAndEvents(events,
+                                                       framesCount,
+                                                       boundarySink,
+                                                       coreEventSink,
+                                                       voiceSink,
+                                                       noteEndSink))
             return false;
         if (!renderOk)
             return false;
@@ -323,6 +428,8 @@ private:
         double filterA3 = 0.0;
         double filterBaseG = 0.0;
         double filterEnvelopeGDelta = 0.0;
+        double filterBrightnessGDelta = 0.0;
+        double filterMaximumG = 0.0;
         double filterDamping = 2.0;
         double filterIc1Eq = 0.0;
         double filterIc2Eq = 0.0;
@@ -330,6 +437,8 @@ private:
         float sustainTarget = 0.0f;
         float level = 0.0f;
         float stageStep = 0.0f;
+        float noteExpressionGain = 1.0f;
+        float noteExpressionBrightness = 0.0f;
         float panLeftGain = 1.0f;
         float panRightGain = 1.0f;
         std::uint32_t stageRemaining = 0;
@@ -347,6 +456,7 @@ private:
     static constexpr double kPi = 3.1415926535897932384626433832795;
     static constexpr double kTwoPi = 6.283185307179586476925286766559;
     static constexpr double kMaximumPhaseIncrement = 0.49;
+    static constexpr float kMaximumVoicePitchOffsetCents = 12100.0f;
     static constexpr float kEnvelopeDenormalFloor = 1.0e-20f;
     static constexpr double kFilterDenormalFloor = 1.0e-30;
     static constexpr float kMinimumFilterCutoffHz = 20.0f;
@@ -362,6 +472,10 @@ private:
 
     static double flushFilterDenormal(double value) noexcept {
         return std::fabs(value) < kFilterDenormalFloor ? 0.0 : value;
+    }
+
+    static double maximumFilterG() noexcept {
+        return std::tan(kPi * kMaximumFilterCutoffFraction);
     }
 
     // Compact polyBLEP correction keeps the discontinuities of the educational
@@ -419,7 +533,6 @@ private:
         if (!std::isfinite(baseG) || !std::isfinite(damping) ||
             !std::isfinite(denominator) || denominator <= 0.0)
             return false;
-
         a1 = 1.0 / denominator;
         a2 = baseG * a1;
         a3 = baseG * a2;
@@ -443,12 +556,17 @@ private:
             voice = {};
     }
 
-    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+    [[nodiscard]] double phaseIncrementForKeyAndFine(std::int16_t key,
+                                                     float fineCents) const noexcept {
         const double semitones = static_cast<double>(key - 69) +
                                  static_cast<double>(coarseTuningSemitones_) +
-                                 static_cast<double>(fineTuningCents_) / 100.0;
+                                 static_cast<double>(fineCents) / 100.0;
         const double frequency = kReferenceFrequency * std::exp2(semitones / 12.0);
         return std::min(frequency / sampleRate_, kMaximumPhaseIncrement);
+    }
+
+    [[nodiscard]] double phaseIncrementForKey(std::int16_t key) const noexcept {
+        return phaseIncrementForKeyAndFine(key, fineTuningCents_);
     }
 
     static void enterDecayOrSustain(Voice &voice) noexcept {
@@ -482,6 +600,8 @@ private:
         voice.filterA3 = filterA3_;
         voice.filterBaseG = filterBaseG_;
         voice.filterEnvelopeGDelta = filterEnvelopeGDelta_;
+        voice.filterBrightnessGDelta = filterBrightnessGDelta_;
+        voice.filterMaximumG = filterMaximumG_;
         voice.filterDamping = filterDamping_;
         voice.filterEnvelopeEnabled = filterEnabled_ && filterEnvelopeAmount_ != 0.0f;
         if (pan_ <= 0.0f) {
@@ -519,6 +639,17 @@ private:
             voice.level / static_cast<float>(voice.releaseSamples));
     }
 
+    static void filterCoefficientsForG(double g,
+                                       double damping,
+                                       double &a1,
+                                       double &a2,
+                                       double &a3) noexcept {
+        const double denominator = 1.0 + g * (g + damping);
+        a1 = 1.0 / denominator;
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
     static double processFilter(Voice &voice, double input) noexcept {
         if (!voice.filterEnabled)
             return input;
@@ -526,18 +657,20 @@ private:
         double a1 = voice.filterA1;
         double a2 = voice.filterA2;
         double a3 = voice.filterA3;
-        if (voice.filterEnvelopeEnabled) {
+        if (voice.filterEnvelopeEnabled || voice.noteExpressionBrightness > 0.0f) {
             double normalizedEnvelope = 0.0;
-            if (voice.peakLevel > kEnvelopeDenormalFloor) {
+            if (voice.filterEnvelopeEnabled &&
+                voice.peakLevel > kEnvelopeDenormalFloor) {
                 normalizedEnvelope = std::clamp(
                     static_cast<double>(voice.level / voice.peakLevel), 0.0, 1.0);
             }
-            const double g = voice.filterBaseG +
-                             voice.filterEnvelopeGDelta * normalizedEnvelope;
-            const double denominator = 1.0 + g * (g + voice.filterDamping);
-            a1 = 1.0 / denominator;
-            a2 = g * a1;
-            a3 = g * a2;
+            const double requestedG =
+                voice.filterBaseG +
+                voice.filterEnvelopeGDelta * normalizedEnvelope +
+                voice.filterBrightnessGDelta *
+                    static_cast<double>(voice.noteExpressionBrightness);
+            const double g = std::min(voice.filterMaximumG, requestedG);
+            filterCoefficientsForG(g, voice.filterDamping, a1, a2, a3);
         }
 
         const double v3 = input - voice.filterIc2Eq;
@@ -701,8 +834,9 @@ private:
                 const double oscillator =
                     oscillatorSample(voice) * static_cast<double>(voice.level);
                 const auto filteredSample = static_cast<float>(processFilter(voice, oscillator));
-                leftMix += filteredSample * voice.panLeftGain;
-                rightMix += filteredSample * voice.panRightGain;
+                const auto expressedSample = filteredSample * voice.noteExpressionGain;
+                leftMix += expressedSample * voice.panLeftGain;
+                rightMix += expressedSample * voice.panRightGain;
 
                 voice.phase += voice.phaseIncrement;
                 if (voice.phase >= 1.0)
@@ -737,6 +871,8 @@ private:
     float filterEnvelopeAmount_ = 0.0f;
     double filterBaseG_ = 0.0;
     double filterEnvelopeGDelta_ = 0.0;
+    double filterBrightnessGDelta_ = 0.0;
+    double filterMaximumG_ = 0.0;
     double filterDamping_ = 2.0;
     float pan_ = 0.0f;
     float masterGainCurrent_ = 1.0f;

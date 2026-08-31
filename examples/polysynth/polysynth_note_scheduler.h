@@ -71,8 +71,39 @@ public:
                                std::uint32_t framesCount,
                                BoundarySink &boundarySink,
                                Sink &sink) noexcept {
+        auto ignoredCoreEvent = [](const clap_event_header_t &) noexcept -> bool {
+            return true;
+        };
+        return processWithBoundariesAndEvents(
+            events, framesCount, boundarySink, ignoredCoreEvent, sink);
+    }
+
+    // Preserve the host-provided ordering of all non-note CLAP core events while
+    // retaining deterministic note allocation. This lets the processor apply
+    // PARAM_VALUE, PARAM_MOD and NOTE_EXPRESSION at the same sample boundary as
+    // NOTE_ON/OFF/CHOKE without quantising or re-sorting event types. The host
+    // already guarantees sample-sorted input; equal-time order is significant and
+    // is forwarded exactly as received.
+    //
+    // An adapter may additionally expose
+    // `noteOnDispatched(const ScheduledNoteEvent&)` on its core-event sink. The
+    // scheduler invokes that optional hook only after a valid NOTE_ON has been
+    // allocated and dispatched to the voice/lifecycle sink. Supplying the exact
+    // allocated slot is important for hosts which use note_id == -1 and can
+    // therefore replace a generation with the same visible identity tuple.
+    template <typename BoundarySink, typename CoreEventSink, typename Sink>
+    bool processWithBoundariesAndEvents(const clap_input_events_t *events,
+                                        std::uint32_t framesCount,
+                                        BoundarySink &boundarySink,
+                                        CoreEventSink &coreEventSink,
+                                        Sink &sink) noexcept {
         static_assert(std::is_nothrow_invocable_v<BoundarySink &, std::uint32_t>,
                       "PolySynth scheduler boundary sink must be noexcept");
+        static_assert(
+            std::is_nothrow_invocable_r_v<bool,
+                                          CoreEventSink &,
+                                          const clap_event_header_t &>,
+            "PolySynth core-event sink must be noexcept and return bool");
         static_assert(std::is_nothrow_invocable_v<Sink &, const ScheduledNoteEvent &>,
                       "PolySynth note scheduler sink must be noexcept");
 
@@ -109,16 +140,22 @@ public:
 
             if (header->space_id != CLAP_CORE_EVENT_SPACE_ID)
                 continue;
+
             if (header->type != CLAP_EVENT_NOTE_ON &&
                 header->type != CLAP_EVENT_NOTE_OFF &&
-                header->type != CLAP_EVENT_NOTE_CHOKE)
+                header->type != CLAP_EVENT_NOTE_CHOKE) {
+                if (!coreEventSink(*header))
+                    return false;
                 continue;
+            }
+
             if (header->size < sizeof(clap_event_note_t))
                 return false;
 
             const auto &event = *reinterpret_cast<const clap_event_note_t *>(header);
             if (header->type == CLAP_EVENT_NOTE_ON) {
-                dispatchNoteOn(event, sink);
+                if (!dispatchNoteOn(event, coreEventSink, sink))
+                    return false;
                 continue;
             }
 
@@ -171,15 +208,34 @@ private:
                fieldMatches(pattern.key, identity.key);
     }
 
-    template <typename Sink>
-    void dispatchNoteOn(const clap_event_note_t &event, Sink &sink) noexcept {
+    template <typename CoreEventSink>
+    static auto notifyNoteOnDispatched(CoreEventSink &coreEventSink,
+                                       const ScheduledNoteEvent &event,
+                                       int) noexcept
+        -> decltype(static_cast<bool>(coreEventSink.noteOnDispatched(event))) {
+        static_assert(noexcept(coreEventSink.noteOnDispatched(event)),
+                      "PolySynth note-on dispatch hook must be noexcept");
+        return coreEventSink.noteOnDispatched(event);
+    }
+
+    template <typename CoreEventSink>
+    static bool notifyNoteOnDispatched(CoreEventSink &,
+                                       const ScheduledNoteEvent &,
+                                       long) noexcept {
+        return true;
+    }
+
+    template <typename CoreEventSink, typename Sink>
+    bool dispatchNoteOn(const clap_event_note_t &event,
+                        CoreEventSink &coreEventSink,
+                        Sink &sink) noexcept {
         if (!validNoteOn(event))
-            return;
+            return true;
 
         const auto identity = identityFrom(event);
         const auto allocation = allocator_.allocateDetailed(identity);
         if (allocation.voiceIndex == VoiceAllocator::kInvalidVoice)
-            return;
+            return true;
 
         const ScheduledNoteEvent scheduled{
             event.header.time,
@@ -191,6 +247,7 @@ private:
             allocation.replacedIdentity,
         };
         sink(scheduled);
+        return notifyNoteOnDispatched(coreEventSink, scheduled, 0);
     }
 
     template <typename Sink>
