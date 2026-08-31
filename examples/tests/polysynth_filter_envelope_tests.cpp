@@ -63,6 +63,127 @@ struct InputEvents {
     clap_input_events_t input{};
 };
 
+struct ParameterEvents {
+    ParameterEvents() noexcept {
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    bool pushNote(std::uint32_t time,
+                  std::int32_t noteId,
+                  std::int16_t key,
+                  double velocity = 1.0) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = notes[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_ON;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = key;
+        event.velocity = velocity;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool pushValue(std::uint32_t time,
+                   double value,
+                   std::int32_t noteId = -1,
+                   std::int16_t portIndex = -1,
+                   std::int16_t channel = -1,
+                   std::int16_t key = -1) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = values[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kFilterEnvelopeAmountId;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
+        event.value = value;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool pushMod(std::uint32_t time,
+                 double amount,
+                 std::int32_t noteId = -1,
+                 std::int16_t portIndex = -1,
+                 std::int16_t channel = -1,
+                 std::int16_t key = -1) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = mods[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_MOD;
+        event.param_id = kFilterEnvelopeAmountId;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
+        event.amount = amount;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool pushBrightness(std::uint32_t time,
+                        double brightness,
+                        std::int32_t noteId,
+                        std::int16_t key) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = expressions[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+        event.expression_id = CLAP_NOTE_EXPRESSION_BRIGHTNESS;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = key;
+        event.value = brightness;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *list) noexcept {
+        return list && list->ctx
+                   ? static_cast<const ParameterEvents *>(list->ctx)->count
+                   : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *list,
+                                                    std::uint32_t index) noexcept {
+        if (!list || !list->ctx)
+            return nullptr;
+        const auto &self = *static_cast<const ParameterEvents *>(list->ctx);
+        return index < self.count ? self.headers[index] : nullptr;
+    }
+
+    std::array<clap_event_note_t, 16> notes{};
+    std::array<clap_event_param_value_t, 16> values{};
+    std::array<clap_event_param_mod_t, 16> mods{};
+    std::array<clap_event_note_expression_t, 16> expressions{};
+    std::array<const clap_event_header_t *, 16> headers{};
+    std::uint32_t count = 0;
+    clap_input_events_t input{};
+};
+
 struct IgnoreNoteEnd {
     void operator()(const clap_event_note_t &) noexcept {}
 };
@@ -74,6 +195,19 @@ bool renderNote(VoiceEngine &engine,
                 std::array<float, Frames> &right) noexcept {
     InputEvents events;
     events.noteOn(0, noteId, 69);
+    IgnoreNoteEnd noteEnd;
+    return engine.process(&events.input,
+                          static_cast<std::uint32_t>(Frames),
+                          left.data(),
+                          right.data(),
+                          noteEnd);
+}
+
+template <std::size_t Frames>
+bool renderParameterBlock(ParameterVoiceEngine &engine,
+                          ParameterEvents &events,
+                          std::array<float, Frames> &left,
+                          std::array<float, Frames> &right) noexcept {
     IgnoreNoteEnd noteEnd;
     return engine.process(&events.input,
                           static_cast<std::uint32_t>(Frames),
@@ -103,6 +237,50 @@ bool sameBlock(const std::array<float, Frames> &a,
 }
 
 template <std::size_t Frames>
+bool samePrefix(const std::array<float, Frames> &a,
+                const std::array<float, Frames> &b,
+                std::size_t end,
+                float tolerance = 1.0e-6f) noexcept {
+    if (end > Frames)
+        return false;
+    for (std::size_t i = 0; i < end; ++i) {
+        if (std::fabs(a[i] - b[i]) > tolerance)
+            return false;
+    }
+    return true;
+}
+
+template <std::size_t Frames>
+bool differsAfter(const std::array<float, Frames> &a,
+                  const std::array<float, Frames> &b,
+                  std::size_t begin,
+                  float tolerance = 1.0e-5f) noexcept {
+    if (begin >= Frames)
+        return false;
+    for (std::size_t i = begin; i < Frames; ++i) {
+        if (std::fabs(a[i] - b[i]) > tolerance)
+            return true;
+    }
+    return false;
+}
+
+template <std::size_t Frames>
+bool matchesStereoSum(const std::array<float, Frames> &sumLeft,
+                      const std::array<float, Frames> &sumRight,
+                      const std::array<float, Frames> &aLeft,
+                      const std::array<float, Frames> &aRight,
+                      const std::array<float, Frames> &bLeft,
+                      const std::array<float, Frames> &bRight,
+                      float tolerance = 2.0e-5f) noexcept {
+    for (std::size_t i = 0; i < Frames; ++i) {
+        if (std::fabs(sumLeft[i] - (aLeft[i] + bLeft[i])) > tolerance ||
+            std::fabs(sumRight[i] - (aRight[i] + bRight[i])) > tolerance)
+            return false;
+    }
+    return true;
+}
+
+template <std::size_t Frames>
 bool finiteBlock(const std::array<float, Frames> &left,
                  const std::array<float, Frames> &right) noexcept {
     for (std::size_t i = 0; i < Frames; ++i) {
@@ -125,6 +303,14 @@ clap_event_param_value_t globalFilterEnvelopeValue(double value) noexcept {
     event.key = -1;
     event.value = value;
     return event;
+}
+
+bool configureRealtimeFilterEnvelope(ParameterVoiceEngine &engine,
+                                     std::size_t voices) noexcept {
+    return engine.configure(voices, 48000.0, 64) &&
+           engine.setAmpEnvelope(64, 0, 1.0f, 64) &&
+           engine.setFilter(80.0f, 0.15f) &&
+           engine.setFilterEnvelopeAmount(0.0f);
 }
 
 } // namespace
@@ -382,6 +568,128 @@ int main() {
         std::fabs(retainedAmount + 0.375) > 1.0e-12) {
         std::cerr << "configuration Filter Env Amount setter diverged from retained state\n";
         return 30;
+    }
+
+    // RED: a sample-accurate global value must alter an already active voice at
+    // the exact event boundary while leaving all preceding samples untouched.
+    static ParameterVoiceEngine rtReference;
+    static ParameterVoiceEngine rtEnvelope;
+    if (!configureRealtimeFilterEnvelope(rtReference, 1) ||
+        !configureRealtimeFilterEnvelope(rtEnvelope, 1))
+        return 31;
+
+    ParameterEvents referenceEvents;
+    ParameterEvents envelopeEvents;
+    if (!referenceEvents.pushNote(0, 700, 69) ||
+        !envelopeEvents.pushNote(0, 700, 69) ||
+        !envelopeEvents.pushValue(32, 1.0))
+        return 32;
+
+    std::array<float, 128> rtReferenceLeft{};
+    std::array<float, 128> rtReferenceRight{};
+    std::array<float, 128> rtEnvelopeLeft{};
+    std::array<float, 128> rtEnvelopeRight{};
+    if (!renderParameterBlock(rtReference, referenceEvents, rtReferenceLeft, rtReferenceRight) ||
+        !renderParameterBlock(rtEnvelope, envelopeEvents, rtEnvelopeLeft, rtEnvelopeRight))
+        return 33;
+    if (!samePrefix(rtReferenceLeft, rtEnvelopeLeft, 32) ||
+        !samePrefix(rtReferenceRight, rtEnvelopeRight, 32)) {
+        std::cerr << "Filter Env Amount changed audio before its sample boundary\n";
+        return 34;
+    }
+    if (!differsAfter(rtReferenceLeft, rtEnvelopeLeft, 32)) {
+        std::cerr << "sample-accurate Filter Env Amount did not reach active voice DSP\n";
+        return 35;
+    }
+
+    // Targeted modulation must affect only the addressed overlapping generation.
+    static ParameterVoiceEngine targetedPair;
+    static ParameterVoiceEngine targetedOne;
+    static ParameterVoiceEngine plainOne;
+    if (!configureRealtimeFilterEnvelope(targetedPair, 2) ||
+        !configureRealtimeFilterEnvelope(targetedOne, 1) ||
+        !configureRealtimeFilterEnvelope(plainOne, 1))
+        return 36;
+
+    ParameterEvents pairEvents;
+    ParameterEvents targetedEvents;
+    ParameterEvents plainEvents;
+    if (!pairEvents.pushNote(0, 701, 69) ||
+        !pairEvents.pushNote(0, 702, 69) ||
+        !pairEvents.pushMod(32, 1.0, 701, 0, 0, 69) ||
+        !targetedEvents.pushNote(0, 701, 69) ||
+        !targetedEvents.pushMod(32, 1.0, 701, 0, 0, 69) ||
+        !plainEvents.pushNote(0, 702, 69))
+        return 37;
+
+    std::array<float, 128> pairLeft{};
+    std::array<float, 128> pairRight{};
+    std::array<float, 128> targetedLeft{};
+    std::array<float, 128> targetedRight{};
+    std::array<float, 128> plainLeft{};
+    std::array<float, 128> plainRight{};
+    if (!renderParameterBlock(targetedPair, pairEvents, pairLeft, pairRight) ||
+        !renderParameterBlock(targetedOne, targetedEvents, targetedLeft, targetedRight) ||
+        !renderParameterBlock(plainOne, plainEvents, plainLeft, plainRight))
+        return 38;
+    if (!differsAfter(targetedLeft, plainLeft, 32)) {
+        std::cerr << "targeted Filter Env Amount modulation did not reach its voice\n";
+        return 39;
+    }
+    if (!matchesStereoSum(pairLeft,
+                          pairRight,
+                          targetedLeft,
+                          targetedRight,
+                          plainLeft,
+                          plainRight)) {
+        std::cerr << "targeted Filter Env Amount modulation leaked across voices\n";
+        return 40;
+    }
+
+    // BRIGHTNESS is an independent contribution. Deliver it before the same-sample
+    // envelope modulation so an implementation which overwrites expression state
+    // is caught deterministically.
+    static ParameterVoiceEngine envelopeOnly;
+    static ParameterVoiceEngine brightnessOnly;
+    static ParameterVoiceEngine combined;
+    if (!configureRealtimeFilterEnvelope(envelopeOnly, 1) ||
+        !configureRealtimeFilterEnvelope(brightnessOnly, 1) ||
+        !configureRealtimeFilterEnvelope(combined, 1))
+        return 41;
+
+    ParameterEvents envelopeOnlyEvents;
+    ParameterEvents brightnessOnlyEvents;
+    ParameterEvents combinedEvents;
+    if (!envelopeOnlyEvents.pushNote(0, 801, 69) ||
+        !envelopeOnlyEvents.pushMod(32, 0.5) ||
+        !brightnessOnlyEvents.pushNote(0, 801, 69) ||
+        !brightnessOnlyEvents.pushBrightness(32, 0.01, 801, 69) ||
+        !combinedEvents.pushNote(0, 801, 69) ||
+        !combinedEvents.pushBrightness(32, 0.01, 801, 69) ||
+        !combinedEvents.pushMod(32, 0.5))
+        return 42;
+
+    std::array<float, 128> envelopeOnlyLeft{};
+    std::array<float, 128> envelopeOnlyRight{};
+    std::array<float, 128> brightnessOnlyLeft{};
+    std::array<float, 128> brightnessOnlyRight{};
+    std::array<float, 128> combinedLeft{};
+    std::array<float, 128> combinedRight{};
+    if (!renderParameterBlock(envelopeOnly,
+                              envelopeOnlyEvents,
+                              envelopeOnlyLeft,
+                              envelopeOnlyRight) ||
+        !renderParameterBlock(brightnessOnly,
+                              brightnessOnlyEvents,
+                              brightnessOnlyLeft,
+                              brightnessOnlyRight) ||
+        !renderParameterBlock(combined, combinedEvents, combinedLeft, combinedRight))
+        return 43;
+    if (!differsAfter(combinedLeft, envelopeOnlyLeft, 32) ||
+        !differsAfter(combinedLeft, brightnessOnlyLeft, 32) ||
+        !finiteBlock(combinedLeft, combinedRight)) {
+        std::cerr << "Filter Env Amount did not compose independently with BRIGHTNESS\n";
+        return 44;
     }
 
     return 0;
