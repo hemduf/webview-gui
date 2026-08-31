@@ -15,6 +15,7 @@ using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterSpec;
 using webview_gui::examples::polysynth::coarseTuningTextForValue;
 using webview_gui::examples::polysynth::coarseTuningValueFromText;
+using webview_gui::examples::polysynth::continuousParameterTextForValue;
 using webview_gui::examples::polysynth::continuousParameterValueFromText;
 using webview_gui::examples::polysynth::kParameterCount;
 using webview_gui::examples::polysynth::parameterSpecByIndex;
@@ -338,6 +339,85 @@ bool checkContinuousParameterTextContract() {
 
     return true;
 }
+
+bool checkContinuousParameterValueToTextContract() {
+    struct FormatCase {
+        clap_id id;
+        double value;
+    };
+    constexpr std::array<FormatCase, 4> valid{{
+        {1000u, -6.0205999},
+        {1003u, 99.5},
+        {1004u, 6000.25},
+        {1011u, -0.5},
+    }};
+
+    for (const auto &item : valid) {
+        std::array<char, CLAP_NAME_SIZE> display{};
+        if (!continuousParameterTextForValue(item.id,
+                                             item.value,
+                                             display.data(),
+                                             static_cast<std::uint32_t>(display.size()))) {
+            std::cerr << "continuous parameter value-to-text formatting failed\n";
+            return false;
+        }
+        double parsed = 0.0;
+        if (!continuousParameterValueFromText(item.id, display.data(), parsed) ||
+            parsed != item.value) {
+            std::cerr << "continuous parameter value-to-text round trip lost precision\n";
+            return false;
+        }
+    }
+
+    std::array<char, 4> exactHalf{{'x', 'x', 'x', 'x'}};
+    if (!continuousParameterTextForValue(1011u,
+                                         0.5,
+                                         exactHalf.data(),
+                                         static_cast<std::uint32_t>(exactHalf.size())) ||
+        std::strcmp(exactHalf.data(), "0.5") != 0) {
+        std::cerr << "continuous formatter rejected an exact-size output buffer\n";
+        return false;
+    }
+
+    std::array<char, 4> tooSmall{{'k', 'e', 'e', 'p'}};
+    const auto originalTooSmall = tooSmall;
+    if (continuousParameterTextForValue(1004u,
+                                        6000.25,
+                                        tooSmall.data(),
+                                        static_cast<std::uint32_t>(tooSmall.size())) ||
+        tooSmall != originalTooSmall) {
+        std::cerr << "continuous formatter mutated a too-small output buffer\n";
+        return false;
+    }
+
+    std::array<char, 16> preserved{{'u', 'n', 'c', 'h', 'a', 'n', 'g', 'e', 'd', '\0'}};
+    const auto originalPreserved = preserved;
+    for (double invalid : {101.0,
+                           std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+        if (continuousParameterTextForValue(1003u,
+                                            invalid,
+                                            preserved.data(),
+                                            static_cast<std::uint32_t>(preserved.size())) ||
+            preserved != originalPreserved) {
+            std::cerr << "invalid continuous value unexpectedly formatted or mutated output\n";
+            return false;
+        }
+    }
+
+    if (continuousParameterTextForValue(1001u, 1.0, preserved.data(),
+                                        static_cast<std::uint32_t>(preserved.size())) ||
+        continuousParameterTextForValue(1002u, 12.0, preserved.data(),
+                                        static_cast<std::uint32_t>(preserved.size())) ||
+        continuousParameterTextForValue(1003u, 0.0, nullptr, CLAP_NAME_SIZE) ||
+        continuousParameterTextForValue(1003u, 0.0, preserved.data(), 0u) ||
+        preserved != originalPreserved) {
+        std::cerr << "continuous formatter accepted an invalid CLAP display request\n";
+        return false;
+    }
+
+    return true;
+}
 }
 
 int main() {
@@ -427,6 +507,9 @@ int main() {
 
     if (!checkContinuousParameterTextContract())
         return 12;
+
+    if (!checkContinuousParameterValueToTextContract())
+        return 13;
 
     return 0;
 }
