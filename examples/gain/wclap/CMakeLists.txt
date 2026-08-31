@@ -44,3 +44,23 @@ include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiWclap.cmake")
 webview_gui_configure_wclap_target(webview_gui_example_gain_wclap
     OUTPUT_NAME WebviewGuiGain
 )
+
+# Review contract: WebView-only is a per-WCLAP compilation profile. It must be
+# attached directly to the Gain core which compiles ClapWebviewGui inline code,
+# and it must not leak through the shared webview-gui interface to unrelated
+# native consumers in the same configure.
+get_target_property(_gain_wclap_core_defs
+    webview_gui_example_gain_clap_core COMPILE_DEFINITIONS)
+if(NOT _gain_wclap_core_defs OR
+   NOT "WEBVIEW_GUI_WEBVIEW_ONLY=1" IN_LIST _gain_wclap_core_defs)
+    message(FATAL_ERROR
+        "Gain WCLAP core must compile with WEBVIEW_GUI_WEBVIEW_ONLY=1 directly")
+endif()
+
+get_target_property(_webview_gui_interface_defs
+    webview-gui INTERFACE_COMPILE_DEFINITIONS)
+if(_webview_gui_interface_defs AND
+   "WEBVIEW_GUI_WEBVIEW_ONLY=1" IN_LIST _webview_gui_interface_defs)
+    message(FATAL_ERROR
+        "WCLAP profile must not leak through webview-gui to unrelated consumers")
+endif()
