@@ -821,7 +821,24 @@ protected:
     bool implementsTail() const noexcept override { return true; }
 
     std::uint32_t tailGet() const noexcept override {
-        return currentTailSamples_.load(std::memory_order_acquire);
+        const auto publishedTail = currentTailSamples_.load(std::memory_order_acquire);
+        const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+        const auto appliedRevision =
+            appliedLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+        if (loadedRevision == appliedRevision || !active_)
+            return publishedTail;
+
+        ParameterSnapshot pending{};
+        if (!tryReadPendingParameterSnapshot(pending) ||
+            loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
+            return publishedTail;
+
+        std::uint32_t pendingTail = 0u;
+        if (!releaseSecondsToTailSamples(pending.ampReleaseSeconds,
+                                         activeSampleRate_,
+                                         pendingTail))
+            return publishedTail;
+        return std::max(publishedTail, pendingTail);
     }
 
     bool implementsState() const noexcept override { return true; }
