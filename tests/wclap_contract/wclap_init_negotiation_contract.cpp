@@ -9,6 +9,7 @@
 namespace {
 
 std::uint32_t hostExtensionQueries = 0;
+std::uint32_t missingHostExtensionQueries = 0;
 std::uint32_t pluginExtensionQueries = 0;
 std::uint32_t hostSendCalls = 0;
 
@@ -23,6 +24,11 @@ const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *id) {
     ++hostExtensionQueries;
     if (id && std::strcmp(id, webview_gui::CLAP_EXT_WEBVIEW) == 0)
         return &hostWebview;
+    return nullptr;
+}
+
+const void *CLAP_ABI missingHostGetExtension(const clap_host_t *, const char *) {
+    ++missingHostExtensionQueries;
     return nullptr;
 }
 
@@ -87,5 +93,27 @@ int main() {
         return 8;
 
     gui.destroy();
+
+    // Absence is also a resolved result. Repeated GUI capability probes must not
+    // repeatedly cross the WCLAP/native host boundary when clap.webview/3 is not
+    // provided by the host.
+    clap_host_t missingHost{};
+    missingHost.get_extension = missingHostGetExtension;
+    ClapWebviewGui missingGui{&plugin, &missingHost};
+    missingGui.init();
+    if (!expect(missingHostExtensionQueries == 0,
+                "missing-host WCLAP init queried an extension too early"))
+        return 9;
+    if (!expect(!missingGui.isApiSupported(CLAP_WINDOW_API_WEBVIEW, false),
+                "missing host WebView extension was reported as supported"))
+        return 10;
+    if (!expect(missingHostExtensionQueries == 1,
+                "missing host WebView extension was not queried exactly once"))
+        return 11;
+    if (!expect(!missingGui.isApiSupported(CLAP_WINDOW_API_WEBVIEW, false) &&
+                    missingHostExtensionQueries == 1,
+                "negative host WebView lookup was not cached"))
+        return 12;
+
     return 0;
 }
