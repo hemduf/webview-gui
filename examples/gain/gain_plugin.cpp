@@ -357,12 +357,12 @@ public:
 
 protected:
     bool init() noexcept override {
+        // Keep clap_plugin.init() free of host extension discovery. WCLAP bridges
+        // may cross the WASM/native boundary from host.get_extension() and the
+        // native host is allowed to inspect plug-in extensions in that callback,
+        // which would re-enter strict clap-helpers before init has completed.
         gui_.init();
         guiParameterBridge_.init(host_);
-        if (host_ && host_->get_extension) {
-            hostParams_ = static_cast<const clap_host_params_t *>(
-                host_->get_extension(host_, CLAP_EXT_PARAMS));
-        }
         return true;
     }
 
@@ -573,8 +573,11 @@ protected:
         gainDbSnapshot_.store(gain, std::memory_order_relaxed);
         bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
 
-        if (parameterValuesChanged && hostParams_ && hostParams_->rescan)
-            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        if (parameterValuesChanged) {
+            const auto *hostParams = resolveHostParams();
+            if (hostParams && hostParams->rescan)
+                hostParams->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        }
         return true;
     }
 
@@ -715,6 +718,17 @@ protected:
     }
 
 private:
+    const clap_host_params_t *resolveHostParams() noexcept {
+        if (!hostParamsResolved_) {
+            hostParamsResolved_ = true;
+            if (host_ && host_->get_extension) {
+                hostParams_ = static_cast<const clap_host_params_t *>(
+                    host_->get_extension(host_, CLAP_EXT_PARAMS));
+            }
+        }
+        return hostParams_;
+    }
+
     bool sendParameterSnapshotToWebview() const noexcept {
         const auto gainMessage = encodeUiParameterMessage(
             kUiGainParameter,
@@ -788,6 +802,7 @@ private:
 
     const clap_host_t *host_ = nullptr;
     const clap_host_params_t *hostParams_ = nullptr;
+    bool hostParamsResolved_ = false;
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};
