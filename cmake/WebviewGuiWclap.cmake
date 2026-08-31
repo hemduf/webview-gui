@@ -4,9 +4,12 @@ include_guard(GLOBAL)
 # package it as <OutputName>.wclap/module.wasm plus a .tar.gz distribution.
 # The browser/editor is host-owned through clap.webview/3, so this helper forces
 # webview-gui's WebView-only backend and never links native CHOC/OS GUI support.
+# COMPILE_TARGETS lists additional plug-in/core targets which compile inline
+# ClapWebviewGui code and therefore need the same target-local WCLAP profile.
 function(webview_gui_configure_wclap_target target)
     set(oneValueArgs OUTPUT_NAME RESOURCE_DIRECTORY)
-    cmake_parse_arguments(WCLAP "" "${oneValueArgs}" "" ${ARGN})
+    set(multiValueArgs COMPILE_TARGETS)
+    cmake_parse_arguments(WCLAP "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if(NOT TARGET ${target})
         message(FATAL_ERROR "webview_gui_configure_wclap_target: '${target}' is not a target")
@@ -38,13 +41,21 @@ function(webview_gui_configure_wclap_target target)
     set(_archive "${CMAKE_CURRENT_BINARY_DIR}/${_bundle_name}.tar.gz")
     set(_module_dir "${CMAKE_CURRENT_BINARY_DIR}/wclap-module/${target}")
 
-    target_compile_definitions(${target} PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
+    set(_wclap_compile_targets ${target} ${WCLAP_COMPILE_TARGETS})
+    list(REMOVE_DUPLICATES _wclap_compile_targets)
+    foreach(_wclap_compile_target IN LISTS _wclap_compile_targets)
+        if(NOT TARGET ${_wclap_compile_target})
+            message(FATAL_ERROR
+                "webview_gui_configure_wclap_target: COMPILE_TARGETS entry '${_wclap_compile_target}' is not a target")
+        endif()
+        target_compile_definitions(${_wclap_compile_target} PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
+    endforeach()
+
     if(TARGET webview-gui)
-        # ClapWebviewGui is header-defined, so the WebView-only profile must be
-        # a usage requirement. WCLAP consumers such as a static plug-in core
-        # compile those inline methods themselves; PRIVATE would configure only
-        # source/webview-gui.cpp and silently leave consumers on the native path.
-        target_compile_definitions(webview-gui PUBLIC WEBVIEW_GUI_WEBVIEW_ONLY=1)
+        # Keep the implementation object itself on the no-native-GUI backend, but
+        # do not publish this definition to unrelated consumers in the same CMake
+        # configure. Header-defined consumers must opt in through COMPILE_TARGETS.
+        target_compile_definitions(webview-gui PRIVATE WEBVIEW_GUI_WEBVIEW_ONLY=1)
     endif()
 
     if(EMSCRIPTEN)
