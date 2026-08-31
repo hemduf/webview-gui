@@ -38,6 +38,7 @@ public:
         filterResonanceBase_ = 0.0;
         filterEnvelopeAmountBase_ = 0.0;
         panBase_ = 0.0;
+        ampLevelBase_ = 1.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
         voiceCoarseTuningSemitones_.fill(0);
@@ -52,6 +53,7 @@ public:
         const auto resonanceParameterSlot = filterResonanceSlot();
         const auto filterEnvelopeParameterSlot = filterEnvelopeAmountSlot();
         const auto panParameterSlot = panSlot();
+        const auto ampLevelParameterSlot = ampLevelSlot();
         return polyphonicState_.setGlobalBase(fineSlot, fineTuneBaseCents_) &&
                polyphonicState_.setGlobalModulation(fineSlot, 0.0) &&
                polyphonicState_.setGlobalBase(cutoffParameterSlot, filterCutoffBaseHz_) &&
@@ -63,6 +65,8 @@ public:
                polyphonicState_.setGlobalModulation(filterEnvelopeParameterSlot, 0.0) &&
                polyphonicState_.setGlobalBase(panParameterSlot, panBase_) &&
                polyphonicState_.setGlobalModulation(panParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(ampLevelParameterSlot, ampLevelBase_) &&
+               polyphonicState_.setGlobalModulation(ampLevelParameterSlot, 0.0) &&
                VoiceEngine::setFineTuningCents(0.0f) &&
                VoiceEngine::setPan(0.0f) &&
                applyMasterGainState();
@@ -136,6 +140,10 @@ public:
             value = panBase_;
             return true;
         }
+        if (spec->slot == ParameterSlot::AmpLevel) {
+            value = ampLevelBase_;
+            return true;
+        }
         return false;
     }
 
@@ -162,6 +170,8 @@ public:
                                              filterEnvelopeAmountBase_);
         (void)polyphonicState_.setGlobalModulation(filterEnvelopeAmountSlot(), 0.0);
         (void)polyphonicState_.setGlobalBase(panSlot(), panBase_);
+        (void)polyphonicState_.setGlobalBase(ampLevelSlot(), ampLevelBase_);
+        (void)polyphonicState_.setGlobalModulation(ampLevelSlot(), 0.0);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
         (void)VoiceEngine::setPan(static_cast<float>(panBase_));
         (void)applyMasterGainState();
@@ -286,6 +296,10 @@ private:
         return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
     }
 
+    static constexpr clap_id ampLevelId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::AmpLevel);
+    }
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -304,6 +318,10 @@ private:
 
     static constexpr std::size_t panSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::Pan);
+    }
+
+    static constexpr std::size_t ampLevelSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::AmpLevel);
     }
 
     static bool isGlobalAddress(std::int32_t noteId,
@@ -619,10 +637,34 @@ private:
     bool applyVoiceExpressionGain(VoiceAllocator::VoiceIndex index) noexcept {
         if (index >= capacity() || !trackedVoices_[index])
             return false;
-        const double gain = voiceVolumeExpressions_[index] *
+
+        const auto *spec = parameterSpecForId(ampLevelId());
+        if (!spec)
+            return false;
+        double base = 0.0;
+        double modulation = 0.0;
+        if (!polyphonicState_.baseValue(index, ampLevelSlot(), base) ||
+            !polyphonicState_.modulation(index, ampLevelSlot(), modulation))
+            return false;
+
+        const double ampLevel = std::clamp(base + modulation,
+                                           spec->minValue,
+                                           spec->maxValue);
+        const double gain = ampLevel *
+                            voiceVolumeExpressions_[index] *
                             voicePerformanceExpressions_[index] *
                             pressureGain(voicePressureExpressions_[index]);
         return VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(gain));
+    }
+
+    bool applyAmpLevelState() noexcept {
+        if (!syncVoices())
+            return false;
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (trackedVoices_[index] && !applyVoiceExpressionGain(index))
+                return false;
+        }
+        return true;
     }
 
     bool applyFilterCutoffState() noexcept {
@@ -1142,6 +1184,17 @@ private:
                 return applyPanState();
             }
 
+            if (spec->slot == ParameterSlot::AmpLevel) {
+                if (!syncVoices() || !polyphonicState_.applyValue(ampLevelSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    ampLevelBase_ = event.value;
+                return applyAmpLevelState();
+            }
+
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
@@ -1204,6 +1257,13 @@ private:
                 return applyPanState();
             }
 
+            if (spec->slot == ParameterSlot::AmpLevel) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(ampLevelSlot(), event))
+                    return false;
+                return applyAmpLevelState();
+            }
+
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
             if (!syncVoices() ||
@@ -1254,6 +1314,7 @@ private:
     double filterResonanceBase_ = 0.0;
     double filterEnvelopeAmountBase_ = 0.0;
     double panBase_ = 0.0;
+    double ampLevelBase_ = 1.0;
 };
 
 } // namespace webview_gui::examples::polysynth
