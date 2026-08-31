@@ -446,38 +446,11 @@ protected:
     bool implementsGui() const noexcept override { return true; }
 
     bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
-        if (api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
-            return !isFloating && gui_.extHostWebview != nullptr &&
-                   gui_.extHostWebview->send != nullptr;
         return gui_.isApiSupported(api, isFloating);
     }
 
     bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
-        if (!api || !isFloating)
-            return false;
-
-        if (gui_.extHostWebview && gui_.extHostWebview->send)
-            return gui_.getPreferredApi(api, isFloating);
-
-        *isFloating = false;
-#if defined(__APPLE__)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::COCOA)) {
-            *api = CLAP_WINDOW_API_COCOA;
-            return true;
-        }
-#elif defined(_WIN32) || defined(_WIN64)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::HWND)) {
-            *api = CLAP_WINDOW_API_WIN32;
-            return true;
-        }
-#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
-      !defined(__wasm32__) && !defined(__wasm64__)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::X11EMBED)) {
-            *api = CLAP_WINDOW_API_X11;
-            return true;
-        }
-#endif
-        return false;
+        return gui_.getPreferredApi(api, isFloating);
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
@@ -486,9 +459,6 @@ protected:
 
         const bool hostOwnedWebview =
             api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0;
-        if (hostOwnedWebview &&
-            (isFloating || !gui_.extHostWebview || !gui_.extHostWebview->send))
-            return false;
         if (!gui_.create(api, isFloating))
             return false;
         if (!gui_.setSize(kEditorWidth, kEditorHeight)) {
