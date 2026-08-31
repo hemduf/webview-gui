@@ -101,6 +101,28 @@ struct InputEvents {
         return true;
     }
 
+    bool pushBrightness(std::uint32_t time,
+                        double value,
+                        std::int32_t noteId,
+                        std::int16_t key) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = expressions[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+        event.expression_id = CLAP_NOTE_EXPRESSION_BRIGHTNESS;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = key;
+        event.value = value;
+        headers[count++] = &event.header;
+        return true;
+    }
+
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
         return events && events->ctx
                    ? static_cast<const InputEvents *>(events->ctx)->count
@@ -118,6 +140,7 @@ struct InputEvents {
     std::array<clap_event_note_t, 16> notes{};
     std::array<clap_event_param_mod_t, 16> mods{};
     std::array<clap_event_param_value_t, 16> values{};
+    std::array<clap_event_note_expression_t, 16> expressions{};
     std::array<const clap_event_header_t *, 16> headers{};
     std::uint32_t count = 0;
     clap_input_events_t input{};
@@ -146,9 +169,35 @@ bool sameAudio(const RenderResult &a, const RenderResult &b) noexcept {
     return true;
 }
 
+bool sameAudioBefore(const RenderResult &a,
+                     const RenderResult &b,
+                     std::uint32_t endFrame) noexcept {
+    for (std::uint32_t frame = 0; frame < endFrame; ++frame) {
+        if (std::fabs(a.left[frame] - b.left[frame]) > 1.0e-5f ||
+            std::fabs(a.right[frame] - b.right[frame]) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
+
+bool matchesSum(const RenderResult &sum,
+                const RenderResult &a,
+                const RenderResult &b) noexcept {
+    for (std::size_t i = 0; i < sum.left.size(); ++i) {
+        if (std::fabs(sum.left[i] - (a.left[i] + b.left[i])) > 2.0e-5f ||
+            std::fabs(sum.right[i] - (a.right[i] + b.right[i])) > 2.0e-5f)
+            return false;
+    }
+    return true;
+}
+
 bool configure(ParameterVoiceEngine &engine) noexcept {
     return engine.configure(4, kSampleRate, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
+
+bool configureFiltered(ParameterVoiceEngine &engine, float cutoffHz = 200.0f) noexcept {
+    return configure(engine) && engine.setFilter(cutoffHz, 0.0f);
 }
 
 double phaseIncrement(std::int16_t key) noexcept {
@@ -434,6 +483,102 @@ int main() {
         std::fabs(baseValue - 1200.0) > 1.0e-9) {
         std::cerr << "Filter Cutoff global base was not retained independently of targeted value/modulation\n";
         return 32;
+    }
+
+    ParameterVoiceEngine cutoffBaseline;
+    ParameterVoiceEngine cutoffMoved;
+    if (!configureFiltered(cutoffBaseline) || !configureFiltered(cutoffMoved))
+        return 33;
+    InputEvents cutoffBaselineEvents;
+    InputEvents cutoffMovedEvents;
+    cutoffBaselineEvents.pushNote(0, 51, 84);
+    cutoffMovedEvents.pushNote(0, 51, 84);
+    cutoffMovedEvents.pushValue(8, kFilterCutoffId, 12000.0);
+    RenderResult cutoffBaselineAudio;
+    RenderResult cutoffMovedAudio;
+    if (!render(cutoffBaseline, cutoffBaselineEvents, cutoffBaselineAudio) ||
+        !render(cutoffMoved, cutoffMovedEvents, cutoffMovedAudio)) {
+        std::cerr << "Filter Cutoff DSP value routing failed the process block\n";
+        return 34;
+    }
+    if (!sameAudioBefore(cutoffBaselineAudio, cutoffMovedAudio, 8)) {
+        std::cerr << "Filter Cutoff PARAM_VALUE changed audio before its sample boundary\n";
+        return 35;
+    }
+    if (sameAudio(cutoffBaselineAudio, cutoffMovedAudio)) {
+        std::cerr << "Filter Cutoff PARAM_VALUE did not reach the active voice DSP\n";
+        return 36;
+    }
+
+    ParameterVoiceEngine cutoffTargeted;
+    ParameterVoiceEngine cutoffTargetVoice;
+    ParameterVoiceEngine cutoffPlainVoice;
+    if (!configureFiltered(cutoffTargeted) ||
+        !configureFiltered(cutoffTargetVoice) ||
+        !configureFiltered(cutoffPlainVoice))
+        return 37;
+    InputEvents cutoffTargetedEvents;
+    InputEvents cutoffTargetVoiceEvents;
+    InputEvents cutoffPlainVoiceEvents;
+    cutoffTargetedEvents.pushNote(0, 61, 84);
+    cutoffTargetedEvents.pushNote(0, 62, 84);
+    cutoffTargetedEvents.pushMod(8, kFilterCutoffId, 11800.0, 61, 0, 0, 84);
+    cutoffTargetVoiceEvents.pushNote(0, 61, 84);
+    cutoffTargetVoiceEvents.pushMod(8, kFilterCutoffId, 11800.0, 61, 0, 0, 84);
+    cutoffPlainVoiceEvents.pushNote(0, 62, 84);
+    RenderResult cutoffTargetedAudio;
+    RenderResult cutoffTargetVoiceAudio;
+    RenderResult cutoffPlainVoiceAudio;
+    if (!render(cutoffTargeted, cutoffTargetedEvents, cutoffTargetedAudio) ||
+        !render(cutoffTargetVoice, cutoffTargetVoiceEvents, cutoffTargetVoiceAudio) ||
+        !render(cutoffPlainVoice, cutoffPlainVoiceEvents, cutoffPlainVoiceAudio)) {
+        std::cerr << "targeted Filter Cutoff PARAM_MOD failed the process block\n";
+        return 38;
+    }
+    if (sameAudio(cutoffTargetVoiceAudio, cutoffPlainVoiceAudio)) {
+        std::cerr << "targeted Filter Cutoff PARAM_MOD did not affect its selected voice\n";
+        return 39;
+    }
+    if (!matchesSum(cutoffTargetedAudio,
+                    cutoffTargetVoiceAudio,
+                    cutoffPlainVoiceAudio)) {
+        std::cerr << "targeted Filter Cutoff PARAM_MOD leaked across overlapping voices\n";
+        return 40;
+    }
+
+    ParameterVoiceEngine cutoffOnly;
+    ParameterVoiceEngine cutoffBrightness;
+    ParameterVoiceEngine brightnessOnly;
+    if (!configureFiltered(cutoffOnly) ||
+        !configureFiltered(cutoffBrightness) ||
+        !configureFiltered(brightnessOnly))
+        return 41;
+    InputEvents cutoffOnlyEvents;
+    InputEvents cutoffBrightnessEvents;
+    InputEvents brightnessOnlyEvents;
+    cutoffOnlyEvents.pushValue(0, kFilterCutoffId, 3000.0);
+    cutoffOnlyEvents.pushNote(0, 71, 84);
+    cutoffBrightnessEvents.pushValue(0, kFilterCutoffId, 3000.0);
+    cutoffBrightnessEvents.pushBrightness(0, 0.5, 71, 84);
+    cutoffBrightnessEvents.pushNote(0, 71, 84);
+    brightnessOnlyEvents.pushBrightness(0, 0.5, 71, 84);
+    brightnessOnlyEvents.pushNote(0, 71, 84);
+    RenderResult cutoffOnlyAudio;
+    RenderResult cutoffBrightnessAudio;
+    RenderResult brightnessOnlyAudio;
+    if (!render(cutoffOnly, cutoffOnlyEvents, cutoffOnlyAudio) ||
+        !render(cutoffBrightness, cutoffBrightnessEvents, cutoffBrightnessAudio) ||
+        !render(brightnessOnly, brightnessOnlyEvents, brightnessOnlyAudio)) {
+        std::cerr << "Filter Cutoff / BRIGHTNESS composition failed the process block\n";
+        return 42;
+    }
+    if (sameAudio(cutoffBrightnessAudio, cutoffOnlyAudio)) {
+        std::cerr << "BRIGHTNESS stopped composing after a Filter Cutoff value\n";
+        return 43;
+    }
+    if (sameAudio(cutoffBrightnessAudio, brightnessOnlyAudio)) {
+        std::cerr << "Filter Cutoff was discarded when composed with BRIGHTNESS\n";
+        return 44;
     }
 
     return 0;
