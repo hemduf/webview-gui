@@ -320,4 +320,37 @@ inline bool continuousParameterValueFromText(clap_id id,
     return true;
 }
 
+inline bool parameterTextForValue(clap_id id,
+                                  double value,
+                                  char *display,
+                                  std::uint32_t size) noexcept {
+    const auto *spec = parameterSpecForId(id);
+    if (!spec)
+        return false;
+
+    if ((spec->flags & CLAP_PARAM_IS_STEPPED) == 0u)
+        return continuousParameterTextForValue(id, value, display, size);
+    if (spec->slot == ParameterSlot::Waveform)
+        return waveformTextForValue(value, display, size);
+    if (spec->slot == ParameterSlot::CoarseTuning)
+        return coarseTuningTextForValue(value, display, size);
+    return false;
+}
+
+inline bool parameterValueFromText(clap_id id,
+                                   const char *display,
+                                   double &value) noexcept {
+    const auto *spec = parameterSpecForId(id);
+    if (!spec)
+        return false;
+
+    if ((spec->flags & CLAP_PARAM_IS_STEPPED) == 0u)
+        return continuousParameterValueFromText(id, display, value);
+    if (spec->slot == ParameterSlot::Waveform)
+        return waveformValueFromName(display, value);
+    if (spec->slot == ParameterSlot::CoarseTuning)
+        return coarseTuningValueFromText(display, value);
+    return false;
+}
+
 } // namespace webview_gui::examples::polysynth
