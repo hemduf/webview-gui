@@ -21,6 +21,8 @@ constexpr clap_id kFineTuneId =
     kFirstParameterId + static_cast<unsigned>(ParameterSlot::FineTuning);
 constexpr clap_id kFilterCutoffId =
     kFirstParameterId + static_cast<unsigned>(ParameterSlot::FilterCutoff);
+constexpr clap_id kFilterResonanceId =
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::FilterResonance);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -583,6 +585,73 @@ int main() {
     if (sameAudio(cutoffBrightnessAudio, brightnessOnlyAudio)) {
         std::cerr << "Filter Cutoff was discarded when composed with BRIGHTNESS\n";
         return 44;
+    }
+
+    static ParameterVoiceEngine resonanceBaseline;
+    static ParameterVoiceEngine resonanceMoved;
+    if (!configureFiltered(resonanceBaseline, 1200.0f) ||
+        !configureFiltered(resonanceMoved, 1200.0f))
+        return 45;
+    InputEvents resonanceBaselineEvents;
+    InputEvents resonanceMovedEvents;
+    resonanceBaselineEvents.pushNote(0, 81, 84);
+    resonanceMovedEvents.pushNote(0, 81, 84);
+    resonanceMovedEvents.pushValue(8, kFilterResonanceId, 0.8);
+    RenderResult resonanceBaselineAudio;
+    RenderResult resonanceMovedAudio;
+    if (!render(resonanceBaseline, resonanceBaselineEvents, resonanceBaselineAudio) ||
+        !render(resonanceMoved, resonanceMovedEvents, resonanceMovedAudio)) {
+        std::cerr << "Filter Resonance PARAM_VALUE failed the process block\n";
+        return 46;
+    }
+    if (!sameAudioBefore(resonanceBaselineAudio, resonanceMovedAudio, 8)) {
+        std::cerr << "Filter Resonance PARAM_VALUE changed audio before its sample boundary\n";
+        return 47;
+    }
+    if (sameAudio(resonanceBaselineAudio, resonanceMovedAudio)) {
+        std::cerr << "Filter Resonance PARAM_VALUE did not reach the active voice DSP\n";
+        return 48;
+    }
+    if (!resonanceMoved.parameterBaseValue(kFilterResonanceId, baseValue) ||
+        std::fabs(baseValue - 0.8) > 1.0e-12) {
+        std::cerr << "Filter Resonance global base was not retained\n";
+        return 49;
+    }
+
+    static ParameterVoiceEngine resonanceTargeted;
+    static ParameterVoiceEngine resonanceTargetVoice;
+    static ParameterVoiceEngine resonancePlainVoice;
+    if (!configureFiltered(resonanceTargeted, 1200.0f) ||
+        !configureFiltered(resonanceTargetVoice, 1200.0f) ||
+        !configureFiltered(resonancePlainVoice, 1200.0f))
+        return 50;
+    InputEvents resonanceTargetedEvents;
+    InputEvents resonanceTargetVoiceEvents;
+    InputEvents resonancePlainVoiceEvents;
+    resonanceTargetedEvents.pushNote(0, 91, 84);
+    resonanceTargetedEvents.pushNote(0, 92, 84);
+    resonanceTargetedEvents.pushMod(8, kFilterResonanceId, 0.8, 91, 0, 0, 84);
+    resonanceTargetVoiceEvents.pushNote(0, 91, 84);
+    resonanceTargetVoiceEvents.pushMod(8, kFilterResonanceId, 0.8, 91, 0, 0, 84);
+    resonancePlainVoiceEvents.pushNote(0, 92, 84);
+    RenderResult resonanceTargetedAudio;
+    RenderResult resonanceTargetVoiceAudio;
+    RenderResult resonancePlainVoiceAudio;
+    if (!render(resonanceTargeted, resonanceTargetedEvents, resonanceTargetedAudio) ||
+        !render(resonanceTargetVoice, resonanceTargetVoiceEvents, resonanceTargetVoiceAudio) ||
+        !render(resonancePlainVoice, resonancePlainVoiceEvents, resonancePlainVoiceAudio)) {
+        std::cerr << "targeted Filter Resonance PARAM_MOD failed the process block\n";
+        return 51;
+    }
+    if (sameAudio(resonanceTargetVoiceAudio, resonancePlainVoiceAudio)) {
+        std::cerr << "targeted Filter Resonance PARAM_MOD did not affect its selected voice\n";
+        return 52;
+    }
+    if (!matchesSum(resonanceTargetedAudio,
+                    resonanceTargetVoiceAudio,
+                    resonancePlainVoiceAudio)) {
+        std::cerr << "targeted Filter Resonance PARAM_MOD leaked across overlapping voices\n";
+        return 53;
     }
 
     return 0;
