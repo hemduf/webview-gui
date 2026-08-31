@@ -28,6 +28,8 @@ public:
             return false;
 
         sampleRate_ = sampleRate;
+        if (!prepareRealtimeFilterGTable())
+            return false;
         oscillatorWaveform_ = OscillatorWaveform::Sine;
         coarseTuningSemitones_ = 0;
         fineTuningCents_ = 0.0f;
@@ -42,6 +44,7 @@ public:
         filterCutoffHz_ = 0.0f;
         filterResonance_ = 0.0f;
         filterEnvelopeAmount_ = 0.0f;
+        filterEnvelopeCutoffMultiplier_ = 1.0;
         filterBaseG_ = 0.0;
         filterEnvelopeGDelta_ = 0.0;
         filterBrightnessGDelta_ = 0.0;
@@ -142,7 +145,11 @@ public:
             return false;
 
         const double maximumG = maximumFilterG();
-        if (!std::isfinite(maximumG) || maximumG < baseG)
+        const double envelopeCutoffMultiplier =
+            std::exp2(kMaximumFilterEnvelopeOctaves *
+                      static_cast<double>(filterEnvelopeAmount_));
+        if (!std::isfinite(maximumG) || maximumG < baseG ||
+            !std::isfinite(envelopeCutoffMultiplier))
             return false;
 
         filterA1_ = a1;
@@ -150,6 +157,7 @@ public:
         filterA3_ = a3;
         filterCutoffHz_ = cutoffHz;
         filterResonance_ = resonance;
+        filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
         filterBaseG_ = baseG;
         filterEnvelopeGDelta_ = targetG - baseG;
         filterMaximumG_ = maximumG;
@@ -169,8 +177,14 @@ public:
         if (!configured_ || !std::isfinite(amount) || amount < -1.0f || amount > 1.0f)
             return false;
 
+        const double envelopeCutoffMultiplier =
+            std::exp2(kMaximumFilterEnvelopeOctaves * static_cast<double>(amount));
+        if (!std::isfinite(envelopeCutoffMultiplier))
+            return false;
+
         if (!filterEnabled_) {
             filterEnvelopeAmount_ = amount;
+            filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
             return true;
         }
 
@@ -196,6 +210,7 @@ public:
             return false;
 
         filterEnvelopeAmount_ = amount;
+        filterEnvelopeCutoffMultiplier_ = envelopeCutoffMultiplier;
         filterA1_ = a1;
         filterA2_ = a2;
         filterA3_ = a3;
@@ -337,6 +352,56 @@ public:
         return true;
     }
 
+    // Audio-thread cutoff handoff for an already allocated voice. configure()
+    // prepares a fixed lookup from cutoff Hz to the TPT g domain; this path uses
+    // only bounded indexing, interpolation and scalar coefficient algebra. It
+    // intentionally performs no tan/exp2, allocation, locking, logging or I/O.
+    // The filter integrator state is preserved so a sample-accurate event changes
+    // the coefficient target without restarting the voice generation.
+    bool setVoiceFilterCutoffHz(VoiceAllocator::VoiceIndex index,
+                                float cutoffHz) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(cutoffHz))
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double effectiveCutoff = std::clamp(
+            static_cast<double>(cutoffHz),
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double baseG = 0.0;
+        if (!realtimeFilterG(effectiveCutoff, baseG))
+            return false;
+
+        const double targetCutoff = std::clamp(
+            effectiveCutoff * voice.filterEnvelopeCutoffMultiplier,
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double targetG = 0.0;
+        if (!realtimeFilterG(targetCutoff, targetG))
+            return false;
+
+        double a1 = 0.0;
+        double a2 = 0.0;
+        double a3 = 0.0;
+        filterCoefficientsForG(baseG, voice.filterDamping, a1, a2, a3);
+        if (!std::isfinite(a1) || !std::isfinite(a2) || !std::isfinite(a3))
+            return false;
+
+        voice.filterCutoffHz = static_cast<float>(effectiveCutoff);
+        voice.filterA1 = a1;
+        voice.filterA2 = a2;
+        voice.filterA3 = a3;
+        voice.filterBaseG = baseG;
+        voice.filterEnvelopeGDelta = targetG - baseG;
+        voice.filterBrightnessGDelta = voice.filterMaximumG - baseG;
+        return true;
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
@@ -433,8 +498,10 @@ private:
         double filterBrightnessGDelta = 0.0;
         double filterMaximumG = 0.0;
         double filterDamping = 2.0;
+        double filterEnvelopeCutoffMultiplier = 1.0;
         double filterIc1Eq = 0.0;
         double filterIc2Eq = 0.0;
+        float filterCutoffHz = 0.0f;
         float peakLevel = 0.0f;
         float sustainTarget = 0.0f;
         float level = 0.0f;
@@ -467,6 +534,7 @@ private:
     static constexpr double kMaximumFilterCutoffFraction = 0.45;
     static constexpr float kMaximumFilterResonance = 0.99f;
     static constexpr double kMaximumFilterEnvelopeOctaves = 4.0;
+    static constexpr std::size_t kRealtimeFilterGTableSize = 2049;
     static constexpr float kMinimumMasterGainDb = -60.0f;
     static constexpr float kMaximumMasterGainDb = 12.0f;
 
@@ -481,6 +549,49 @@ private:
     static double maximumFilterG() noexcept {
         return std::tan(kPi * kMaximumFilterCutoffFraction);
     }
+
+    bool prepareRealtimeFilterGTable() noexcept {
+        const double minimumCutoff = static_cast<double>(kMinimumFilterCutoffHz);
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double span = maximumCutoff - minimumCutoff;
+        if (!std::isfinite(maximumCutoff) || !(span > 0.0))
+            return false;
+
+        for (std::size_t index = 0; index < realtimeFilterGTable_.size(); ++index) {
+            const double normalized = static_cast<double>(index) /
+                                      static_cast<double>(realtimeFilterGTable_.size() - 1u);
+            const double cutoff = minimumCutoff + span * normalized;
+            const double g = std::tan(kPi * cutoff / sampleRate_);
+            if (!std::isfinite(g) || g < 0.0)
+                return false;
+            realtimeFilterGTable_[index] = g;
+        }
+        return true;
+    }
+
+    bool realtimeFilterG(double cutoffHz, double &g) const noexcept {
+        const double minimumCutoff = static_cast<double>(kMinimumFilterCutoffHz);
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        if (!std::isfinite(cutoffHz) || cutoffHz < minimumCutoff ||
+            cutoffHz > maximumCutoff || !(maximumCutoff > minimumCutoff))
+            return false;
+
+        const double normalized =
+            (cutoffHz - minimumCutoff) / (maximumCutoff - minimumCutoff);
+        const double tablePosition =
+            normalized * static_cast<double>(realtimeFilterGTable_.size() - 1u);
+        std::size_t lower = static_cast<std::size_t>(tablePosition);
+        if (lower >= realtimeFilterGTable_.size() - 1u) {
+            g = realtimeFilterGTable_.back();
+            return std::isfinite(g);
+        }
+        const double fraction = tablePosition - static_cast<double>(lower);
+        const double lowerG = realtimeFilterGTable_[lower];
+        const double upperG = realtimeFilterGTable_[lower + 1u];
+        g = lowerG + (upperG - lowerG) * fraction;
+        return std::isfinite(g) && g >= 0.0;
+    }
+
     // Compact polyBLEP correction keeps the discontinuities of the educational
     // saw/square modes bounded without allocating tables or performing any
     // unbounded work on the audio thread. The sine path remains unchanged.
@@ -601,11 +712,13 @@ private:
         voice.filterA1 = filterA1_;
         voice.filterA2 = filterA2_;
         voice.filterA3 = filterA3_;
+        voice.filterCutoffHz = filterCutoffHz_;
         voice.filterBaseG = filterBaseG_;
         voice.filterEnvelopeGDelta = filterEnvelopeGDelta_;
         voice.filterBrightnessGDelta = filterBrightnessGDelta_;
         voice.filterMaximumG = filterMaximumG_;
         voice.filterDamping = filterDamping_;
+        voice.filterEnvelopeCutoffMultiplier = filterEnvelopeCutoffMultiplier_;
         voice.filterEnvelopeEnabled = filterEnabled_ && filterEnvelopeAmount_ != 0.0f;
         if (pan_ <= 0.0f) {
             voice.panLeftGain = 1.0f;
@@ -857,6 +970,7 @@ private:
 
     VoiceLifecycle lifecycle_{};
     std::array<Voice, VoiceAllocator::kMaximumVoices> voices_{};
+    std::array<double, kRealtimeFilterGTableSize> realtimeFilterGTable_{};
     double sampleRate_ = 0.0;
     OscillatorWaveform oscillatorWaveform_ = OscillatorWaveform::Sine;
     int coarseTuningSemitones_ = 0;
@@ -871,6 +985,7 @@ private:
     float filterCutoffHz_ = 0.0f;
     float filterResonance_ = 0.0f;
     float filterEnvelopeAmount_ = 0.0f;
+    double filterEnvelopeCutoffMultiplier_ = 1.0;
     double filterBaseG_ = 0.0;
     double filterEnvelopeGDelta_ = 0.0;
     double filterBrightnessGDelta_ = 0.0;
