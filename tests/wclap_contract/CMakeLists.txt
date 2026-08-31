@@ -42,6 +42,25 @@ add_test(
     COMMAND webview_gui_wclap_host_webview_contract
 )
 
+add_executable(webview_gui_wclap_bridge_init_negotiation_contract
+    wclap_bridge_init_negotiation_contract.cpp
+)
+target_include_directories(webview_gui_wclap_bridge_init_negotiation_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+    "${clap_SOURCE_DIR}/include"
+)
+target_compile_definitions(webview_gui_wclap_bridge_init_negotiation_contract PRIVATE
+    WEBVIEW_GUI_TESTING=1
+)
+target_link_libraries(webview_gui_wclap_bridge_init_negotiation_contract PRIVATE
+    webview-gui
+)
+
+add_test(
+    NAME webview_gui_wclap_bridge_init_negotiation_contract
+    COMMAND webview_gui_wclap_bridge_init_negotiation_contract
+)
+
 add_executable(webview_gui_wclap_init_negotiation_contract
     wclap_init_negotiation_contract.cpp
 )
