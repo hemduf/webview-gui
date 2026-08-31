@@ -739,6 +739,7 @@ protected:
 
         publishHostParameterSnapshot(retained);
         currentTailSamples_.store(initialTailSamples, std::memory_order_release);
+        pendingLoadedTailSamples_.store(initialTailSamples, std::memory_order_release);
         tailLoadedStateRevisionPublished_.store(retainedRevision,
                                                 std::memory_order_release);
         appliedLoadedStateRevision_ = retainedRevision;
@@ -823,23 +824,14 @@ protected:
     bool implementsTail() const noexcept override { return true; }
 
     std::uint32_t tailGet() const noexcept override {
-        const auto publishedTail = currentTailSamples_.load(std::memory_order_acquire);
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
         const auto tailRevision =
             tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+        const auto publishedTail = currentTailSamples_.load(std::memory_order_acquire);
         if (loadedRevision == tailRevision || !active_)
             return publishedTail;
-
-        ParameterSnapshot pending{};
-        if (!tryReadPendingParameterSnapshot(pending) ||
-            loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
-            return publishedTail;
-
-        std::uint32_t pendingTail = 0u;
-        if (!releaseSecondsToTailSamples(pending.ampReleaseSeconds,
-                                         activeSampleRate_,
-                                         pendingTail))
-            return publishedTail;
+        const auto pendingTail =
+            pendingLoadedTailSamples_.load(std::memory_order_acquire);
         return std::max(publishedTail, pendingTail);
     }
 
@@ -964,6 +956,25 @@ protected:
         const bool haveCurrent = readEffectiveParameterSnapshot(current);
         const bool parameterValueChanged =
             !haveCurrent || !parameterSnapshotsEqual(current, loaded);
+
+        if (active_) {
+            std::uint32_t loadedTailSamples = 0u;
+            if (!releaseSecondsToTailSamples(loaded.ampReleaseSeconds,
+                                             activeSampleRate_,
+                                             loadedTailSamples))
+                return false;
+            const auto loadedRevisionBefore =
+                loadedStateRevision_.load(std::memory_order_acquire);
+            const auto tailRevision =
+                tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+            if (loadedRevisionBefore != tailRevision) {
+                loadedTailSamples = std::max(
+                    loadedTailSamples,
+                    pendingLoadedTailSamples_.load(std::memory_order_acquire));
+            }
+            pendingLoadedTailSamples_.store(loadedTailSamples,
+                                            std::memory_order_release);
+        }
 
         publishPendingParameterSnapshot(loaded);
         const auto loadedRevision =
@@ -1613,6 +1624,7 @@ private:
     std::atomic<float> pendingLoadedAmpSustain_{0.8f};
     std::atomic<float> pendingLoadedAmpReleaseSeconds_{0.25f};
     std::atomic<std::uint32_t> currentTailSamples_{kPolySynthBootstrapReleaseSamples};
+    std::atomic<std::uint32_t> pendingLoadedTailSamples_{kPolySynthBootstrapReleaseSamples};
     std::atomic<std::uint32_t> tailLoadedStateRevisionPublished_{0u};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
     std::atomic<std::uint32_t> appliedLoadedStateRevisionPublished_{0u};
