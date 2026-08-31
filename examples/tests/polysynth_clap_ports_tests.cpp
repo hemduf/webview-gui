@@ -377,9 +377,6 @@ bool checkPortsAndMetadata(const clap_plugin_t *plugin,
             std::fabs(value - spec->defaultValue) > 1.0e-6)
             return false;
     }
-    clap_param_info_t invalid{};
-    if (params->get_info(plugin, static_cast<std::uint32_t>(kPublishedIds.size()), &invalid))
-        return false;
 
     char text[32]{};
     double parsed = 0.0;
