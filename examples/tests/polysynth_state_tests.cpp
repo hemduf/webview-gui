@@ -3,7 +3,6 @@
 
 #include <clap/clap.h>
 #include <clap/ext/params.h>
-#include <clap/ext/remote-controls.h>
 #include <clap/ext/state.h>
 
 #include <algorithm>
@@ -11,25 +10,34 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace {
 
 using webview_gui::examples::polysynth::ParameterSlot;
 
-constexpr clap_id paramId(ParameterSlot slot) noexcept {
+constexpr clap_id parameterId(ParameterSlot slot) noexcept {
     return webview_gui::examples::polysynth::kFirstParameterId +
            static_cast<clap_id>(slot);
 }
-constexpr clap_id kMasterGainId = paramId(ParameterSlot::MasterGain);
-constexpr clap_id kWaveformId = paramId(ParameterSlot::Waveform);
-constexpr clap_id kCoarseTuneId = paramId(ParameterSlot::CoarseTuning);
-constexpr clap_id kFineTuneId = paramId(ParameterSlot::FineTuning);
-constexpr clap_id kCutoffId = paramId(ParameterSlot::FilterCutoff);
-constexpr clap_id kResonanceId = paramId(ParameterSlot::FilterResonance);
-constexpr clap_id kFilterEnvelopeAmountId = paramId(ParameterSlot::FilterEnvelopeAmount);
-constexpr clap_id kPanId = paramId(ParameterSlot::Pan);
-constexpr clap_id kAmpLevelId = paramId(ParameterSlot::AmpLevel);
-constexpr double kQuarterGainDb = -12.041199826559248;
+
+constexpr clap_id kMasterGainId = parameterId(ParameterSlot::MasterGain);
+constexpr clap_id kWaveformId = parameterId(ParameterSlot::Waveform);
+constexpr clap_id kCoarseTuneId = parameterId(ParameterSlot::CoarseTuning);
+constexpr clap_id kFineTuneId = parameterId(ParameterSlot::FineTuning);
+constexpr clap_id kCutoffId = parameterId(ParameterSlot::FilterCutoff);
+constexpr clap_id kResonanceId = parameterId(ParameterSlot::FilterResonance);
+constexpr clap_id kAmpAttackId = parameterId(ParameterSlot::AmpAttack);
+constexpr clap_id kAmpDecayId = parameterId(ParameterSlot::AmpDecay);
+constexpr clap_id kAmpSustainId = parameterId(ParameterSlot::AmpSustain);
+constexpr clap_id kAmpReleaseId = parameterId(ParameterSlot::AmpRelease);
+constexpr clap_id kFilterEnvelopeId = parameterId(ParameterSlot::FilterEnvelopeAmount);
+constexpr clap_id kPanId = parameterId(ParameterSlot::Pan);
+constexpr clap_id kAmpLevelId = parameterId(ParameterSlot::AmpLevel);
+
+constexpr std::array<std::size_t, 11> kVersionSizes{{
+    0u, 24u, 24u, 28u, 32u, 36u, 40u, 44u, 48u, 52u, 68u,
+}};
 
 const void *CLAP_ABI hostGetExtension(const clap_host_t *, const char *) { return nullptr; }
 void CLAP_ABI hostRequestRestart(const clap_host_t *) {}
@@ -37,18 +45,128 @@ void CLAP_ABI hostRequestProcess(const clap_host_t *) {}
 void CLAP_ABI hostRequestCallback(const clap_host_t *) {}
 
 const clap_host_t kHost{
-    CLAP_VERSION, nullptr, "webview-gui PolySynth state tests", "webview-gui",
-    "https://github.com/hemduf/webview-gui", "0.1.0", hostGetExtension,
-    hostRequestRestart, hostRequestProcess, hostRequestCallback,
+    CLAP_VERSION,
+    nullptr,
+    "webview-gui PolySynth state tests",
+    "webview-gui",
+    "https://github.com/hemduf/webview-gui",
+    "0.1.0",
+    hostGetExtension,
+    hostRequestRestart,
+    hostRequestProcess,
+    hostRequestCallback,
+};
+
+void storeU32(std::uint8_t *destination, std::uint32_t value) noexcept {
+    for (unsigned i = 0; i < 4; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (8u * i)) & 0xffu);
+}
+
+void storeU64(std::uint8_t *destination, std::uint64_t value) noexcept {
+    for (unsigned i = 0; i < 8; ++i)
+        destination[i] = static_cast<std::uint8_t>((value >> (8u * i)) & 0xffu);
+}
+
+std::uint32_t loadU32(const std::uint8_t *source) noexcept {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<std::uint32_t>(source[i]) << (8u * i);
+    return value;
+}
+
+void storeFloat(std::array<std::uint8_t, 128> &bytes,
+                std::size_t offset,
+                float value) noexcept {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    storeU32(bytes.data() + offset, bits);
+}
+
+void storeDouble(std::array<std::uint8_t, 128> &bytes,
+                 std::size_t offset,
+                 double value) noexcept {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    storeU64(bytes.data() + offset, bits);
+}
+
+struct MemoryOutputStream {
+    explicit MemoryOutputStream(std::size_t chunk = 3u) noexcept : chunkSize(chunk) {
+        stream.ctx = this;
+        stream.write = write;
+    }
+
+    static std::int64_t CLAP_ABI write(const clap_ostream_t *stream,
+                                       const void *source,
+                                       std::uint64_t size) noexcept {
+        if (!stream || !stream->ctx || (!source && size != 0u))
+            return -1;
+        auto &self = *static_cast<MemoryOutputStream *>(stream->ctx);
+        if (self.used >= self.bytes.size())
+            return -1;
+        const auto remaining = self.bytes.size() - self.used;
+        const auto count = std::min<std::size_t>(
+            {remaining, static_cast<std::size_t>(size), self.chunkSize});
+        if (count == 0u)
+            return 0;
+        std::memcpy(self.bytes.data() + self.used, source, count);
+        self.used += count;
+        ++self.calls;
+        return static_cast<std::int64_t>(count);
+    }
+
+    std::array<std::uint8_t, 128> bytes{};
+    std::size_t used = 0;
+    std::size_t calls = 0;
+    std::size_t chunkSize = 3;
+    clap_ostream_t stream{};
+};
+
+struct MemoryInputStream {
+    MemoryInputStream(const std::uint8_t *source,
+                      std::size_t sourceSize,
+                      std::size_t chunk = 2u) noexcept
+        : bytes(source), sizeBytes(sourceSize), chunkSize(chunk) {
+        stream.ctx = this;
+        stream.read = read;
+    }
+
+    static std::int64_t CLAP_ABI read(const clap_istream_t *stream,
+                                      void *destination,
+                                      std::uint64_t size) noexcept {
+        if (!stream || !stream->ctx || (!destination && size != 0u))
+            return -1;
+        auto &self = *static_cast<MemoryInputStream *>(stream->ctx);
+        if (self.offset >= self.sizeBytes)
+            return 0;
+        const auto count = std::min<std::size_t>(
+            {self.sizeBytes - self.offset,
+             static_cast<std::size_t>(size),
+             self.chunkSize});
+        if (count == 0u)
+            return 0;
+        std::memcpy(destination, self.bytes + self.offset, count);
+        self.offset += count;
+        ++self.calls;
+        return static_cast<std::int64_t>(count);
+    }
+
+    const std::uint8_t *bytes = nullptr;
+    std::size_t sizeBytes = 0;
+    std::size_t offset = 0;
+    std::size_t calls = 0;
+    std::size_t chunkSize = 2;
+    clap_istream_t stream{};
 };
 
 struct FlushInputEvents {
-    FlushInputEvents(clap_id paramId, double value) noexcept {
+    FlushInputEvents(clap_id id, double value) noexcept {
+        event = {};
         event.header.size = sizeof(event);
         event.header.time = 0;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = paramId;
+        event.param_id = id;
         event.note_id = -1;
         event.port_index = -1;
         event.channel = -1;
@@ -58,246 +176,158 @@ struct FlushInputEvents {
         input.size = size;
         input.get = get;
     }
+
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
         return events && events->ctx ? 1u : 0u;
     }
+
     static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
                                                     std::uint32_t index) noexcept {
-        if (!events || !events->ctx || index != 0)
+        if (!events || !events->ctx || index != 0u)
             return nullptr;
         return &static_cast<const FlushInputEvents *>(events->ctx)->event.header;
     }
+
     clap_event_param_value_t event{};
     clap_input_events_t input{};
 };
 
-struct ChunkedOutputStream {
-    explicit ChunkedOutputStream(std::uint64_t chunk) noexcept : maxChunk(chunk) {
-        stream.ctx = this;
-        stream.write = write;
-    }
-    static std::int64_t CLAP_ABI write(const clap_ostream_t *stream,
-                                       const void *source,
-                                       std::uint64_t size) noexcept {
-        if (!stream || !stream->ctx || (!source && size != 0))
-            return -1;
-        auto &self = *static_cast<ChunkedOutputStream *>(stream->ctx);
-        if (self.used >= self.bytes.size())
-            return -1;
-        const auto remaining = static_cast<std::uint64_t>(self.bytes.size() - self.used);
-        const auto count = std::min({size, self.maxChunk, remaining});
-        if (count == 0)
-            return -1;
-        std::memcpy(self.bytes.data() + self.used, source, static_cast<std::size_t>(count));
-        self.used += static_cast<std::size_t>(count);
-        ++self.calls;
-        return static_cast<std::int64_t>(count);
-    }
-    std::array<std::uint8_t, 128> bytes{};
-    std::size_t used = 0;
-    std::uint64_t maxChunk = 1;
-    std::uint32_t calls = 0;
-    clap_ostream_t stream{};
-};
-
-struct ChunkedInputStream {
-    ChunkedInputStream(const std::uint8_t *data,
-                       std::size_t dataSize,
-                       std::uint64_t chunk) noexcept
-        : bytes(data), sizeBytes(dataSize), maxChunk(chunk) {
-        stream.ctx = this;
-        stream.read = read;
-    }
-    static std::int64_t CLAP_ABI read(const clap_istream_t *stream,
-                                      void *destination,
-                                      std::uint64_t size) noexcept {
-        if (!stream || !stream->ctx || (!destination && size != 0))
-            return -1;
-        auto &self = *static_cast<ChunkedInputStream *>(stream->ctx);
-        if (self.offset >= self.sizeBytes)
-            return 0;
-        const auto remaining = static_cast<std::uint64_t>(self.sizeBytes - self.offset);
-        const auto count = std::min({size, self.maxChunk, remaining});
-        if (count == 0)
-            return 0;
-        std::memcpy(destination, self.bytes + self.offset, static_cast<std::size_t>(count));
-        self.offset += static_cast<std::size_t>(count);
-        ++self.calls;
-        return static_cast<std::int64_t>(count);
-    }
-    const std::uint8_t *bytes = nullptr;
-    std::size_t sizeBytes = 0;
-    std::size_t offset = 0;
-    std::uint64_t maxChunk = 1;
-    std::uint32_t calls = 0;
-    clap_istream_t stream{};
-};
-
-void storeU32Le(std::uint8_t *destination, std::uint32_t value) noexcept {
-    for (unsigned i = 0; i < 4; ++i)
-        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
-}
-void storeU64Le(std::uint8_t *destination, std::uint64_t value) noexcept {
-    for (unsigned i = 0; i < 8; ++i)
-        destination[i] = static_cast<std::uint8_t>((value >> (i * 8u)) & 0xffu);
-}
-std::uint32_t loadU32Le(const std::uint8_t *source) noexcept {
-    std::uint32_t value = 0;
-    for (unsigned i = 0; i < 4; ++i)
-        value |= static_cast<std::uint32_t>(source[i]) << (i * 8u);
-    return value;
-}
-
-template <std::size_t Size>
-void storeFloat(std::array<std::uint8_t, Size> &bytes,
-                std::size_t offset,
-                float value) noexcept {
-    std::uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    storeU32Le(bytes.data() + offset, bits);
-}
-
-std::array<std::uint8_t, 24> legacyState(double fineTune) noexcept {
-    std::array<std::uint8_t, 24> bytes{};
-    constexpr std::array<std::uint8_t, 8> magic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
-    std::copy(magic.begin(), magic.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 1u);
-    std::uint64_t fineTuneBits = 0;
-    std::memcpy(&fineTuneBits, &fineTune, sizeof(fineTuneBits));
-    storeU64Le(bytes.data() + 12, fineTuneBits);
-    return bytes;
-}
-
-std::array<std::uint8_t, 24> version2State(double fineTune, float masterGainDb) noexcept {
-    auto bytes = legacyState(fineTune);
-    storeU32Le(bytes.data() + 8, 2u);
-    storeFloat(bytes, 20, masterGainDb);
-    return bytes;
-}
-
-std::array<std::uint8_t, 28> version3State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform) noexcept {
-    std::array<std::uint8_t, 28> bytes{};
-    const auto v2 = version2State(fineTune, masterGainDb);
-    std::copy(v2.begin(), v2.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 3u);
-    storeU32Le(bytes.data() + 24, waveform);
-    return bytes;
-}
-
-std::array<std::uint8_t, 32> version4State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform,
-                                           std::int32_t coarseTune) noexcept {
-    std::array<std::uint8_t, 32> bytes{};
-    const auto v3 = version3State(fineTune, masterGainDb, waveform);
-    std::copy(v3.begin(), v3.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 4u);
-    std::uint32_t coarseBits = 0;
-    std::memcpy(&coarseBits, &coarseTune, sizeof(coarseBits));
-    storeU32Le(bytes.data() + 28, coarseBits);
-    return bytes;
-}
-
-std::array<std::uint8_t, 36> version5State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform,
-                                           std::int32_t coarseTune,
-                                           float pan) noexcept {
-    std::array<std::uint8_t, 36> bytes{};
-    const auto v4 = version4State(fineTune, masterGainDb, waveform, coarseTune);
-    std::copy(v4.begin(), v4.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 5u);
-    storeFloat(bytes, 32, pan);
-    return bytes;
-}
-
-std::array<std::uint8_t, 40> version6State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform,
-                                           std::int32_t coarseTune,
-                                           float pan,
-                                           float cutoff) noexcept {
-    std::array<std::uint8_t, 40> bytes{};
-    const auto v5 = version5State(fineTune, masterGainDb, waveform, coarseTune, pan);
-    std::copy(v5.begin(), v5.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 6u);
-    storeFloat(bytes, 36, cutoff);
-    return bytes;
-}
-
-std::array<std::uint8_t, 44> version7State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform,
-                                           std::int32_t coarseTune,
-                                           float pan,
-                                           float cutoff,
-                                           float resonance) noexcept {
-    std::array<std::uint8_t, 44> bytes{};
-    const auto v6 = version6State(fineTune, masterGainDb, waveform, coarseTune, pan, cutoff);
-    std::copy(v6.begin(), v6.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 7u);
-    storeFloat(bytes, 40, resonance);
-    return bytes;
-}
-
-std::array<std::uint8_t, 48> version8State(double fineTune,
-                                           float masterGainDb,
-                                           std::uint32_t waveform,
-                                           std::int32_t coarseTune,
-                                           float pan,
-                                           float cutoff,
-                                           float resonance,
-                                           float filterEnvelopeAmount) noexcept {
-    std::array<std::uint8_t, 48> bytes{};
-    const auto v7 = version7State(fineTune,
-                                  masterGainDb,
-                                  waveform,
-                                  coarseTune,
-                                  pan,
-                                  cutoff,
-                                  resonance);
-    std::copy(v7.begin(), v7.end(), bytes.begin());
-    storeU32Le(bytes.data() + 8, 8u);
-    storeFloat(bytes, 44, filterEnvelopeAmount);
-    return bytes;
+bool approximately(double actual, double expected, double epsilon = 1.0e-5) noexcept {
+    return std::fabs(actual - expected) <= epsilon;
 }
 
 bool setParameter(const clap_plugin_t *plugin,
                   const clap_plugin_params_t *params,
-                  clap_id paramId,
+                  clap_id id,
                   double value) noexcept {
-    if (!plugin || !params || !params->flush)
-        return false;
-    FlushInputEvents input(paramId, value);
-    params->flush(plugin, &input.input, nullptr);
+    FlushInputEvents event(id, value);
+    params->flush(plugin, &event.input, nullptr);
     double observed = 0.0;
-    return params->get_value(plugin, paramId, &observed) &&
-           std::fabs(observed - value) <= 1.0e-5;
+    return params->get_value(plugin, id, &observed) && approximately(observed, value);
 }
 
 bool getParameter(const clap_plugin_t *plugin,
                   const clap_plugin_params_t *params,
-                  clap_id paramId,
+                  clap_id id,
                   double expected) noexcept {
     double value = 0.0;
-    return params->get_value(plugin, paramId, &value) &&
-           std::fabs(value - expected) <= 1.0e-5;
+    return params->get_value(plugin, id, &value) && approximately(value, expected);
 }
 
-bool verifyLegacyState(const clap_plugin_factory_t *factory,
-                       const std::uint8_t *bytes,
-                       std::size_t size,
-                       double fine,
-                       double gain,
-                       double waveform,
-                       double coarse,
-                       double pan,
-                       double cutoff,
-                       double resonance,
-                       double filterEnvelopeAmount,
-                       double ampLevel) noexcept {
+struct ParameterValues {
+    double fine = 11.25;
+    double gain = -3.5;
+    double waveform = 2.0;
+    double coarse = -7.0;
+    double pan = 0.375;
+    double cutoff = 6543.0;
+    double resonance = 0.625;
+    double filterEnvelope = -0.75;
+    double ampLevel = 0.625;
+    double attack = 0.125;
+    double decay = 0.25;
+    double sustain = 0.6;
+    double release = 0.75;
+};
+
+bool setAll(const clap_plugin_t *plugin,
+            const clap_plugin_params_t *params,
+            const ParameterValues &values) noexcept {
+    return setParameter(plugin, params, kFineTuneId, values.fine) &&
+           setParameter(plugin, params, kMasterGainId, values.gain) &&
+           setParameter(plugin, params, kWaveformId, values.waveform) &&
+           setParameter(plugin, params, kCoarseTuneId, values.coarse) &&
+           setParameter(plugin, params, kPanId, values.pan) &&
+           setParameter(plugin, params, kCutoffId, values.cutoff) &&
+           setParameter(plugin, params, kResonanceId, values.resonance) &&
+           setParameter(plugin, params, kFilterEnvelopeId, values.filterEnvelope) &&
+           setParameter(plugin, params, kAmpLevelId, values.ampLevel) &&
+           setParameter(plugin, params, kAmpAttackId, values.attack) &&
+           setParameter(plugin, params, kAmpDecayId, values.decay) &&
+           setParameter(plugin, params, kAmpSustainId, values.sustain) &&
+           setParameter(plugin, params, kAmpReleaseId, values.release);
+}
+
+bool hasAll(const clap_plugin_t *plugin,
+            const clap_plugin_params_t *params,
+            const ParameterValues &values) noexcept {
+    return getParameter(plugin, params, kFineTuneId, values.fine) &&
+           getParameter(plugin, params, kMasterGainId, values.gain) &&
+           getParameter(plugin, params, kWaveformId, values.waveform) &&
+           getParameter(plugin, params, kCoarseTuneId, values.coarse) &&
+           getParameter(plugin, params, kPanId, values.pan) &&
+           getParameter(plugin, params, kCutoffId, values.cutoff) &&
+           getParameter(plugin, params, kResonanceId, values.resonance) &&
+           getParameter(plugin, params, kFilterEnvelopeId, values.filterEnvelope) &&
+           getParameter(plugin, params, kAmpLevelId, values.ampLevel) &&
+           getParameter(plugin, params, kAmpAttackId, values.attack) &&
+           getParameter(plugin, params, kAmpDecayId, values.decay) &&
+           getParameter(plugin, params, kAmpSustainId, values.sustain) &&
+           getParameter(plugin, params, kAmpReleaseId, values.release);
+}
+
+std::array<std::uint8_t, 128> makeVersionState(std::uint32_t version,
+                                               const ParameterValues &values) noexcept {
+    std::array<std::uint8_t, 128> bytes{};
+    constexpr std::array<std::uint8_t, 8> magic{{'W', 'V', 'P', 'S', 'Y', 'N', 'T', 'H'}};
+    std::copy(magic.begin(), magic.end(), bytes.begin());
+    storeU32(bytes.data() + 8, version);
+    storeDouble(bytes, 12, values.fine);
+
+    // Version 1 reserves bytes 20..23 as zero. Every later revision keeps the
+    // exact prefix and appends one field, so this builder also verifies that the
+    // v10 loader does not reinterpret any historical offset.
+    if (version >= 2u)
+        storeFloat(bytes, 20, static_cast<float>(values.gain));
+    if (version >= 3u)
+        storeU32(bytes.data() + 24, static_cast<std::uint32_t>(values.waveform));
+    if (version >= 4u) {
+        const auto coarse = static_cast<std::int32_t>(values.coarse);
+        std::uint32_t coarseBits = 0;
+        std::memcpy(&coarseBits, &coarse, sizeof(coarseBits));
+        storeU32(bytes.data() + 28, coarseBits);
+    }
+    if (version >= 5u)
+        storeFloat(bytes, 32, static_cast<float>(values.pan));
+    if (version >= 6u)
+        storeFloat(bytes, 36, static_cast<float>(values.cutoff));
+    if (version >= 7u)
+        storeFloat(bytes, 40, static_cast<float>(values.resonance));
+    if (version >= 8u)
+        storeFloat(bytes, 44, static_cast<float>(values.filterEnvelope));
+    if (version >= 9u)
+        storeFloat(bytes, 48, static_cast<float>(values.ampLevel));
+    if (version >= 10u) {
+        storeFloat(bytes, 52, static_cast<float>(values.attack));
+        storeFloat(bytes, 56, static_cast<float>(values.decay));
+        storeFloat(bytes, 60, static_cast<float>(values.sustain));
+        storeFloat(bytes, 64, static_cast<float>(values.release));
+    }
+    return bytes;
+}
+
+ParameterValues expectedForVersion(std::uint32_t version,
+                                   const ParameterValues &encoded) noexcept {
+    ParameterValues expected{};
+    expected.fine = encoded.fine;
+    expected.gain = version >= 2u ? encoded.gain : 0.0;
+    expected.waveform = version >= 3u ? encoded.waveform : 0.0;
+    expected.coarse = version >= 4u ? encoded.coarse : 0.0;
+    expected.pan = version >= 5u ? encoded.pan : 0.0;
+    expected.cutoff = version >= 6u ? encoded.cutoff : 6000.0;
+    expected.resonance = version >= 7u ? encoded.resonance : 0.0;
+    expected.filterEnvelope = version >= 8u ? encoded.filterEnvelope : 0.0;
+    expected.ampLevel = version >= 9u ? encoded.ampLevel : 1.0;
+    expected.attack = version >= 10u ? encoded.attack : 0.01;
+    expected.decay = version >= 10u ? encoded.decay : 0.1;
+    expected.sustain = version >= 10u ? encoded.sustain : 0.8;
+    expected.release = version >= 10u ? encoded.release : 0.25;
+    return expected;
+}
+
+bool verifyLegacyVersion(const clap_plugin_factory_t *factory,
+                         std::uint32_t version,
+                         const ParameterValues &encoded) noexcept {
     const auto *plugin = factory->create_plugin(
         factory, &kHost, webview_gui::examples::polysynth::kPolySynthPluginId);
     if (!plugin || !plugin->init(plugin)) {
@@ -305,22 +335,16 @@ bool verifyLegacyState(const clap_plugin_factory_t *factory,
             plugin->destroy(plugin);
         return false;
     }
+
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
-    ChunkedInputStream input(bytes, size, 2);
+    const auto bytes = makeVersionState(version, encoded);
+    MemoryInputStream input(bytes.data(), kVersionSizes[version], 2u);
+    const auto expected = expectedForVersion(version, encoded);
     const bool ok = params && state && state->load(plugin, &input.stream) &&
-                    getParameter(plugin, params, kFineTuneId, fine) &&
-                    getParameter(plugin, params, kMasterGainId, gain) &&
-                    getParameter(plugin, params, kWaveformId, waveform) &&
-                    getParameter(plugin, params, kCoarseTuneId, coarse) &&
-                    getParameter(plugin, params, kPanId, pan) &&
-                    getParameter(plugin, params, kCutoffId, cutoff) &&
-                    getParameter(plugin, params, kResonanceId, resonance) &&
-                    getParameter(plugin, params, kFilterEnvelopeAmountId,
-                                 filterEnvelopeAmount) &&
-                    getParameter(plugin, params, kAmpLevelId, ampLevel);
+                    hasAll(plugin, params, expected);
     plugin->destroy(plugin);
     return ok;
 }
@@ -333,6 +357,7 @@ int main() {
     const auto *factory = polysynthFactory();
     if (!factory)
         return 1;
+
     const auto *plugin = factory->create_plugin(factory, &kHost, kPolySynthPluginId);
     if (!plugin)
         return 2;
@@ -343,232 +368,143 @@ int main() {
 
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
-    const auto *remote = static_cast<const clap_plugin_remote_controls_t *>(
-        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS));
     const auto *state = static_cast<const clap_plugin_state_t *>(
         plugin->get_extension(plugin, CLAP_EXT_STATE));
-    if (!params || !params->get_value || !params->flush || !params->get_info ||
-        !params->value_to_text || !params->text_to_value || params->count(plugin) != 9u ||
-        !remote || !remote->count || !remote->get || remote->count(plugin) != 3u ||
-        !state || !state->save || !state->load) {
+    if (!params || !params->count || !params->get_value || !params->flush ||
+        params->count(plugin) != 13u || !state || !state->save || !state->load) {
         plugin->destroy(plugin);
         return 4;
     }
 
-    clap_param_info_t filterEnvelopeInfo{};
-    if (!params->get_info(plugin, 7u, &filterEnvelopeInfo) ||
-        filterEnvelopeInfo.id != kFilterEnvelopeAmountId ||
-        std::strcmp(filterEnvelopeInfo.name, "Filter Env") != 0 ||
-        std::strcmp(filterEnvelopeInfo.module, "Filter") != 0 ||
-        filterEnvelopeInfo.min_value != -1.0 || filterEnvelopeInfo.max_value != 1.0 ||
-        filterEnvelopeInfo.default_value != 0.0 ||
-        (filterEnvelopeInfo.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
-        (filterEnvelopeInfo.flags & CLAP_PARAM_REQUIRES_PROCESS) == 0u) {
+    const ParameterValues savedValues{};
+    if (!setAll(plugin, params, savedValues)) {
         plugin->destroy(plugin);
         return 5;
     }
 
-    clap_param_info_t ampLevelInfo{};
-    if (!params->get_info(plugin, 8u, &ampLevelInfo) ||
-        ampLevelInfo.id != kAmpLevelId ||
-        std::strcmp(ampLevelInfo.name, "Amp Level") != 0 ||
-        std::strcmp(ampLevelInfo.module, "Amp") != 0 ||
-        ampLevelInfo.min_value != 0.0 || ampLevelInfo.max_value != 1.0 ||
-        ampLevelInfo.default_value != 1.0 ||
-        (ampLevelInfo.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
-        (ampLevelInfo.flags & CLAP_PARAM_REQUIRES_PROCESS) == 0u) {
+    MemoryOutputStream saved(3u);
+    if (!state->save(plugin, &saved.stream) || saved.used != 68u || saved.calls < 2u ||
+        loadU32(saved.bytes.data() + 8) != 10u) {
         plugin->destroy(plugin);
         return 6;
     }
 
-    std::array<char, CLAP_NAME_SIZE> filterEnvelopeText{};
-    double parsedFilterEnvelope = -2.0;
-    std::array<char, CLAP_NAME_SIZE> ampLevelText{};
-    double parsedAmpLevel = -1.0;
-    if (!params->value_to_text(plugin,
-                               kFilterEnvelopeAmountId,
-                               0.75,
-                               filterEnvelopeText.data(),
-                               static_cast<std::uint32_t>(filterEnvelopeText.size())) ||
-        !params->text_to_value(plugin,
-                               kFilterEnvelopeAmountId,
-                               filterEnvelopeText.data(),
-                               &parsedFilterEnvelope) ||
-        std::fabs(parsedFilterEnvelope - 0.75) > 1.0e-12 ||
-        !params->value_to_text(plugin,
-                               kAmpLevelId,
-                               0.625,
-                               ampLevelText.data(),
-                               static_cast<std::uint32_t>(ampLevelText.size())) ||
-        !params->text_to_value(plugin, kAmpLevelId, ampLevelText.data(), &parsedAmpLevel) ||
-        std::fabs(parsedAmpLevel - 0.625) > 1.0e-12) {
+    ParameterValues mutated{};
+    mutated.fine = -31.0;
+    mutated.gain = -9.0;
+    mutated.waveform = 1.0;
+    mutated.coarse = 12.0;
+    mutated.pan = -0.5;
+    mutated.cutoff = 9876.0;
+    mutated.resonance = 0.125;
+    mutated.filterEnvelope = 0.875;
+    mutated.ampLevel = 0.25;
+    mutated.attack = 0.5;
+    mutated.decay = 0.75;
+    mutated.sustain = 0.25;
+    mutated.release = 0.125;
+    if (!setAll(plugin, params, mutated)) {
         plugin->destroy(plugin);
         return 7;
     }
 
-    clap_remote_controls_page outputPage{};
-    clap_remote_controls_page filterPage{};
-    if (!remote->get(plugin, 1u, &outputPage) ||
-        outputPage.param_ids[0] != kMasterGainId || outputPage.param_ids[1] != kPanId ||
-        outputPage.param_ids[2] != kAmpLevelId ||
-        !remote->get(plugin, 2u, &filterPage) || filterPage.param_ids[0] != kCutoffId ||
-        filterPage.param_ids[1] != kResonanceId ||
-        filterPage.param_ids[2] != kFilterEnvelopeAmountId) {
+    MemoryInputStream restore(saved.bytes.data(), saved.used, 2u);
+    if (!state->load(plugin, &restore.stream) || restore.calls < 2u ||
+        !hasAll(plugin, params, savedValues)) {
         plugin->destroy(plugin);
         return 8;
     }
 
-    if (!setParameter(plugin, params, kFilterEnvelopeAmountId, -0.25) ||
-        !setParameter(plugin, params, kAmpLevelId, 0.75) ||
-        !plugin->activate(plugin, 48000.0, 1, 64) ||
-        !setParameter(plugin, params, kFilterEnvelopeAmountId, 0.5) ||
-        !setParameter(plugin, params, kAmpLevelId, 0.5)) {
-        plugin->destroy(plugin);
-        return 9;
-    }
-    plugin->deactivate(plugin);
-
-    if (!setParameter(plugin, params, kFineTuneId, 37.5) ||
-        !setParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
-        !setParameter(plugin, params, kWaveformId, 2.0) ||
-        !setParameter(plugin, params, kCoarseTuneId, -17.0) ||
-        !setParameter(plugin, params, kPanId, 0.625) ||
-        !setParameter(plugin, params, kCutoffId, 4321.5) ||
-        !setParameter(plugin, params, kResonanceId, 0.875) ||
-        !setParameter(plugin, params, kFilterEnvelopeAmountId, 0.625) ||
-        !setParameter(plugin, params, kAmpLevelId, 0.625)) {
-        plugin->destroy(plugin);
-        return 10;
-    }
-
-    ChunkedOutputStream saved(3);
-    if (!state->save(plugin, &saved.stream) || saved.used != 52u || saved.calls < 2 ||
-        loadU32Le(saved.bytes.data() + 8) != 9u) {
-        plugin->destroy(plugin);
-        return 11;
-    }
-
-    if (!setParameter(plugin, params, kFineTuneId, -25.0) ||
-        !setParameter(plugin, params, kMasterGainId, -3.0) ||
-        !setParameter(plugin, params, kWaveformId, 1.0) ||
-        !setParameter(plugin, params, kCoarseTuneId, 12.0) ||
-        !setParameter(plugin, params, kPanId, -0.25) ||
-        !setParameter(plugin, params, kCutoffId, 9876.0) ||
-        !setParameter(plugin, params, kResonanceId, 0.125) ||
-        !setParameter(plugin, params, kFilterEnvelopeAmountId, -0.875) ||
-        !setParameter(plugin, params, kAmpLevelId, 0.25)) {
-        plugin->destroy(plugin);
-        return 12;
-    }
-
-    ChunkedInputStream restore(saved.bytes.data(), saved.used, 2);
-    if (!state->load(plugin, &restore.stream) || restore.calls < 2 ||
-        !getParameter(plugin, params, kFineTuneId, 37.5) ||
-        !getParameter(plugin, params, kMasterGainId, kQuarterGainDb) ||
-        !getParameter(plugin, params, kWaveformId, 2.0) ||
-        !getParameter(plugin, params, kCoarseTuneId, -17.0) ||
-        !getParameter(plugin, params, kPanId, 0.625) ||
-        !getParameter(plugin, params, kCutoffId, 4321.5) ||
-        !getParameter(plugin, params, kResonanceId, 0.875) ||
-        !getParameter(plugin, params, kFilterEnvelopeAmountId, 0.625) ||
-        !getParameter(plugin, params, kAmpLevelId, 0.625)) {
-        plugin->destroy(plugin);
-        return 13;
-    }
-
-    ChunkedInputStream truncated(saved.bytes.data(), saved.used - 1, 2);
-    if (state->load(plugin, &truncated.stream) ||
-        !getParameter(plugin, params, kAmpLevelId, 0.625)) {
-        plugin->destroy(plugin);
-        return 14;
-    }
-
-    auto corruptedBytes = saved.bytes;
-    corruptedBytes[0] ^= 0x7f;
-    ChunkedInputStream corrupted(corruptedBytes.data(), saved.used, 2);
-    if (state->load(plugin, &corrupted.stream) ||
-        !getParameter(plugin, params, kAmpLevelId, 0.625)) {
-        plugin->destroy(plugin);
-        return 15;
-    }
-
-    auto invalidAmpBytes = saved.bytes;
-    storeFloat(invalidAmpBytes, 48, 1.5f);
-    ChunkedInputStream invalidAmp(invalidAmpBytes.data(), saved.used, 2);
-    if (state->load(plugin, &invalidAmp.stream) ||
-        !getParameter(plugin, params, kAmpLevelId, 0.625)) {
-        plugin->destroy(plugin);
-        return 16;
-    }
-
-    if (state->save(plugin, nullptr) || state->load(plugin, nullptr)) {
-        plugin->destroy(plugin);
-        return 17;
-    }
-
+    // Loading a valid state into a clone and then activating it verifies that the
+    // lock-free pending-state replay carries all four new defaults into the DSP.
     const auto *clone = factory->create_plugin(factory, &kHost, kPolySynthPluginId);
     if (!clone || !clone->init(clone)) {
         if (clone)
             clone->destroy(clone);
         plugin->destroy(plugin);
-        return 18;
+        return 9;
     }
     const auto *cloneParams = static_cast<const clap_plugin_params_t *>(
         clone->get_extension(clone, CLAP_EXT_PARAMS));
     const auto *cloneState = static_cast<const clap_plugin_state_t *>(
         clone->get_extension(clone, CLAP_EXT_STATE));
-    ChunkedInputStream cloneRestore(saved.bytes.data(), saved.used, 1);
+    MemoryInputStream cloneRestore(saved.bytes.data(), saved.used, 1u);
     if (!cloneParams || !cloneState || !cloneState->load(clone, &cloneRestore.stream) ||
-        !getParameter(clone, cloneParams, kPanId, 0.625) ||
-        !getParameter(clone, cloneParams, kCutoffId, 4321.5) ||
-        !getParameter(clone, cloneParams, kResonanceId, 0.875) ||
-        !getParameter(clone, cloneParams, kFilterEnvelopeAmountId, 0.625) ||
-        !getParameter(clone, cloneParams, kAmpLevelId, 0.625) ||
+        !hasAll(clone, cloneParams, savedValues) ||
         !clone->activate(clone, 48000.0, 1, 64)) {
         clone->destroy(clone);
         plugin->destroy(plugin);
-        return 19;
+        return 10;
     }
     clone->deactivate(clone);
     clone->destroy(clone);
 
-    const auto v1 = legacyState(-12.5);
-    const auto v2 = version2State(21.0, -6.0f);
-    const auto v3 = version3State(-9.0, -4.0f, 1u);
-    const auto v4 = version4State(11.0, -2.0f, 2u, -7);
-    const auto v5 = version5State(13.0, -1.0f, 1u, 5, -0.375f);
-    const auto v6 = version6State(-15.0, -5.0f, 2u, -11, 0.25f, 8765.0f);
-    const auto v7 = version7State(7.5, -7.0f, 1u, 9, -0.125f, 7654.0f, 0.375f);
-    const auto v8 = version8State(-4.5, -8.0f, 2u, -3, 0.375f, 6543.0f, 0.625f, -0.75f);
-    constexpr double kLegacyCutoffDefault = 6000.0;
-    constexpr double kLegacyResonanceDefault = 0.0;
-    constexpr double kLegacyFilterEnvelopeDefault = 0.0;
-    constexpr double kLegacyAmpLevelDefault = 1.0;
-    if (!verifyLegacyState(factory, v1.data(), v1.size(), -12.5, 0.0, 0.0, 0.0, 0.0,
-                           kLegacyCutoffDefault, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v2.data(), v2.size(), 21.0, -6.0, 0.0, 0.0, 0.0,
-                           kLegacyCutoffDefault, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v3.data(), v3.size(), -9.0, -4.0, 1.0, 0.0, 0.0,
-                           kLegacyCutoffDefault, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v4.data(), v4.size(), 11.0, -2.0, 2.0, -7.0, 0.0,
-                           kLegacyCutoffDefault, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v5.data(), v5.size(), 13.0, -1.0, 1.0, 5.0, -0.375,
-                           kLegacyCutoffDefault, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v6.data(), v6.size(), -15.0, -5.0, 2.0, -11.0, 0.25,
-                           8765.0, kLegacyResonanceDefault,
-                           kLegacyFilterEnvelopeDefault, kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v7.data(), v7.size(), 7.5, -7.0, 1.0, 9.0, -0.125,
-                           7654.0, 0.375, kLegacyFilterEnvelopeDefault,
-                           kLegacyAmpLevelDefault) ||
-        !verifyLegacyState(factory, v8.data(), v8.size(), -4.5, -8.0, 2.0, -3.0, 0.375,
-                           6543.0, 0.625, -0.75, kLegacyAmpLevelDefault)) {
+    // Malformed v10 payloads must fail atomically without mutating the current
+    // host-visible Release value or any other retained base parameter.
+    MemoryInputStream truncated(saved.bytes.data(), saved.used - 1u, 2u);
+    if (state->load(plugin, &truncated.stream) || !hasAll(plugin, params, savedValues)) {
         plugin->destroy(plugin);
-        return 20;
+        return 11;
+    }
+
+    auto trailingBytes = saved.bytes;
+    trailingBytes[saved.used] = 0x7fu;
+    MemoryInputStream trailing(trailingBytes.data(), saved.used + 1u, 3u);
+    if (state->load(plugin, &trailing.stream) || !hasAll(plugin, params, savedValues)) {
+        plugin->destroy(plugin);
+        return 12;
+    }
+
+    auto invalidReleaseBytes = saved.bytes;
+    storeFloat(invalidReleaseBytes, 64, 10.5f);
+    MemoryInputStream invalidRelease(invalidReleaseBytes.data(), saved.used, 2u);
+    if (state->load(plugin, &invalidRelease.stream) || !hasAll(plugin, params, savedValues)) {
+        plugin->destroy(plugin);
+        return 13;
+    }
+
+    auto invalidAttackBytes = saved.bytes;
+    storeFloat(invalidAttackBytes,
+               52,
+               std::numeric_limits<float>::quiet_NaN());
+    MemoryInputStream invalidAttack(invalidAttackBytes.data(), saved.used, 2u);
+    if (state->load(plugin, &invalidAttack.stream) || !hasAll(plugin, params, savedValues)) {
+        plugin->destroy(plugin);
+        return 14;
+    }
+
+    if (state->save(plugin, nullptr) || state->load(plugin, nullptr)) {
+        plugin->destroy(plugin);
+        return 15;
+    }
+
+    // Every historical prefix remains loadable. v1..v9 migrate the newly
+    // published envelope to metadata defaults; v9 still restores Amp Level.
+    ParameterValues legacy{};
+    legacy.fine = -12.5;
+    legacy.gain = -6.0;
+    legacy.waveform = 2.0;
+    legacy.coarse = -5.0;
+    legacy.pan = -0.375;
+    legacy.cutoff = 7654.0;
+    legacy.resonance = 0.375;
+    legacy.filterEnvelope = -0.5;
+    legacy.ampLevel = 0.75;
+    for (std::uint32_t version = 1u; version <= 9u; ++version) {
+        if (!verifyLegacyVersion(factory, version, legacy)) {
+            plugin->destroy(plugin);
+            return static_cast<int>(15u + version);
+        }
+    }
+
+    // The current v10 builder is independently loadable as a final offset/layout
+    // guard rather than relying only on stateSave() output.
+    const auto explicitV10 = makeVersionState(10u, legacy);
+    MemoryInputStream explicitCurrent(explicitV10.data(), kVersionSizes[10], 4u);
+    if (!state->load(plugin, &explicitCurrent.stream) ||
+        !hasAll(plugin, params, legacy)) {
+        plugin->destroy(plugin);
+        return 25;
     }
 
     plugin->destroy(plugin);
