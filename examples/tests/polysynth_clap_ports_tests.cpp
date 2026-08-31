@@ -41,6 +41,9 @@ constexpr clap_id kFilterEnvelopeAmountId =
 constexpr clap_id kPanId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::Pan);
+constexpr clap_id kAmpLevelId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpLevel);
 constexpr double kHalfGainDb = -6.020599913279624;
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
@@ -295,8 +298,8 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Preserve every existing host index and append Filter Env at stable index 7.
-    if (params->count(plugin) != 8u)
+    // Preserve every existing host index and append Amp Level at stable index 8.
+    if (params->count(plugin) != 9u)
         return nullptr;
 
     clap_param_info_t info{};
@@ -387,6 +390,17 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         std::strcmp(filterEnvelopeInfo.module, "Filter") != 0)
         return nullptr;
 
+    clap_param_info_t ampLevelInfo{};
+    const auto *ampLevelSpec = webview_gui::examples::polysynth::parameterSpecForId(kAmpLevelId);
+    if (!ampLevelSpec || !params->get_info(plugin, 8, &ampLevelInfo) ||
+        ampLevelInfo.id != kAmpLevelId || !ampLevelInfo.cookie ||
+        ampLevelInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        ampLevelInfo.min_value != 0.0 || ampLevelInfo.max_value != 1.0 ||
+        ampLevelInfo.default_value != 1.0 ||
+        std::strcmp(ampLevelInfo.name, "Amp Level") != 0 ||
+        std::strcmp(ampLevelInfo.module, "Amp") != 0)
+        return nullptr;
+
     double value = -1.0;
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
@@ -395,7 +409,8 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->get_value(plugin, kPanId, &value) || value != 0.0 ||
         !params->get_value(plugin, kCutoffId, &value) || value != 6000.0 ||
         !params->get_value(plugin, kResonanceId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.0)
+        !params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kAmpLevelId, &value) || value != 1.0)
         return nullptr;
 
     char text[32]{};
@@ -428,6 +443,10 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text(plugin, kFilterEnvelopeAmountId, 0.625, text, sizeof(text)) ||
         text[0] == '\0' ||
         !params->text_to_value(plugin, kFilterEnvelopeAmountId, text, &parsed) ||
+        std::fabs(parsed - 0.625) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpLevelId, 0.625, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kAmpLevelId, text, &parsed) ||
         std::fabs(parsed - 0.625) > 1.0e-12)
         return nullptr;
 
@@ -467,6 +486,11 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.5)
         return nullptr;
 
+    FlushInputEvents setAmpLevel(kAmpLevelId, 0.5);
+    params->flush(plugin, &setAmpLevel.input, &output.output);
+    if (!params->get_value(plugin, kAmpLevelId, &value) || value != 0.5)
+        return nullptr;
+
     FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &output.output);
     FlushInputEvents restoreSine(kWaveformId, 0.0);
@@ -481,13 +505,16 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     params->flush(plugin, &restoreResonance.input, &output.output);
     FlushInputEvents restoreFilterEnvelope(kFilterEnvelopeAmountId, 0.0);
     params->flush(plugin, &restoreFilterEnvelope.input, &output.output);
+    FlushInputEvents restoreAmpLevel(kAmpLevelId, 1.0);
+    params->flush(plugin, &restoreAmpLevel.input, &output.output);
     if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
         !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
         !params->get_value(plugin, kPanId, &value) || value != 0.0 ||
         !params->get_value(plugin, kCutoffId, &value) || value != 6000.0 ||
         !params->get_value(plugin, kResonanceId, &value) || value != 0.0 ||
-        !params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.0)
+        !params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kAmpLevelId, &value) || value != 1.0)
         return nullptr;
 
     return params;
@@ -544,9 +571,11 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
         outputPage.param_ids[0] != kMasterGainId ||
         compatibleOutputPage.param_ids[0] != kMasterGainId ||
         outputPage.param_ids[1] != kPanId ||
-        compatibleOutputPage.param_ids[1] != kPanId)
+        compatibleOutputPage.param_ids[1] != kPanId ||
+        outputPage.param_ids[2] != kAmpLevelId ||
+        compatibleOutputPage.param_ids[2] != kAmpLevelId)
         return false;
-    for (std::size_t index = 2; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+    for (std::size_t index = 3; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
         if (outputPage.param_ids[index] != CLAP_INVALID_ID ||
             compatibleOutputPage.param_ids[index] != CLAP_INVALID_ID)
             return false;
@@ -584,6 +613,7 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
     clap_param_info_t mappedCutoffInfo{};
     clap_param_info_t mappedResonanceInfo{};
     clap_param_info_t mappedFilterEnvelopeInfo{};
+    clap_param_info_t mappedAmpLevelInfo{};
     return params->get_info(plugin, 0u, &mappedFineInfo) &&
            params->get_info(plugin, 1u, &mappedMasterInfo) &&
            params->get_info(plugin, 2u, &mappedWaveformInfo) &&
@@ -592,11 +622,13 @@ bool checkRemoteControls(const clap_plugin_t *plugin,
            params->get_info(plugin, 5u, &mappedCutoffInfo) &&
            params->get_info(plugin, 6u, &mappedResonanceInfo) &&
            params->get_info(plugin, 7u, &mappedFilterEnvelopeInfo) &&
+           params->get_info(plugin, 8u, &mappedAmpLevelInfo) &&
            mappedFineInfo.id == first.param_ids[0] &&
            mappedWaveformInfo.id == first.param_ids[1] &&
            mappedCoarseInfo.id == first.param_ids[2] &&
            mappedMasterInfo.id == outputPage.param_ids[0] &&
            mappedPanInfo.id == outputPage.param_ids[1] &&
+           mappedAmpLevelInfo.id == outputPage.param_ids[2] &&
            mappedCutoffInfo.id == filterPage.param_ids[0] &&
            mappedResonanceInfo.id == filterPage.param_ids[1] &&
            mappedFilterEnvelopeInfo.id == filterPage.param_ids[2];
@@ -629,6 +661,8 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     RejectingOutputEvents flushOutput;
     FlushInputEvents retune(kFineTuneId, 100.0);
     params->flush(plugin, &retune.input, &flushOutput.output);
+    FlushInputEvents halfAmp(kAmpLevelId, 0.5);
+    params->flush(plugin, &halfAmp.input, &flushOutput.output);
     if (!plugin->start_processing(plugin))
         return false;
 
@@ -653,7 +687,7 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     const double retunedIncrement = phaseIncrement(60, 100.0);
     const double secondBlockPhase = 0.25 + static_cast<double>(kFrames) * firstIncrement;
     for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
-        const auto expected = static_cast<float>(std::sin(
+        const auto expected = static_cast<float>(0.5 * std::sin(
             wrappedPhase(secondBlockPhase + static_cast<double>(frame) * retunedIncrement) *
             kTwoPi));
         if (std::fabs(secondLeft[frame] - expected) > 1.0e-5f ||
@@ -661,9 +695,12 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
             return false;
     }
 
-    double hostVisibleValue = 0.0;
-    return params->get_value(plugin, kFineTuneId, &hostVisibleValue) &&
-           hostVisibleValue == 100.0;
+    double hostVisibleFineTune = 0.0;
+    double hostVisibleAmpLevel = 0.0;
+    return params->get_value(plugin, kFineTuneId, &hostVisibleFineTune) &&
+           hostVisibleFineTune == 100.0 &&
+           params->get_value(plugin, kAmpLevelId, &hostVisibleAmpLevel) &&
+           hostVisibleAmpLevel == 0.5;
 }
 
 bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t *params) {
@@ -825,6 +862,8 @@ int main() {
     RejectingOutputEvents resetOutput;
     FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &resetOutput.output);
+    FlushInputEvents restoreAmpLevel(kAmpLevelId, 1.0);
+    params->flush(plugin, &restoreAmpLevel.input, &resetOutput.output);
 
     if (!plugin->activate(plugin, kSampleRate, 1, 128)) {
         plugin->destroy(plugin);
