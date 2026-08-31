@@ -13,9 +13,16 @@ namespace {
 
 using webview_gui::examples::polysynth::ParameterSlot;
 
-constexpr clap_id kFineTuneId =
-    webview_gui::examples::polysynth::kFirstParameterId +
-    static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr clap_id parameterId(ParameterSlot slot) noexcept {
+    return webview_gui::examples::polysynth::kFirstParameterId +
+           static_cast<clap_id>(slot);
+}
+
+constexpr clap_id kFineTuneId = parameterId(ParameterSlot::FineTuning);
+constexpr clap_id kAmpAttackId = parameterId(ParameterSlot::AmpAttack);
+constexpr clap_id kAmpDecayId = parameterId(ParameterSlot::AmpDecay);
+constexpr clap_id kAmpSustainId = parameterId(ParameterSlot::AmpSustain);
+constexpr clap_id kAmpReleaseId = parameterId(ParameterSlot::AmpRelease);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -103,7 +110,7 @@ struct FlushModEvent {
     explicit FlushModEvent(double amount) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 73; // flush() intentionally loses sample offsets.
+        event.header.time = 73;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_MOD;
         event.param_id = kFineTuneId;
@@ -136,7 +143,7 @@ struct FlushValueEvent {
     explicit FlushValueEvent(double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 91; // flush() intentionally loses sample offsets.
+        event.header.time = 91;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
         event.param_id = kFineTuneId;
@@ -164,6 +171,50 @@ struct FlushValueEvent {
     clap_event_param_value_t event{};
     clap_input_events_t input{};
 };
+
+struct GlobalFlushValueEvent {
+    GlobalFlushValueEvent(clap_id paramId, double value) noexcept {
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = paramId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
+        return events && events->ctx ? 1u : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
+                                                    std::uint32_t index) noexcept {
+        if (!events || !events->ctx || index != 0)
+            return nullptr;
+        return &static_cast<const GlobalFlushValueEvent *>(events->ctx)->event.header;
+    }
+
+    clap_event_param_value_t event{};
+    clap_input_events_t input{};
+};
+
+bool setGlobalParameter(const clap_plugin_t *plugin,
+                        const clap_plugin_params_t *params,
+                        clap_id paramId,
+                        double value) noexcept {
+    GlobalFlushValueEvent event(paramId, value);
+    params->flush(plugin, &event.input, nullptr);
+    double observed = 0.0;
+    return params->get_value(plugin, paramId, &observed) &&
+           std::fabs(observed - value) <= 1.0e-6;
+}
 
 double phaseIncrement(double fineCents) noexcept {
     return (440.0 * std::exp2((fineCents / 100.0) / 12.0)) / kSampleRate;
@@ -224,15 +275,27 @@ int main() {
     const auto *params = static_cast<const clap_plugin_params_t *>(
         plugin->get_extension(plugin, CLAP_EXT_PARAMS));
     if (!params || !params->count || !params->get_info || !params->get_value ||
-        !params->flush || params->count(plugin) != 1) {
+        !params->flush || params->count(plugin) != 13u) {
         plugin->destroy(plugin);
         return 4;
+    }
+
+    // This test is specifically about sample-exact Fine Tune params.flush()
+    // composition. The newly published product ADSR defaults are intentionally
+    // non-zero, so establish the old immediate-envelope fixture explicitly rather
+    // than baking a product-default assumption into the pitch waveform oracle.
+    if (!setGlobalParameter(plugin, params, kAmpAttackId, 0.0) ||
+        !setGlobalParameter(plugin, params, kAmpDecayId, 0.0) ||
+        !setGlobalParameter(plugin, params, kAmpSustainId, 1.0) ||
+        !setGlobalParameter(plugin, params, kAmpReleaseId, 0.001)) {
+        plugin->destroy(plugin);
+        return 5;
     }
 
     if (!plugin->activate(plugin, kSampleRate, 1, 64) ||
         !plugin->start_processing(plugin)) {
         plugin->destroy(plugin);
-        return 5;
+        return 6;
     }
 
     InputEvents noteOn;
@@ -243,7 +306,7 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 6;
+        return 7;
     }
 
     const double baseIncrement = phaseIncrement(0.0);
@@ -257,7 +320,7 @@ int main() {
     if (!plugin->start_processing(plugin)) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 7;
+        return 8;
     }
 
     InputEvents noEvents;
@@ -273,7 +336,7 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 8;
+        return 9;
     }
 
     double hostBase = -1.0;
@@ -281,7 +344,7 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 9;
+        return 10;
     }
 
     const double thirdStartPhase =
@@ -292,7 +355,7 @@ int main() {
     if (!plugin->start_processing(plugin)) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 10;
+        return 11;
     }
 
     std::array<float, kFrames> thirdLeft{};
@@ -304,14 +367,14 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 11;
+        return 12;
     }
 
     if (!params->get_value(plugin, kFineTuneId, &hostBase) || hostBase != 0.0) {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 12;
+        return 13;
     }
 
     clap_param_info_t info{};
@@ -322,7 +385,7 @@ int main() {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
-        return 13;
+        return 14;
     }
 
     plugin->stop_processing(plugin);

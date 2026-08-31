@@ -3,21 +3,61 @@
 
 #include <clap/clap.h>
 #include <clap/ext/audio-ports.h>
+#include <clap/ext/note-name.h>
 #include <clap/ext/note-ports.h>
 #include <clap/ext/params.h>
+#include <clap/ext/remote-controls.h>
 
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace {
 
 using webview_gui::examples::polysynth::ParameterSlot;
 
+constexpr clap_id kMasterGainId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::MasterGain);
+constexpr clap_id kWaveformId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Waveform);
+constexpr clap_id kCoarseTuneId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::CoarseTuning);
 constexpr clap_id kFineTuneId =
     webview_gui::examples::polysynth::kFirstParameterId +
     static_cast<clap_id>(ParameterSlot::FineTuning);
+constexpr clap_id kCutoffId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FilterCutoff);
+constexpr clap_id kResonanceId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FilterResonance);
+constexpr clap_id kAmpAttackId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpAttack);
+constexpr clap_id kAmpDecayId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpDecay);
+constexpr clap_id kAmpSustainId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpSustain);
+constexpr clap_id kAmpReleaseId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpRelease);
+constexpr clap_id kFilterEnvelopeAmountId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
+constexpr clap_id kPanId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Pan);
+constexpr clap_id kAmpLevelId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::AmpLevel);
+constexpr double kHalfGainDb = -6.020599913279624;
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -138,13 +178,13 @@ struct OutputEvents {
 };
 
 struct FlushInputEvents {
-    explicit FlushInputEvents(double value) noexcept {
+    FlushInputEvents(clap_id paramId, double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
         event.header.time = 0;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kFineTuneId;
+        event.param_id = paramId;
         event.note_id = -1;
         event.port_index = -1;
         event.channel = -1;
@@ -202,8 +242,6 @@ bool checkAudioPorts(const clap_plugin_t *plugin) {
     if (audioPorts->count(plugin, true) != 0 || audioPorts->count(plugin, false) != 1)
         return false;
 
-    // Once count() reports zero, asking get() for index 0 is host misuse under
-    // CLAP. Probe only valid indices so the test itself obeys the ABI contract.
     clap_audio_port_info_t info{};
     if (!audioPorts->get(plugin, 0, false, &info))
         return false;
@@ -223,10 +261,6 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS));
     if (!notePorts || !notePorts->count || !notePorts->get)
         return false;
-
-    // NOTE_END is an output event, but its address is explicitly matched against
-    // the plugin's note input port. It does not require advertising a musical
-    // note-output port for this instrument.
     if (notePorts->count(plugin, true) != 1 || notePorts->count(plugin, false) != 0)
         return false;
 
@@ -237,7 +271,55 @@ bool checkNotePorts(const clap_plugin_t *plugin) {
         input.preferred_dialect != CLAP_NOTE_DIALECT_CLAP ||
         std::strcmp(input.name, "Notes In") != 0)
         return false;
+    return true;
+}
 
+bool checkNoteNames(const clap_plugin_t *plugin) {
+    const auto *noteNames = static_cast<const clap_plugin_note_name_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_NOTE_NAME));
+    if (!noteNames || !noteNames->count || !noteNames->get ||
+        noteNames->count(plugin) != 128u)
+        return false;
+
+    struct ExpectedName {
+        std::uint32_t index;
+        const char *name;
+    };
+    constexpr std::array<ExpectedName, 5> expected{{
+        {0u, "C-1"},
+        {1u, "C#-1"},
+        {60u, "C4"},
+        {69u, "A4"},
+        {127u, "G9"},
+    }};
+
+    for (const auto &item : expected) {
+        clap_note_name_t noteName{};
+        if (!noteNames->get(plugin, item.index, &noteName) ||
+            noteName.port != 0 || noteName.channel != -1 ||
+            noteName.key != static_cast<std::int16_t>(item.index) ||
+            std::strcmp(noteName.name, item.name) != 0)
+            return false;
+    }
+    return true;
+}
+
+bool checkAmpEnvelopeInfo(const clap_plugin_t *plugin,
+                          const clap_plugin_params_t *params,
+                          std::uint32_t index,
+                          clap_id expectedId,
+                          const char *expectedName,
+                          double minValue,
+                          double maxValue,
+                          double defaultValue) {
+    clap_param_info_t info{};
+    if (!params->get_info(plugin, index, &info) || info.id != expectedId || !info.cookie ||
+        info.flags != webview_gui::examples::polysynth::kBaseAutomatableFlags ||
+        info.min_value != minValue || info.max_value != maxValue ||
+        info.default_value != defaultValue ||
+        std::strcmp(info.name, expectedName) != 0 ||
+        std::strcmp(info.module, "Amp Envelope") != 0)
+        return false;
     return true;
 }
 
@@ -248,23 +330,130 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
         !params->value_to_text || !params->text_to_value || !params->flush)
         return nullptr;
 
-    // Fine Tune is still the only host-facing parameter in this bounded surface,
-    // but its process() and active params.flush() paths now both preserve the
-    // qualified global and voice-addressed value/modulation semantics.
-    if (params->count(plugin) != 1)
+    // Preserve every existing host index 0..8, then append the four stable
+    // Amp Envelope IDs at 9..12 without reordering project automation lanes.
+    if (params->count(plugin) != 13u)
         return nullptr;
 
     clap_param_info_t info{};
+    clap_param_info_t repeatedInfo{};
     if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
+        !info.cookie || !params->get_info(plugin, 0, &repeatedInfo) ||
+        repeatedInfo.id != info.id || repeatedInfo.cookie != info.cookie ||
         info.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
-        info.min_value != -100.0 || info.max_value != 100.0 ||
-        info.default_value != 0.0 ||
+        info.min_value != -100.0 || info.max_value != 100.0 || info.default_value != 0.0 ||
         std::strcmp(info.name, "Fine Tune") != 0 ||
         std::strcmp(info.module, "Oscillator") != 0)
         return nullptr;
 
+    clap_param_info_t masterInfo{};
+    if (!params->get_info(plugin, 1, &masterInfo) || masterInfo.id != kMasterGainId ||
+        !masterInfo.cookie ||
+        masterInfo.flags != webview_gui::examples::polysynth::kGlobalModulatableFlags ||
+        masterInfo.min_value != -60.0 || masterInfo.max_value != 12.0 ||
+        masterInfo.default_value != 0.0 ||
+        std::strcmp(masterInfo.name, "Master Gain") != 0 ||
+        std::strcmp(masterInfo.module, "Output") != 0)
+        return nullptr;
+
+    clap_param_info_t waveformInfo{};
+    const auto *waveformSpec = webview_gui::examples::polysynth::parameterSpecForId(kWaveformId);
+    if (!waveformSpec || !params->get_info(plugin, 2, &waveformInfo) ||
+        waveformInfo.id != kWaveformId || !waveformInfo.cookie ||
+        waveformInfo.flags != waveformSpec->flags ||
+        waveformInfo.min_value != 0.0 || waveformInfo.max_value != 2.0 ||
+        waveformInfo.default_value != 0.0 ||
+        std::strcmp(waveformInfo.name, "Waveform") != 0 ||
+        std::strcmp(waveformInfo.module, "Oscillator") != 0)
+        return nullptr;
+
+    clap_param_info_t coarseInfo{};
+    const auto *coarseSpec = webview_gui::examples::polysynth::parameterSpecForId(kCoarseTuneId);
+    if (!coarseSpec || !params->get_info(plugin, 3, &coarseInfo) ||
+        coarseInfo.id != kCoarseTuneId || !coarseInfo.cookie ||
+        coarseInfo.flags != coarseSpec->flags ||
+        coarseInfo.min_value != -48.0 || coarseInfo.max_value != 48.0 ||
+        coarseInfo.default_value != 0.0 ||
+        std::strcmp(coarseInfo.name, "Coarse Tune") != 0 ||
+        std::strcmp(coarseInfo.module, "Oscillator") != 0)
+        return nullptr;
+
+    clap_param_info_t panInfo{};
+    const auto *panSpec = webview_gui::examples::polysynth::parameterSpecForId(kPanId);
+    if (!panSpec || !params->get_info(plugin, 4, &panInfo) ||
+        panInfo.id != kPanId || !panInfo.cookie ||
+        panInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        panInfo.min_value != -1.0 || panInfo.max_value != 1.0 ||
+        panInfo.default_value != 0.0 ||
+        std::strcmp(panInfo.name, "Pan") != 0 ||
+        std::strcmp(panInfo.module, "Output") != 0)
+        return nullptr;
+
+    clap_param_info_t cutoffInfo{};
+    const auto *cutoffSpec = webview_gui::examples::polysynth::parameterSpecForId(kCutoffId);
+    if (!cutoffSpec || !params->get_info(plugin, 5, &cutoffInfo) ||
+        cutoffInfo.id != kCutoffId || !cutoffInfo.cookie ||
+        cutoffInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        cutoffInfo.min_value != 20.0 || cutoffInfo.max_value != 20000.0 ||
+        cutoffInfo.default_value != 6000.0 ||
+        std::strcmp(cutoffInfo.name, "Cutoff") != 0 ||
+        std::strcmp(cutoffInfo.module, "Filter") != 0)
+        return nullptr;
+
+    clap_param_info_t resonanceInfo{};
+    const auto *resonanceSpec = webview_gui::examples::polysynth::parameterSpecForId(kResonanceId);
+    if (!resonanceSpec || !params->get_info(plugin, 6, &resonanceInfo) ||
+        resonanceInfo.id != kResonanceId || !resonanceInfo.cookie ||
+        resonanceInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        resonanceInfo.min_value != 0.0 || resonanceInfo.max_value != 0.99 ||
+        resonanceInfo.default_value != 0.0 ||
+        std::strcmp(resonanceInfo.name, "Resonance") != 0 ||
+        std::strcmp(resonanceInfo.module, "Filter") != 0)
+        return nullptr;
+
+    clap_param_info_t filterEnvelopeInfo{};
+    const auto *filterEnvelopeSpec =
+        webview_gui::examples::polysynth::parameterSpecForId(kFilterEnvelopeAmountId);
+    if (!filterEnvelopeSpec || !params->get_info(plugin, 7, &filterEnvelopeInfo) ||
+        filterEnvelopeInfo.id != kFilterEnvelopeAmountId || !filterEnvelopeInfo.cookie ||
+        filterEnvelopeInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        filterEnvelopeInfo.min_value != -1.0 || filterEnvelopeInfo.max_value != 1.0 ||
+        filterEnvelopeInfo.default_value != 0.0 ||
+        std::strcmp(filterEnvelopeInfo.name, "Filter Env") != 0 ||
+        std::strcmp(filterEnvelopeInfo.module, "Filter") != 0)
+        return nullptr;
+
+    clap_param_info_t ampLevelInfo{};
+    const auto *ampLevelSpec = webview_gui::examples::polysynth::parameterSpecForId(kAmpLevelId);
+    if (!ampLevelSpec || !params->get_info(plugin, 8, &ampLevelInfo) ||
+        ampLevelInfo.id != kAmpLevelId || !ampLevelInfo.cookie ||
+        ampLevelInfo.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags ||
+        ampLevelInfo.min_value != 0.0 || ampLevelInfo.max_value != 1.0 ||
+        ampLevelInfo.default_value != 1.0 ||
+        std::strcmp(ampLevelInfo.name, "Amp Level") != 0 ||
+        std::strcmp(ampLevelInfo.module, "Amp") != 0)
+        return nullptr;
+
+    if (!checkAmpEnvelopeInfo(plugin, params, 9u, kAmpAttackId, "Attack", 0.0, 10.0, 0.01) ||
+        !checkAmpEnvelopeInfo(plugin, params, 10u, kAmpDecayId, "Decay", 0.0, 10.0, 0.1) ||
+        !checkAmpEnvelopeInfo(plugin, params, 11u, kAmpSustainId, "Sustain", 0.0, 1.0, 0.8) ||
+        !checkAmpEnvelopeInfo(plugin, params, 12u, kAmpReleaseId, "Release", 0.001, 10.0, 0.25))
+        return nullptr;
+
     double value = -1.0;
-    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
+    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kMasterGainId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kWaveformId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kCoarseTuneId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kPanId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kCutoffId, &value) || value != 6000.0 ||
+        !params->get_value(plugin, kResonanceId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kFilterEnvelopeAmountId, &value) || value != 0.0 ||
+        !params->get_value(plugin, kAmpLevelId, &value) || value != 1.0 ||
+        !params->get_value(plugin, kAmpAttackId, &value) || std::fabs(value - 0.01) > 1.0e-6 ||
+        !params->get_value(plugin, kAmpDecayId, &value) || std::fabs(value - 0.1) > 1.0e-6 ||
+        !params->get_value(plugin, kAmpSustainId, &value) || std::fabs(value - 0.8) > 1.0e-6 ||
+        !params->get_value(plugin, kAmpReleaseId, &value) || std::fabs(value - 0.25) > 1.0e-6)
         return nullptr;
 
     char text[32]{};
@@ -272,21 +461,230 @@ const clap_plugin_params_t *checkParams(const clap_plugin_t *plugin) {
     if (!params->value_to_text(plugin, kFineTuneId, 12.5, text, sizeof(text)) ||
         text[0] == '\0' ||
         !params->text_to_value(plugin, kFineTuneId, text, &parsed) ||
-        std::fabs(parsed - 12.5) > 1.0e-6)
+        std::fabs(parsed - 12.5) > 1.0e-6 ||
+        !params->value_to_text(plugin, kMasterGainId, kHalfGainDb, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kMasterGainId, text, &parsed) ||
+        std::fabs(parsed - kHalfGainDb) > 1.0e-5 ||
+        !params->value_to_text(plugin, kWaveformId, 1.75, text, sizeof(text)) ||
+        std::strcmp(text, "Saw") != 0 ||
+        !params->text_to_value(plugin, kWaveformId, "Square", &parsed) || parsed != 2.0 ||
+        !params->value_to_text(plugin, kCoarseTuneId, -12.9, text, sizeof(text)) ||
+        std::strcmp(text, "-12") != 0 ||
+        !params->text_to_value(plugin, kCoarseTuneId, "24", &parsed) || parsed != 24.0 ||
+        !params->value_to_text(plugin, kPanId, -0.25, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kPanId, text, &parsed) ||
+        std::fabs(parsed + 0.25) > 1.0e-9 ||
+        !params->value_to_text(plugin, kCutoffId, 12345.5, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kCutoffId, text, &parsed) || parsed != 12345.5 ||
+        !params->value_to_text(plugin, kResonanceId, 0.75, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kResonanceId, text, &parsed) ||
+        std::fabs(parsed - 0.75) > 1.0e-12 ||
+        !params->value_to_text(plugin, kFilterEnvelopeAmountId, 0.625, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kFilterEnvelopeAmountId, text, &parsed) ||
+        std::fabs(parsed - 0.625) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpLevelId, 0.625, text, sizeof(text)) ||
+        text[0] == '\0' ||
+        !params->text_to_value(plugin, kAmpLevelId, text, &parsed) ||
+        std::fabs(parsed - 0.625) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpAttackId, 0.125, text, sizeof(text)) ||
+        !params->text_to_value(plugin, kAmpAttackId, text, &parsed) ||
+        std::fabs(parsed - 0.125) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpDecayId, 0.375, text, sizeof(text)) ||
+        !params->text_to_value(plugin, kAmpDecayId, text, &parsed) ||
+        std::fabs(parsed - 0.375) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpSustainId, 0.625, text, sizeof(text)) ||
+        !params->text_to_value(plugin, kAmpSustainId, text, &parsed) ||
+        std::fabs(parsed - 0.625) > 1.0e-12 ||
+        !params->value_to_text(plugin, kAmpReleaseId, 0.75, text, sizeof(text)) ||
+        !params->text_to_value(plugin, kAmpReleaseId, text, &parsed) ||
+        std::fabs(parsed - 0.75) > 1.0e-12)
         return nullptr;
 
     RejectingOutputEvents output;
-    FlushInputEvents setFifty(50.0);
-    params->flush(plugin, &setFifty.input, &output.output);
-    if (!params->get_value(plugin, kFineTuneId, &value) || value != 50.0)
-        return nullptr;
+    const std::array<std::pair<clap_id, double>, 12> changed{{
+        {kFineTuneId, 50.0},
+        {kWaveformId, 2.0},
+        {kCoarseTuneId, 12.0},
+        {kPanId, 0.5},
+        {kCutoffId, 4321.5},
+        {kResonanceId, 0.5},
+        {kFilterEnvelopeAmountId, 0.5},
+        {kAmpLevelId, 0.5},
+        {kAmpAttackId, 0.2},
+        {kAmpDecayId, 0.3},
+        {kAmpSustainId, 0.4},
+        {kAmpReleaseId, 0.5},
+    }};
+    for (const auto &entry : changed) {
+        FlushInputEvents set(entry.first, entry.second);
+        params->flush(plugin, &set.input, &output.output);
+        if (!params->get_value(plugin, entry.first, &value) ||
+            std::fabs(value - entry.second) > 1.0e-6)
+            return nullptr;
+    }
 
-    FlushInputEvents restoreZero(0.0);
-    params->flush(plugin, &restoreZero.input, &output.output);
-    if (!params->get_value(plugin, kFineTuneId, &value) || value != 0.0)
-        return nullptr;
+    const std::array<std::pair<clap_id, double>, 12> restored{{
+        {kFineTuneId, 0.0},
+        {kWaveformId, 0.0},
+        {kCoarseTuneId, 0.0},
+        {kPanId, 0.0},
+        {kCutoffId, 6000.0},
+        {kResonanceId, 0.0},
+        {kFilterEnvelopeAmountId, 0.0},
+        {kAmpLevelId, 1.0},
+        {kAmpAttackId, 0.01},
+        {kAmpDecayId, 0.1},
+        {kAmpSustainId, 0.8},
+        {kAmpReleaseId, 0.25},
+    }};
+    for (const auto &entry : restored) {
+        FlushInputEvents set(entry.first, entry.second);
+        params->flush(plugin, &set.input, &output.output);
+        if (!params->get_value(plugin, entry.first, &value) ||
+            std::fabs(value - entry.second) > 1.0e-6)
+            return nullptr;
+    }
 
     return params;
+}
+
+bool checkRemoteControls(const clap_plugin_t *plugin,
+                         const clap_plugin_params_t *params) {
+    const auto *remoteControls = static_cast<const clap_plugin_remote_controls_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS));
+    const auto *compat = static_cast<const clap_plugin_remote_controls_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_REMOTE_CONTROLS_COMPAT));
+    if (!remoteControls || !compat || !remoteControls->count || !remoteControls->get ||
+        !compat->count || !compat->get || remoteControls->count(plugin) != 4u ||
+        compat->count(plugin) != 4u)
+        return false;
+
+    clap_remote_controls_page_t first{};
+    clap_remote_controls_page_t compatible{};
+    if (!remoteControls->get(plugin, 0u, &first) ||
+        !compat->get(plugin, 0u, &compatible))
+        return false;
+
+    if (first.page_id == CLAP_INVALID_ID || first.page_id != compatible.page_id ||
+        first.is_for_preset || compatible.is_for_preset ||
+        std::strcmp(first.section_name, "Oscillator") != 0 ||
+        std::strcmp(compatible.section_name, first.section_name) != 0 ||
+        std::strcmp(first.page_name, "Tuning") != 0 ||
+        std::strcmp(compatible.page_name, first.page_name) != 0)
+        return false;
+
+    if (!params || first.param_ids[0] != kFineTuneId ||
+        compatible.param_ids[0] != kFineTuneId ||
+        first.param_ids[1] != kWaveformId || compatible.param_ids[1] != kWaveformId ||
+        first.param_ids[2] != kCoarseTuneId || compatible.param_ids[2] != kCoarseTuneId)
+        return false;
+    for (std::size_t index = 3; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (first.param_ids[index] != CLAP_INVALID_ID ||
+            compatible.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    clap_remote_controls_page_t outputPage{};
+    clap_remote_controls_page_t compatibleOutputPage{};
+    if (!remoteControls->get(plugin, 1u, &outputPage) ||
+        !compat->get(plugin, 1u, &compatibleOutputPage) ||
+        outputPage.page_id == CLAP_INVALID_ID ||
+        outputPage.page_id == first.page_id ||
+        outputPage.page_id != compatibleOutputPage.page_id ||
+        outputPage.is_for_preset || compatibleOutputPage.is_for_preset ||
+        std::strcmp(outputPage.section_name, "Output") != 0 ||
+        std::strcmp(outputPage.page_name, "Performance") != 0 ||
+        std::strcmp(compatibleOutputPage.section_name, outputPage.section_name) != 0 ||
+        std::strcmp(compatibleOutputPage.page_name, outputPage.page_name) != 0 ||
+        outputPage.param_ids[0] != kMasterGainId ||
+        compatibleOutputPage.param_ids[0] != kMasterGainId ||
+        outputPage.param_ids[1] != kPanId ||
+        compatibleOutputPage.param_ids[1] != kPanId ||
+        outputPage.param_ids[2] != kAmpLevelId ||
+        compatibleOutputPage.param_ids[2] != kAmpLevelId)
+        return false;
+    for (std::size_t index = 3; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (outputPage.param_ids[index] != CLAP_INVALID_ID ||
+            compatibleOutputPage.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    clap_remote_controls_page_t filterPage{};
+    clap_remote_controls_page_t compatibleFilterPage{};
+    if (!remoteControls->get(plugin, 2u, &filterPage) ||
+        !compat->get(plugin, 2u, &compatibleFilterPage) ||
+        filterPage.page_id == CLAP_INVALID_ID ||
+        filterPage.page_id == first.page_id || filterPage.page_id == outputPage.page_id ||
+        filterPage.page_id != compatibleFilterPage.page_id ||
+        filterPage.is_for_preset || compatibleFilterPage.is_for_preset ||
+        std::strcmp(filterPage.section_name, "Filter") != 0 ||
+        std::strcmp(filterPage.page_name, "Tone") != 0 ||
+        std::strcmp(compatibleFilterPage.section_name, filterPage.section_name) != 0 ||
+        std::strcmp(compatibleFilterPage.page_name, filterPage.page_name) != 0 ||
+        filterPage.param_ids[0] != kCutoffId || compatibleFilterPage.param_ids[0] != kCutoffId ||
+        filterPage.param_ids[1] != kResonanceId ||
+        compatibleFilterPage.param_ids[1] != kResonanceId ||
+        filterPage.param_ids[2] != kFilterEnvelopeAmountId ||
+        compatibleFilterPage.param_ids[2] != kFilterEnvelopeAmountId)
+        return false;
+    for (std::size_t index = 3; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (filterPage.param_ids[index] != CLAP_INVALID_ID ||
+            compatibleFilterPage.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    clap_remote_controls_page_t ampEnvelopePage{};
+    clap_remote_controls_page_t compatibleAmpEnvelopePage{};
+    if (!remoteControls->get(plugin, 3u, &ampEnvelopePage) ||
+        !compat->get(plugin, 3u, &compatibleAmpEnvelopePage) ||
+        ampEnvelopePage.page_id == CLAP_INVALID_ID ||
+        ampEnvelopePage.page_id == first.page_id ||
+        ampEnvelopePage.page_id == outputPage.page_id ||
+        ampEnvelopePage.page_id == filterPage.page_id ||
+        ampEnvelopePage.page_id != compatibleAmpEnvelopePage.page_id ||
+        ampEnvelopePage.is_for_preset || compatibleAmpEnvelopePage.is_for_preset ||
+        std::strcmp(ampEnvelopePage.section_name, "Amp Envelope") != 0 ||
+        std::strcmp(ampEnvelopePage.page_name, "ADSR") != 0 ||
+        std::strcmp(compatibleAmpEnvelopePage.section_name, ampEnvelopePage.section_name) != 0 ||
+        std::strcmp(compatibleAmpEnvelopePage.page_name, ampEnvelopePage.page_name) != 0 ||
+        ampEnvelopePage.param_ids[0] != kAmpAttackId ||
+        compatibleAmpEnvelopePage.param_ids[0] != kAmpAttackId ||
+        ampEnvelopePage.param_ids[1] != kAmpDecayId ||
+        compatibleAmpEnvelopePage.param_ids[1] != kAmpDecayId ||
+        ampEnvelopePage.param_ids[2] != kAmpSustainId ||
+        compatibleAmpEnvelopePage.param_ids[2] != kAmpSustainId ||
+        ampEnvelopePage.param_ids[3] != kAmpReleaseId ||
+        compatibleAmpEnvelopePage.param_ids[3] != kAmpReleaseId)
+        return false;
+    for (std::size_t index = 4; index < CLAP_REMOTE_CONTROLS_COUNT; ++index) {
+        if (ampEnvelopePage.param_ids[index] != CLAP_INVALID_ID ||
+            compatibleAmpEnvelopePage.param_ids[index] != CLAP_INVALID_ID)
+            return false;
+    }
+
+    std::array<clap_param_info_t, 13> mapped{};
+    for (std::uint32_t index = 0; index < mapped.size(); ++index) {
+        if (!params->get_info(plugin, index, &mapped[index]))
+            return false;
+    }
+    return mapped[0].id == first.param_ids[0] &&
+           mapped[2].id == first.param_ids[1] &&
+           mapped[3].id == first.param_ids[2] &&
+           mapped[1].id == outputPage.param_ids[0] &&
+           mapped[4].id == outputPage.param_ids[1] &&
+           mapped[8].id == outputPage.param_ids[2] &&
+           mapped[5].id == filterPage.param_ids[0] &&
+           mapped[6].id == filterPage.param_ids[1] &&
+           mapped[7].id == filterPage.param_ids[2] &&
+           mapped[9].id == ampEnvelopePage.param_ids[0] &&
+           mapped[10].id == ampEnvelopePage.param_ids[1] &&
+           mapped[11].id == ampEnvelopePage.param_ids[2] &&
+           mapped[12].id == ampEnvelopePage.param_ids[3];
 }
 
 bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
@@ -312,13 +710,12 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     if (plugin->process(plugin, &firstProcess) == CLAP_PROCESS_ERROR || firstEvents.count != 0)
         return false;
 
-    // CLAP permits params.flush while activated as long as it is not concurrent
-    // with process(). A base-value update delivered in that state must affect an
-    // already active generation when rendering resumes at the next sample.
     plugin->stop_processing(plugin);
     RejectingOutputEvents flushOutput;
-    FlushInputEvents retune(100.0);
+    FlushInputEvents retune(kFineTuneId, 100.0);
     params->flush(plugin, &retune.input, &flushOutput.output);
+    FlushInputEvents halfAmp(kAmpLevelId, 0.5);
+    params->flush(plugin, &halfAmp.input, &flushOutput.output);
     if (!plugin->start_processing(plugin))
         return false;
 
@@ -343,7 +740,7 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
     const double retunedIncrement = phaseIncrement(60, 100.0);
     const double secondBlockPhase = 0.25 + static_cast<double>(kFrames) * firstIncrement;
     for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
-        const auto expected = static_cast<float>(std::sin(
+        const auto expected = static_cast<float>(0.5 * std::sin(
             wrappedPhase(secondBlockPhase + static_cast<double>(frame) * retunedIncrement) *
             kTwoPi));
         if (std::fabs(secondLeft[frame] - expected) > 1.0e-5f ||
@@ -351,9 +748,12 @@ bool checkActiveFlushHandoff(const clap_plugin_t *plugin,
             return false;
     }
 
-    double hostVisibleValue = 0.0;
-    return params->get_value(plugin, kFineTuneId, &hostVisibleValue) &&
-           hostVisibleValue == 100.0;
+    double hostVisibleFineTune = 0.0;
+    double hostVisibleAmpLevel = 0.0;
+    return params->get_value(plugin, kFineTuneId, &hostVisibleFineTune) &&
+           hostVisibleFineTune == 100.0 &&
+           params->get_value(plugin, kAmpLevelId, &hostVisibleAmpLevel) &&
+           hostVisibleAmpLevel == 0.5;
 }
 
 bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t *params) {
@@ -387,9 +787,6 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
     if (plugin->process(plugin, &process) == CLAP_PROCESS_ERROR)
         return false;
 
-    // NOTE_ON at sample 4 must not leak audio into earlier samples. Do not
-    // couple this bridge test to one exact oscillator phase: require finite,
-    // centered, non-silent output somewhere in the active [4, 8) segment.
     for (std::uint32_t frame = 0; frame < 4; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
@@ -405,8 +802,6 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
     if (activeMagnitude <= 1.0e-6)
         return false;
 
-    // NOTE_CHOKE is a hard lifecycle boundary, so no later sample in this
-    // block may retain audio from the choked generation.
     for (std::uint32_t frame = 8; frame < kFrames; ++frame) {
         if (left[frame] != 0.0f || right[frame] != 0.0f)
             return false;
@@ -424,6 +819,67 @@ bool checkProcessBridge(const clap_plugin_t *plugin, const clap_plugin_params_t 
            noteEnd.header.type == CLAP_EVENT_NOTE_END &&
            noteEnd.note_id == 701 && noteEnd.port_index == 0 &&
            noteEnd.channel == 0 && noteEnd.key == 69;
+}
+
+bool checkMasterGainProcess(const clap_plugin_t *plugin,
+                            const clap_plugin_params_t *params) {
+    constexpr std::uint32_t kFrames = 8;
+    std::array<float, kFrames> left{};
+    std::array<float, kFrames> right{};
+    std::array<float *, 2> channels{left.data(), right.data()};
+    clap_audio_buffer_t output{};
+    output.data32 = channels.data();
+    output.channel_count = 2;
+
+    InputEvents events;
+    if (!events.pushValue(0, kFineTuneId, 0.0) ||
+        !events.pushNote(CLAP_EVENT_NOTE_ON, 0, 901, 69) ||
+        !events.pushValue(4, kMasterGainId, kHalfGainDb))
+        return false;
+
+    OutputEvents outputEvents;
+    clap_process_t process{};
+    process.frames_count = kFrames;
+    process.audio_outputs = &output;
+    process.audio_outputs_count = 1;
+    process.in_events = &events.input;
+    process.out_events = &outputEvents.output;
+    if (plugin->process(plugin, &process) == CLAP_PROCESS_ERROR || outputEvents.count != 0)
+        return false;
+
+    const double increment = phaseIncrement(69, 0.0);
+    for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
+        const float gain = frame < 4 ? 1.0f : 0.5f;
+        const auto expected = static_cast<float>(std::sin(
+            wrappedPhase(0.25 + static_cast<double>(frame) * increment) * kTwoPi) * gain);
+        if (std::fabs(left[frame] - expected) > 1.0e-5f ||
+            std::fabs(right[frame] - expected) > 1.0e-5f)
+            return false;
+    }
+
+    double hostVisibleGain = 0.0;
+    return params && params->get_value(plugin, kMasterGainId, &hostVisibleGain) &&
+           std::fabs(hostVisibleGain - kHalfGainDb) <= 1.0e-5;
+}
+
+bool configureImmediateEnvelope(const clap_plugin_t *plugin,
+                                const clap_plugin_params_t *params) {
+    RejectingOutputEvents output;
+    const std::array<std::pair<clap_id, double>, 4> values{{
+        {kAmpAttackId, 0.0},
+        {kAmpDecayId, 0.0},
+        {kAmpSustainId, 1.0},
+        {kAmpReleaseId, 0.001},
+    }};
+    for (const auto &entry : values) {
+        FlushInputEvents set(entry.first, entry.second);
+        params->flush(plugin, &set.input, &output.output);
+        double observed = 0.0;
+        if (!params->get_value(plugin, entry.first, &observed) ||
+            std::fabs(observed - entry.second) > 1.0e-6)
+            return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -451,8 +907,10 @@ int main() {
     }
 
     const auto *params = checkParams(plugin);
-    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !params ||
-        plugin->get_extension(plugin, "clap.example.unimplemented") != nullptr) {
+    if (!checkAudioPorts(plugin) || !checkNotePorts(plugin) || !checkNoteNames(plugin) ||
+        !params || !checkRemoteControls(plugin, params) ||
+        plugin->get_extension(plugin, "clap.example.unimplemented") != nullptr ||
+        !configureImmediateEnvelope(plugin, params)) {
         plugin->destroy(plugin);
         return 5;
     }
@@ -476,8 +934,10 @@ int main() {
     }
 
     RejectingOutputEvents resetOutput;
-    FlushInputEvents restoreZero(0.0);
+    FlushInputEvents restoreZero(kFineTuneId, 0.0);
     params->flush(plugin, &restoreZero.input, &resetOutput.output);
+    FlushInputEvents restoreAmpLevel(kAmpLevelId, 1.0);
+    params->flush(plugin, &restoreAmpLevel.input, &resetOutput.output);
 
     if (!plugin->activate(plugin, kSampleRate, 1, 128)) {
         plugin->destroy(plugin);
@@ -490,8 +950,9 @@ int main() {
     }
 
     const bool processOk = checkProcessBridge(plugin, params);
+    const bool masterGainOk = processOk && checkMasterGainProcess(plugin, params);
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
-    return processOk ? 0 : 11;
+    return masterGainOk ? 0 : 11;
 }

@@ -1,4 +1,4 @@
-#include "polysynth_voice_engine.h"
+#include "polysynth_parameter_voice_engine.h"
 
 #include <clap/clap.h>
 
@@ -12,7 +12,14 @@
 namespace {
 
 using webview_gui::examples::polysynth::OscillatorWaveform;
+using webview_gui::examples::polysynth::ParameterSlot;
+using webview_gui::examples::polysynth::ParameterVoiceEngine;
 using webview_gui::examples::polysynth::VoiceEngine;
+
+constexpr clap_id kCoarseTuneId =
+    1000u + static_cast<unsigned>(ParameterSlot::CoarseTuning);
+constexpr clap_id kFineTuneId =
+    1000u + static_cast<unsigned>(ParameterSlot::FineTuning);
 
 template <std::size_t Capacity = 8>
 struct InputEvents {
@@ -45,6 +52,49 @@ struct InputEvents {
         return true;
     }
 
+    bool pushValue(uint32_t time, clap_id paramId, double value) noexcept {
+        if (count >= Capacity)
+            return false;
+        auto &event = values[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = paramId;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = value;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
+    bool pushTuning(uint32_t time,
+                    double semitones,
+                    int32_t noteId,
+                    int16_t key) noexcept {
+        if (count >= Capacity)
+            return false;
+        auto &event = expressions[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
+        event.expression_id = CLAP_NOTE_EXPRESSION_TUNING;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = key;
+        event.value = semitones;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
     static uint32_t CLAP_ABI size(const clap_input_events_t *list) noexcept {
         return list && list->ctx ? static_cast<const InputEvents *>(list->ctx)->count : 0;
     }
@@ -58,6 +108,8 @@ struct InputEvents {
     }
 
     std::array<clap_event_note_t, Capacity> notes{};
+    std::array<clap_event_param_value_t, Capacity> values{};
+    std::array<clap_event_note_expression_t, Capacity> expressions{};
     std::array<const clap_event_header_t *, Capacity> headers{};
     uint32_t count = 0;
     clap_input_events_t input{};
@@ -120,6 +172,11 @@ bool finiteBounded(const AudioBlock &block, float bound = 2.0f) noexcept {
 }
 
 bool configureReference(VoiceEngine &engine) noexcept {
+    return engine.configure(2, 48000.0, 16) &&
+           engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
+
+bool configureParameterReference(ParameterVoiceEngine &engine) noexcept {
     return engine.configure(2, 48000.0, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
 }
@@ -271,6 +328,136 @@ int main() {
         !sameAudio(futureLeft, referenceLeft) || !sameAudio(futureRight, referenceRight)) {
         std::cerr << "future NOTE_ON did not snapshot the new oscillator/tuning defaults\n";
         return 17;
+    }
+
+    // #32 Coarse Tune starts as a global stepped NOTE_ON default. The CLAP
+    // PARAM_VALUE must be consumed before a same-sample NOTE_ON so the new
+    // generation snapshots the requested semitone offset, while the adapter
+    // retains the base separately for later host-facing publication.
+    ParameterVoiceEngine routedCoarse;
+    ParameterVoiceEngine stableCoarse;
+    VoiceEngine routedOctaveReference;
+    if (!configureParameterReference(routedCoarse) ||
+        !configureParameterReference(stableCoarse) ||
+        !configureReference(routedOctaveReference))
+        return 18;
+    InputEvents<> routedEvents;
+    InputEvents<> stableEvents;
+    if (!routedEvents.pushValue(0, kCoarseTuneId, 12.0) ||
+        !routedEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 30, 69) ||
+        !stableEvents.pushValue(0, kCoarseTuneId, 12.0) ||
+        !stableEvents.pushNote(0, CLAP_EVENT_NOTE_ON, 32, 69))
+        return 19;
+    AudioBlock routedLeft{};
+    AudioBlock routedRight{};
+    AudioBlock stableLeft{};
+    AudioBlock stableRight{};
+    if (!routedCoarse.process(&routedEvents.input,
+                              static_cast<uint32_t>(routedLeft.size()),
+                              routedLeft.data(), routedRight.data(), sink) ||
+        !stableCoarse.process(&stableEvents.input,
+                              static_cast<uint32_t>(stableLeft.size()),
+                              stableLeft.data(), stableRight.data(), sink))
+        return 20;
+    AudioBlock routedReferenceLeft{};
+    AudioBlock routedReferenceRight{};
+    if (!renderNote(routedOctaveReference,
+                    31,
+                    81,
+                    routedReferenceLeft,
+                    routedReferenceRight) ||
+        !sameAudio(routedLeft, routedReferenceLeft) ||
+        !sameAudio(routedRight, routedReferenceRight)) {
+        std::cerr << "Coarse Tune PARAM_VALUE was not ordered before same-sample NOTE_ON\n";
+        return 21;
+    }
+    double routedBase = -999.0;
+    if (!routedCoarse.parameterBaseValue(kCoarseTuneId, routedBase) || routedBase != 12.0) {
+        std::cerr << "Coarse Tune PARAM_VALUE was not retained as the adapter base\n";
+        return 22;
+    }
+
+    // Changing the global Coarse Tune default must not alter an existing
+    // generation when a later Fine Tune event recomputes its live pitch. The
+    // generation keeps the coarse snapshot taken at NOTE_ON.
+    InputEvents<> changedDefaultEvents;
+    InputEvents<> stableFineEvents;
+    if (!changedDefaultEvents.pushValue(0, kCoarseTuneId, 0.0) ||
+        !changedDefaultEvents.pushValue(0, kFineTuneId, 25.0) ||
+        !stableFineEvents.pushValue(0, kFineTuneId, 25.0))
+        return 23;
+    AudioBlock changedDefaultLeft{};
+    AudioBlock changedDefaultRight{};
+    AudioBlock stableFineLeft{};
+    AudioBlock stableFineRight{};
+    if (!routedCoarse.process(&changedDefaultEvents.input,
+                              static_cast<uint32_t>(changedDefaultLeft.size()),
+                              changedDefaultLeft.data(), changedDefaultRight.data(), sink) ||
+        !stableCoarse.process(&stableFineEvents.input,
+                              static_cast<uint32_t>(stableFineLeft.size()),
+                              stableFineLeft.data(), stableFineRight.data(), sink) ||
+        !sameAudio(changedDefaultLeft, stableFineLeft) ||
+        !sameAudio(changedDefaultRight, stableFineRight)) {
+        std::cerr << "Coarse Tune default change leaked into an active voice\n";
+        return 24;
+    }
+
+    // Worst-case composition must preserve a generation that started at +48
+    // semitones even if the global Coarse Tune default later moves to -48 while
+    // Fine Tune reaches +100 cents and CLAP TUNING reaches +120 semitones. The
+    // compensation term alone is +9600 cents, so the voice-local pitch handoff
+    // must accept the full 21700-cent internal range without failing process().
+    ParameterVoiceEngine compensatedExtreme;
+    ParameterVoiceEngine stableExtreme;
+    if (!configureParameterReference(compensatedExtreme) ||
+        !configureParameterReference(stableExtreme))
+        return 25;
+
+    InputEvents<> compensatedStart;
+    InputEvents<> stableStart;
+    if (!compensatedStart.pushValue(0, kCoarseTuneId, 48.0) ||
+        !compensatedStart.pushNote(0, CLAP_EVENT_NOTE_ON, 40, 60) ||
+        !stableStart.pushValue(0, kCoarseTuneId, 48.0) ||
+        !stableStart.pushNote(0, CLAP_EVENT_NOTE_ON, 41, 60))
+        return 26;
+
+    AudioBlock compensatedStartLeft{};
+    AudioBlock compensatedStartRight{};
+    AudioBlock stableStartLeft{};
+    AudioBlock stableStartRight{};
+    if (!compensatedExtreme.process(&compensatedStart.input,
+                                    static_cast<uint32_t>(compensatedStartLeft.size()),
+                                    compensatedStartLeft.data(), compensatedStartRight.data(), sink) ||
+        !stableExtreme.process(&stableStart.input,
+                               static_cast<uint32_t>(stableStartLeft.size()),
+                               stableStartLeft.data(), stableStartRight.data(), sink) ||
+        !sameAudio(compensatedStartLeft, stableStartLeft) ||
+        !sameAudio(compensatedStartRight, stableStartRight))
+        return 27;
+
+    InputEvents<> compensatedLive;
+    InputEvents<> stableLive;
+    if (!compensatedLive.pushValue(0, kCoarseTuneId, -48.0) ||
+        !compensatedLive.pushValue(0, kFineTuneId, 100.0) ||
+        !compensatedLive.pushTuning(0, 120.0, 40, 60) ||
+        !stableLive.pushValue(0, kFineTuneId, 100.0) ||
+        !stableLive.pushTuning(0, 120.0, 41, 60))
+        return 28;
+
+    AudioBlock compensatedLiveLeft{};
+    AudioBlock compensatedLiveRight{};
+    AudioBlock stableLiveLeft{};
+    AudioBlock stableLiveRight{};
+    if (!compensatedExtreme.process(&compensatedLive.input,
+                                    static_cast<uint32_t>(compensatedLiveLeft.size()),
+                                    compensatedLiveLeft.data(), compensatedLiveRight.data(), sink) ||
+        !stableExtreme.process(&stableLive.input,
+                               static_cast<uint32_t>(stableLiveLeft.size()),
+                               stableLiveLeft.data(), stableLiveRight.data(), sink) ||
+        !sameAudio(compensatedLiveLeft, stableLiveLeft) ||
+        !sameAudio(compensatedLiveRight, stableLiveRight)) {
+        std::cerr << "worst-case Coarse/Fine/TUNING compensation exceeded the voice-local pitch range\n";
+        return 29;
     }
 
     return 0;

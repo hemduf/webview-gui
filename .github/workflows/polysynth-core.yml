@@ -14,6 +14,7 @@ on:
       - 'examples/tests/polysynth_voice_lifecycle_tests.cpp'
       - 'examples/tests/polysynth_voice_engine_tests.cpp'
       - 'examples/tests/polysynth_amp_envelope_tests.cpp'
+      - 'examples/tests/polysynth_amp_envelope_parameter_tests.cpp'
       - 'examples/tests/polysynth_filter_tests.cpp'
       - 'examples/tests/polysynth_mix_controls_tests.cpp'
       - 'examples/tests/polysynth_filter_envelope_tests.cpp'
@@ -35,6 +36,8 @@ on:
       - 'examples/tests/polysynth_state_context_tests.cpp'
       - 'examples/tests/polysynth_tail_tests.cpp'
       - 'examples/tests/polysynth_validator_ci_contract.cmake'
+      - 'examples/tests/polysynth_extension_matrix_contract.cmake'
+      - 'examples/README.md'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/polysynth-core.yml'
   workflow_dispatch:
@@ -82,6 +85,7 @@ jobs:
           webview_gui_example_polysynth_voice_lifecycle_tests
           webview_gui_example_polysynth_voice_engine_tests
           webview_gui_example_polysynth_amp_envelope_tests
+          webview_gui_example_polysynth_amp_envelope_parameter_tests
           webview_gui_example_polysynth_filter_tests
           webview_gui_example_polysynth_mix_controls_tests
           webview_gui_example_polysynth_filter_envelope_tests
@@ -108,7 +112,14 @@ jobs:
       - name: Run PolySynth core tests
         run: >-
           ctest --test-dir build-polysynth-core -C Debug --output-on-failure
-          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|filter|mix_controls|filter_envelope|oscillator_tuning|polyphonic_parameter_state|event_stream|parameter_model|parameter_event|note_expression|pan_expression|brightness_expression|expression_expression|pressure_expression|note_expression_stream|clap_ports|param_flush_polyphony|voice_info|state|state_context|tail)$'
+          --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|amp_envelope_parameter|filter|mix_controls|filter_envelope|oscillator_tuning|polyphonic_parameter_state|event_stream|parameter_model|parameter_event|note_expression|pan_expression|brightness_expression|expression_expression|pressure_expression|note_expression_stream|clap_ports|param_flush_polyphony|voice_info|state|state_context|tail)$'
+
+      - name: Run PolySynth extension matrix contract
+        run: >-
+          cmake
+          -DREADME_FILE="${{ github.workspace }}/examples/README.md"
+          -DPLUGIN_FILE="${{ github.workspace }}/examples/polysynth/polysynth_plugin.cpp"
+          -P "${{ github.workspace }}/examples/tests/polysynth_extension_matrix_contract.cmake"
 
       - name: Run PolySynth validator CI contract
         run: >-

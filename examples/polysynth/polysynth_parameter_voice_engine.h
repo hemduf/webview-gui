@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace webview_gui::examples::polysynth {
 
@@ -24,23 +25,70 @@ public:
     bool configure(std::size_t requestedVoices,
                    double sampleRate,
                    std::uint32_t releaseSamples) noexcept {
-        if (!VoiceEngine::configure(requestedVoices, sampleRate, releaseSamples) ||
+        // Amp Envelope host values are expressed in seconds and converted to the
+        // VoiceEngine's uint32 sample counters on the audio thread. Reject sample
+        // rates for which the existing legal 10-second parameter range cannot be
+        // represented, so a valid later PARAM_VALUE can never overflow in process().
+        constexpr double kMaximumEnvelopeSeconds = 10.0;
+        const double maximumRepresentableSampleRate =
+            static_cast<double>(std::numeric_limits<std::uint32_t>::max()) /
+            kMaximumEnvelopeSeconds;
+        if (!std::isfinite(sampleRate) || sampleRate <= 0.0 ||
+            sampleRate > maximumRepresentableSampleRate ||
+            !VoiceEngine::configure(requestedVoices, sampleRate, releaseSamples) ||
             !polyphonicState_.configure(requestedVoices))
             return false;
 
+        sampleRate_ = sampleRate;
+        masterGainBaseDb_ = 0.0;
+        masterGainGlobalModulationDb_ = 0.0;
+        waveformBaseValue_ = 0.0;
+        coarseTuneBaseSemitones_ = 0;
         fineTuneBaseCents_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
+        filterCutoffBaseHz_ = 6000.0;
+        filterResonanceBase_ = 0.0;
+        filterEnvelopeAmountBase_ = 0.0;
+        // Preserve the pre-publication VoiceEngine baseline exactly. The next
+        // host-publication slice will replay the metadata defaults before these
+        // IDs become visible through clap.params.
+        ampAttackBaseSeconds_ = 0.0;
+        ampDecayBaseSeconds_ = 0.0;
+        ampSustainBase_ = 1.0;
+        ampReleaseBaseSeconds_ = static_cast<double>(releaseSamples) / sampleRate;
+        panBase_ = 0.0;
+        ampLevelBase_ = 1.0;
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceCoarseTuningSemitones_.fill(0);
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
         voicePressureExpressions_.fill(0.0);
+        voicePanExpressions_.fill(0.5);
         clearTransientExpressionState();
-        const auto slot = fineTuneSlot();
-        return polyphonicState_.setGlobalBase(slot, fineTuneBaseCents_) &&
-               polyphonicState_.setGlobalModulation(slot, 0.0) &&
-               VoiceEngine::setFineTuningCents(0.0f);
+        const auto fineSlot = fineTuneSlot();
+        const auto cutoffParameterSlot = filterCutoffSlot();
+        const auto resonanceParameterSlot = filterResonanceSlot();
+        const auto filterEnvelopeParameterSlot = filterEnvelopeAmountSlot();
+        const auto panParameterSlot = panSlot();
+        const auto ampLevelParameterSlot = ampLevelSlot();
+        return polyphonicState_.setGlobalBase(fineSlot, fineTuneBaseCents_) &&
+               polyphonicState_.setGlobalModulation(fineSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(cutoffParameterSlot, filterCutoffBaseHz_) &&
+               polyphonicState_.setGlobalModulation(cutoffParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(resonanceParameterSlot, filterResonanceBase_) &&
+               polyphonicState_.setGlobalModulation(resonanceParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(filterEnvelopeParameterSlot,
+                                              filterEnvelopeAmountBase_) &&
+               polyphonicState_.setGlobalModulation(filterEnvelopeParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(panParameterSlot, panBase_) &&
+               polyphonicState_.setGlobalModulation(panParameterSlot, 0.0) &&
+               polyphonicState_.setGlobalBase(ampLevelParameterSlot, ampLevelBase_) &&
+               polyphonicState_.setGlobalModulation(ampLevelParameterSlot, 0.0) &&
+               VoiceEngine::setFineTuningCents(0.0f) &&
+               VoiceEngine::setPan(0.0f) &&
+               applyMasterGainState();
     }
 
     bool setFineTuningCents(float cents) noexcept {
@@ -53,12 +101,85 @@ public:
                polyphonicState_.setGlobalModulation(fineTuneSlot(), 0.0);
     }
 
+    bool setFilter(float cutoffHz, float resonance) noexcept {
+        if (!VoiceEngine::setFilter(cutoffHz, resonance))
+            return false;
+
+        filterCutoffBaseHz_ = static_cast<double>(cutoffHz);
+        filterResonanceBase_ = static_cast<double>(resonance);
+        return polyphonicState_.setGlobalBase(filterCutoffSlot(), filterCutoffBaseHz_) &&
+               polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0) &&
+               polyphonicState_.setGlobalBase(filterResonanceSlot(), filterResonanceBase_) &&
+               polyphonicState_.setGlobalModulation(filterResonanceSlot(), 0.0);
+    }
+
+    bool setFilterEnvelopeAmount(float amount) noexcept {
+        if (!VoiceEngine::setFilterEnvelopeAmount(amount))
+            return false;
+
+        filterEnvelopeAmountBase_ = static_cast<double>(amount);
+        return polyphonicState_.setGlobalBase(filterEnvelopeAmountSlot(),
+                                              filterEnvelopeAmountBase_) &&
+               polyphonicState_.setGlobalModulation(filterEnvelopeAmountSlot(), 0.0);
+    }
+
     [[nodiscard]] bool parameterBaseValue(clap_id id, double &value) const noexcept {
         const auto *spec = parameterSpecForId(id);
-        if (!spec || spec->slot != ParameterSlot::FineTuning)
+        if (!spec)
             return false;
-        value = fineTuneBaseCents_;
-        return true;
+        if (spec->slot == ParameterSlot::MasterGain) {
+            value = masterGainBaseDb_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::Waveform) {
+            value = waveformBaseValue_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::CoarseTuning) {
+            value = static_cast<double>(coarseTuneBaseSemitones_);
+            return true;
+        }
+        if (spec->slot == ParameterSlot::FineTuning) {
+            value = fineTuneBaseCents_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::FilterCutoff) {
+            value = filterCutoffBaseHz_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::FilterResonance) {
+            value = filterResonanceBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpAttack) {
+            value = ampAttackBaseSeconds_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpDecay) {
+            value = ampDecayBaseSeconds_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpSustain) {
+            value = ampSustainBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpRelease) {
+            value = ampReleaseBaseSeconds_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::FilterEnvelopeAmount) {
+            value = filterEnvelopeAmountBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::Pan) {
+            value = panBase_;
+            return true;
+        }
+        if (spec->slot == ParameterSlot::AmpLevel) {
+            value = ampLevelBase_;
+            return true;
+        }
+        return false;
     }
 
     void reset() noexcept {
@@ -66,14 +187,29 @@ public:
         polyphonicState_.reset();
         trackedVoices_.fill(false);
         trackedIdentities_.fill({});
+        voiceCoarseTuningSemitones_.fill(0);
         voiceTuningExpressionSemitones_.fill(0.0);
         voiceVolumeExpressions_.fill(1.0);
         voicePerformanceExpressions_.fill(1.0);
         voicePressureExpressions_.fill(0.0);
+        voicePanExpressions_.fill(0.5);
         clearTransientExpressionState();
+        masterGainGlobalModulationDb_ = 0.0;
         fineTuneGlobalModulationCents_ = 0.0;
         (void)polyphonicState_.setGlobalBase(fineTuneSlot(), fineTuneBaseCents_);
+        (void)polyphonicState_.setGlobalBase(filterCutoffSlot(), filterCutoffBaseHz_);
+        (void)polyphonicState_.setGlobalModulation(filterCutoffSlot(), 0.0);
+        (void)polyphonicState_.setGlobalBase(filterResonanceSlot(), filterResonanceBase_);
+        (void)polyphonicState_.setGlobalModulation(filterResonanceSlot(), 0.0);
+        (void)polyphonicState_.setGlobalBase(filterEnvelopeAmountSlot(),
+                                             filterEnvelopeAmountBase_);
+        (void)polyphonicState_.setGlobalModulation(filterEnvelopeAmountSlot(), 0.0);
+        (void)polyphonicState_.setGlobalBase(panSlot(), panBase_);
+        (void)polyphonicState_.setGlobalBase(ampLevelSlot(), ampLevelBase_);
+        (void)polyphonicState_.setGlobalModulation(ampLevelSlot(), 0.0);
         (void)VoiceEngine::setFineTuningCents(static_cast<float>(fineTuneBaseCents_));
+        (void)VoiceEngine::setPan(static_cast<float>(panBase_));
+        (void)applyMasterGainState();
     }
 
     // params.flush() is delivered on the audio thread while the plug-in is active
@@ -179,8 +315,48 @@ private:
         bool active = false;
     };
 
+    static constexpr clap_id masterGainId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::MasterGain);
+    }
+
+    static constexpr clap_id filterCutoffId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterCutoff);
+    }
+
+    static constexpr clap_id filterResonanceId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterResonance);
+    }
+
+    static constexpr clap_id filterEnvelopeAmountId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
+    }
+
+    static constexpr clap_id ampLevelId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::AmpLevel);
+    }
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
+    }
+
+    static constexpr std::size_t filterCutoffSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::FilterCutoff);
+    }
+
+    static constexpr std::size_t filterResonanceSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::FilterResonance);
+    }
+
+    static constexpr std::size_t filterEnvelopeAmountSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::FilterEnvelopeAmount);
+    }
+
+    static constexpr std::size_t panSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::Pan);
+    }
+
+    static constexpr std::size_t ampLevelSlot() noexcept {
+        return static_cast<std::size_t>(ParameterSlot::AmpLevel);
     }
 
     static bool isGlobalAddress(std::int32_t noteId,
@@ -211,6 +387,80 @@ private:
 
     static double pressureGain(double pressure) noexcept {
         return 1.0 + pressure;
+    }
+
+    // Convert the public seconds domain into the VoiceEngine's bounded sample
+    // counters using only finite scalar arithmetic. Avoid round()/llround() so
+    // the audio-thread path has no dependency on libm rounding-mode state.
+    bool secondsToSamples(double seconds,
+                          bool allowZero,
+                          std::uint32_t &samples) const noexcept {
+        if (!std::isfinite(seconds) || seconds < 0.0 ||
+            !std::isfinite(sampleRate_) || sampleRate_ <= 0.0)
+            return false;
+
+        const double scaled = seconds * sampleRate_;
+        const auto maximum = std::numeric_limits<std::uint32_t>::max();
+        if (!std::isfinite(scaled) || scaled < 0.0 ||
+            scaled > static_cast<double>(maximum))
+            return false;
+
+        auto rounded = static_cast<std::uint32_t>(scaled);
+        if (scaled - static_cast<double>(rounded) >= 0.5) {
+            if (rounded == maximum)
+                return false;
+            ++rounded;
+        }
+        if (!allowZero && rounded == 0u)
+            rounded = 1u;
+        samples = rounded;
+        return true;
+    }
+
+    // Amp Envelope automation is deliberately global-only and updates the
+    // VoiceEngine defaults atomically at one event boundary. VoiceEngine copies
+    // those four values into each NOTE_ON generation, so changing a default never
+    // splices timing into an already-active attack/decay/release lifecycle.
+    bool applyAmpEnvelopeValue(ParameterSlot slot, double value) noexcept {
+        double attackSeconds = ampAttackBaseSeconds_;
+        double decaySeconds = ampDecayBaseSeconds_;
+        double sustain = ampSustainBase_;
+        double releaseSeconds = ampReleaseBaseSeconds_;
+
+        switch (slot) {
+            case ParameterSlot::AmpAttack:
+                attackSeconds = value;
+                break;
+            case ParameterSlot::AmpDecay:
+                decaySeconds = value;
+                break;
+            case ParameterSlot::AmpSustain:
+                sustain = value;
+                break;
+            case ParameterSlot::AmpRelease:
+                releaseSeconds = value;
+                break;
+            default:
+                return false;
+        }
+
+        std::uint32_t attackSamples = 0;
+        std::uint32_t decaySamples = 0;
+        std::uint32_t releaseSamples = 0;
+        if (!secondsToSamples(attackSeconds, true, attackSamples) ||
+            !secondsToSamples(decaySeconds, true, decaySamples) ||
+            !secondsToSamples(releaseSeconds, false, releaseSamples) ||
+            !VoiceEngine::setAmpEnvelope(attackSamples,
+                                         decaySamples,
+                                         static_cast<float>(sustain),
+                                         releaseSamples))
+            return false;
+
+        ampAttackBaseSeconds_ = attackSeconds;
+        ampDecayBaseSeconds_ = decaySeconds;
+        ampSustainBase_ = sustain;
+        ampReleaseBaseSeconds_ = releaseSeconds;
+        return true;
     }
 
     void clearPendingExpressionEntries() noexcept {
@@ -480,13 +730,161 @@ private:
             static_cast<float>(globalFineTuningCents()));
     }
 
+    bool applyMasterGainState() noexcept {
+        const auto *spec = parameterSpecForId(masterGainId());
+        if (!spec)
+            return false;
+        const auto effectiveDb = std::clamp(masterGainBaseDb_ + masterGainGlobalModulationDb_,
+                                            spec->minValue,
+                                            spec->maxValue);
+        // A one-sample prepared ramp preserves the VoiceEngine's click-safe gain
+        // state machine while making the new target effective on the first sample
+        // rendered after the CLAP event boundary.
+        return VoiceEngine::setMasterGainDb(static_cast<float>(effectiveDb), 1u);
+    }
+
     bool applyVoiceExpressionGain(VoiceAllocator::VoiceIndex index) noexcept {
         if (index >= capacity() || !trackedVoices_[index])
             return false;
-        const double gain = voiceVolumeExpressions_[index] *
+
+        const auto *spec = parameterSpecForId(ampLevelId());
+        if (!spec)
+            return false;
+        double base = 0.0;
+        double modulation = 0.0;
+        if (!polyphonicState_.baseValue(index, ampLevelSlot(), base) ||
+            !polyphonicState_.modulation(index, ampLevelSlot(), modulation))
+            return false;
+
+        const double ampLevel = std::clamp(base + modulation,
+                                           spec->minValue,
+                                           spec->maxValue);
+        const double gain = ampLevel *
+                            voiceVolumeExpressions_[index] *
                             voicePerformanceExpressions_[index] *
                             pressureGain(voicePressureExpressions_[index]);
         return VoiceEngine::setVoiceVolumeExpression(index, static_cast<float>(gain));
+    }
+
+    bool applyAmpLevelState() noexcept {
+        if (!syncVoices())
+            return false;
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (trackedVoices_[index] && !applyVoiceExpressionGain(index))
+                return false;
+        }
+        return true;
+    }
+
+    bool applyFilterCutoffState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto *spec = parameterSpecForId(filterCutoffId());
+        if (!spec)
+            return false;
+        const auto slot = filterCutoffSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto effectiveCutoff =
+                std::clamp(base + modulation, spec->minValue, spec->maxValue);
+            if (!VoiceEngine::setVoiceFilterCutoffHz(
+                    index, static_cast<float>(effectiveCutoff)))
+                return false;
+        }
+        return true;
+    }
+
+    bool applyFilterResonanceState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto *spec = parameterSpecForId(filterResonanceId());
+        if (!spec)
+            return false;
+        const auto slot = filterResonanceSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto effectiveResonance =
+                std::clamp(base + modulation, spec->minValue, spec->maxValue);
+            if (!VoiceEngine::setVoiceFilterResonance(
+                    index, static_cast<float>(effectiveResonance)))
+                return false;
+        }
+        return true;
+    }
+
+    bool applyFilterEnvelopeAmountState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto *spec = parameterSpecForId(filterEnvelopeAmountId());
+        if (!spec)
+            return false;
+        const auto slot = filterEnvelopeAmountSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto effectiveAmount =
+                std::clamp(base + modulation, spec->minValue, spec->maxValue);
+            if (!VoiceEngine::setVoiceFilterEnvelopeAmount(
+                    index, static_cast<float>(effectiveAmount)))
+                return false;
+        }
+        return true;
+    }
+
+    bool applyPanState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto slot = panSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto parameterPan = std::clamp(base + modulation, -1.0, 1.0);
+            // CLAP PAN note expression is centered at 0.5 and is defined as an
+            // offset from the voice's non-note-expression default. Convert the
+            // expression to signed [-1, 1], compose, then map back to the
+            // VoiceEngine's normalized note-expression input.
+            const auto expressionOffset = 2.0 * (voicePanExpressions_[index] - 0.5);
+            const auto effectivePan = std::clamp(parameterPan + expressionOffset, -1.0, 1.0);
+            const auto normalizedPan = (effectivePan + 1.0) * 0.5;
+            if (!VoiceEngine::setVoicePanExpression(
+                    index, static_cast<float>(normalizedPan)))
+                return false;
+        }
+        return true;
     }
 
     // The scheduler supplies the exact allocated slot after lifecycle/DSP NOTE_ON
@@ -505,10 +903,12 @@ private:
             return false;
         trackedVoices_[index] = true;
         trackedIdentities_[index] = event.identity;
+        voiceCoarseTuningSemitones_[index] = coarseTuneBaseSemitones_;
         voiceTuningExpressionSemitones_[index] = 0.0;
         voiceVolumeExpressions_[index] = 1.0;
         voicePerformanceExpressions_[index] = 1.0;
         voicePressureExpressions_[index] = 0.0;
+        voicePanExpressions_[index] = 0.5;
 
         double expressionSemitones = 0.0;
         if (pendingTuningFor(event.identity, event.time, expressionSemitones))
@@ -533,8 +933,14 @@ private:
             return false;
 
         double pan = 0.5;
-        if (pendingPanFor(event.identity, event.time, pan) &&
-            !VoiceEngine::setVoicePanExpression(index, static_cast<float>(pan)))
+        if (pendingPanFor(event.identity, event.time, pan))
+            voicePanExpressions_[index] = pan;
+        if (!applyPanState())
+            return false;
+
+        if (!applyFilterCutoffState() ||
+            !applyFilterResonanceState() ||
+            !applyFilterEnvelopeAmountState())
             return false;
 
         double brightness = 0.0;
@@ -555,10 +961,12 @@ private:
                         return false;
                     trackedVoices_[index] = false;
                     trackedIdentities_[index] = {};
+                    voiceCoarseTuningSemitones_[index] = 0;
                     voiceTuningExpressionSemitones_[index] = 0.0;
                     voiceVolumeExpressions_[index] = 1.0;
                     voicePerformanceExpressions_[index] = 1.0;
                     voicePressureExpressions_[index] = 0.0;
+                    voicePanExpressions_[index] = 0.5;
                 }
                 continue;
             }
@@ -568,10 +976,12 @@ private:
                     return false;
                 trackedVoices_[index] = true;
                 trackedIdentities_[index] = identity;
+                voiceCoarseTuningSemitones_[index] = coarseTuneBaseSemitones_;
                 voiceTuningExpressionSemitones_[index] = 0.0;
                 voiceVolumeExpressions_[index] = 1.0;
                 voicePerformanceExpressions_[index] = 1.0;
                 voicePressureExpressions_[index] = 0.0;
+                voicePanExpressions_[index] = 0.5;
             }
         }
         return true;
@@ -592,13 +1002,17 @@ private:
                 !polyphonicState_.modulation(index, slot, modulation))
                 return false;
 
-            // Fine Tune remains a +/-100-cent parameter domain. CLAP TUNING is
-            // a separate statement-of-value offset in semitones and must retain
-            // its full +/-120-semitone range rather than inheriting the parameter
-            // clamp. The resulting voice-local offset is bounded to +/-12100c.
+            // VoiceEngine::setVoiceFineTuningCents() applies the current global
+            // coarse default internally. Compensate by the difference between the
+            // generation's NOTE_ON snapshot and today's default so Fine Tune and
+            // CLAP TUNING can move live without either double-counting Coarse Tune
+            // or leaking a later default change into an existing generation.
             const auto parameterCents = std::clamp(base + modulation, -100.0, 100.0);
-            const auto effectiveCents =
-                parameterCents + voiceTuningExpressionSemitones_[index] * 100.0;
+            const auto coarseCompensationCents =
+                static_cast<double>(voiceCoarseTuningSemitones_[index] -
+                                    coarseTuneBaseSemitones_) * 100.0;
+            const auto effectiveCents = coarseCompensationCents + parameterCents +
+                                        voiceTuningExpressionSemitones_[index] * 100.0;
             if (!VoiceEngine::setVoiceFineTuningCents(
                     index, static_cast<float>(effectiveCents)))
                 return false;
@@ -701,15 +1115,17 @@ private:
             return false;
 
         const auto address = addressFrom(event);
+        bool matched = false;
         for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
             if (!trackedVoices_[index] ||
                 !addressMatches(trackedIdentities_[index], address))
                 continue;
-            if (!VoiceEngine::setVoicePanExpression(
-                    index, static_cast<float>(event.value)))
-                return false;
+            voicePanExpressions_[index] = event.value;
+            matched = true;
         }
-        return storePendingPan(event);
+        if (!storePendingPan(event))
+            return false;
+        return matched ? applyPanState() : true;
     }
 
     bool applyBrightnessExpression(const clap_event_note_expression_t &event) noexcept {
@@ -769,11 +1185,139 @@ private:
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
+            if (!std::isfinite(event.value))
+                return false;
+
+            if (spec->slot == ParameterSlot::MasterGain) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                // A host or fuzzing validator can send a structurally valid
+                // statement whose value is outside this parameter's semantic
+                // base range. Ignore that statement without mutating the retained
+                // base or failing the entire real-time process block.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
+                    return true;
+                masterGainBaseDb_ = event.value;
+                return applyMasterGainState();
+            }
+
+            if (spec->slot == ParameterSlot::Waveform) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                // CLAP_PARAM_IS_STEPPED converts in-range doubles using a cast
+                // (truncation). Keep that ABI rule consistent with value_to_text.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
+                    return true;
+                const auto waveform = static_cast<OscillatorWaveform>(
+                    static_cast<std::uint8_t>(event.value));
+                if (!VoiceEngine::setOscillatorWaveform(waveform))
+                    return false;
+                waveformBaseValue_ = static_cast<double>(
+                    static_cast<std::uint8_t>(event.value));
+                return true;
+            }
+
+            if (spec->slot == ParameterSlot::CoarseTuning) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                // Coarse Tune has the same CLAP stepped conversion rule. Bounds
+                // are checked before the cast so the conversion is always safe.
+                if (event.value < spec->minValue || event.value > spec->maxValue)
+                    return true;
+                const auto semitones = static_cast<int>(event.value);
+                if (!VoiceEngine::setCoarseTuningSemitones(semitones))
+                    return false;
+                coarseTuneBaseSemitones_ = semitones;
+                return true;
+            }
+
+            // flush() already ignores out-of-range finite PARAM_VALUE statements.
+            // process() must likewise keep the audio block alive rather than
+            // turning a malformed or fuzzed host statement into CLAP_PROCESS_ERROR.
+            if (event.value < spec->minValue || event.value > spec->maxValue)
+                return true;
+
+            if (spec->slot == ParameterSlot::AmpAttack ||
+                spec->slot == ParameterSlot::AmpDecay ||
+                spec->slot == ParameterSlot::AmpSustain ||
+                spec->slot == ParameterSlot::AmpRelease) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                return applyAmpEnvelopeValue(spec->slot, event.value);
+            }
+
+            if (spec->slot == ParameterSlot::FilterCutoff) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyValue(filterCutoffSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    filterCutoffBaseHz_ = event.value;
+                return applyFilterCutoffState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterResonance) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyValue(filterResonanceSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    filterResonanceBase_ = event.value;
+                return applyFilterResonanceState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterEnvelopeAmount) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyValue(filterEnvelopeAmountSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    filterEnvelopeAmountBase_ = event.value;
+                return applyFilterEnvelopeAmountState();
+            }
+
+            if (spec->slot == ParameterSlot::Pan) {
+                if (!syncVoices() || !polyphonicState_.applyValue(panSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    panBase_ = event.value;
+                return applyPanState();
+            }
+
+            if (spec->slot == ParameterSlot::AmpLevel) {
+                if (!syncVoices() || !polyphonicState_.applyValue(ampLevelSlot(), event))
+                    return false;
+                if (isGlobalAddress(event.note_id,
+                                    event.port_index,
+                                    event.channel,
+                                    event.key))
+                    ampLevelBase_ = event.value;
+                return applyAmpLevelState();
+            }
+
             if (spec->slot != ParameterSlot::FineTuning)
                 return true;
-            if (!std::isfinite(event.value) ||
-                event.value < spec->minValue || event.value > spec->maxValue)
-                return false;
             if (!syncVoices() || !polyphonicState_.applyValue(fineTuneSlot(), event))
                 return false;
 
@@ -793,10 +1337,56 @@ private:
             const auto *spec = parameterSpecForId(event.param_id);
             if (!spec)
                 return false;
-            if (spec->slot != ParameterSlot::FineTuning)
-                return true;
             if (!std::isfinite(event.amount))
                 return false;
+
+            if (spec->slot == ParameterSlot::MasterGain) {
+                if (!isGlobalAddress(event.note_id,
+                                     event.port_index,
+                                     event.channel,
+                                     event.key))
+                    return true;
+                masterGainGlobalModulationDb_ = event.amount;
+                return applyMasterGainState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterCutoff) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(filterCutoffSlot(), event))
+                    return false;
+                return applyFilterCutoffState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterResonance) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(filterResonanceSlot(), event))
+                    return false;
+                return applyFilterResonanceState();
+            }
+
+            if (spec->slot == ParameterSlot::FilterEnvelopeAmount) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(filterEnvelopeAmountSlot(), event))
+                    return false;
+                return applyFilterEnvelopeAmountState();
+            }
+
+            if (spec->slot == ParameterSlot::Pan) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(panSlot(), event))
+                    return false;
+                return applyPanState();
+            }
+
+            if (spec->slot == ParameterSlot::AmpLevel) {
+                if (!syncVoices() ||
+                    !polyphonicState_.applyModulation(ampLevelSlot(), event))
+                    return false;
+                return applyAmpLevelState();
+            }
+
+            if (spec->slot != ParameterSlot::FineTuning)
+                return true;
             if (!syncVoices() ||
                 !polyphonicState_.applyModulation(fineTuneSlot(), event))
                 return false;
@@ -815,10 +1405,12 @@ private:
     PolyphonicParameterState polyphonicState_{};
     std::array<VoiceIdentity, VoiceAllocator::kMaximumVoices> trackedIdentities_{};
     std::array<bool, VoiceAllocator::kMaximumVoices> trackedVoices_{};
+    std::array<int, VoiceAllocator::kMaximumVoices> voiceCoarseTuningSemitones_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceTuningExpressionSemitones_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voiceVolumeExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePerformanceExpressions_{};
     std::array<double, VoiceAllocator::kMaximumVoices> voicePressureExpressions_{};
+    std::array<double, VoiceAllocator::kMaximumVoices> voicePanExpressions_{};
     std::array<PendingTuningExpression, VoiceAllocator::kMaximumVoices>
         pendingTuningExpressions_{};
     std::array<PendingVolumeExpression, VoiceAllocator::kMaximumVoices>
@@ -833,8 +1425,22 @@ private:
         pendingBrightnessExpressions_{};
     std::uint32_t pendingExpressionTime_ = 0;
     bool pendingExpressionTimeValid_ = false;
+    double sampleRate_ = 0.0;
+    double masterGainBaseDb_ = 0.0;
+    double masterGainGlobalModulationDb_ = 0.0;
+    double waveformBaseValue_ = 0.0;
+    int coarseTuneBaseSemitones_ = 0;
     double fineTuneBaseCents_ = 0.0;
     double fineTuneGlobalModulationCents_ = 0.0;
+    double filterCutoffBaseHz_ = 6000.0;
+    double filterResonanceBase_ = 0.0;
+    double ampAttackBaseSeconds_ = 0.0;
+    double ampDecayBaseSeconds_ = 0.0;
+    double ampSustainBase_ = 1.0;
+    double ampReleaseBaseSeconds_ = 0.0;
+    double filterEnvelopeAmountBase_ = 0.0;
+    double panBase_ = 0.0;
+    double ampLevelBase_ = 1.0;
 };
 
 } // namespace webview_gui::examples::polysynth
