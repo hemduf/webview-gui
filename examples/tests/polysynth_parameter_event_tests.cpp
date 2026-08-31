@@ -272,11 +272,11 @@ bool matchesTargetedRetune(const RenderResult &audio,
     return true;
 }
 
-bool matchesMasterGainStep(const RenderResult &audio,
-                           std::uint32_t gainFrame,
-                           float beforeGain,
-                           float afterGain,
-                           std::int16_t key) noexcept {
+bool matchesGainStep(const RenderResult &audio,
+                     std::uint32_t gainFrame,
+                     float beforeGain,
+                     float afterGain,
+                     std::int16_t key) noexcept {
     const double increment = phaseIncrement(key);
     for (std::uint32_t frame = 0; frame < audio.left.size(); ++frame) {
         const auto gain = frame < gainFrame ? beforeGain : afterGain;
@@ -408,7 +408,7 @@ int main() {
     gainValueEvents.pushValue(8, kMasterGainId, kHalfGainDb);
     RenderResult gainValueAudio;
     if (!render(gainValue, gainValueEvents, gainValueAudio) ||
-        !matchesMasterGainStep(gainValueAudio, 8, 1.0f, 0.5f, 60)) {
+        !matchesGainStep(gainValueAudio, 8, 1.0f, 0.5f, 60)) {
         std::cerr << "Master Gain PARAM_VALUE was not applied at its exact sample boundary\n";
         return 16;
     }
@@ -427,7 +427,7 @@ int main() {
     gainModEvents.pushMod(8, kMasterGainId, -kHalfGainDb);
     RenderResult gainModAudio;
     if (!render(gainMod, gainModEvents, gainModAudio) ||
-        !matchesMasterGainStep(gainModAudio, 8, 0.5f, 1.0f, 60)) {
+        !matchesGainStep(gainModAudio, 8, 0.5f, 1.0f, 60)) {
         std::cerr << "Master Gain PARAM_MOD was not composed sample-accurately with its base\n";
         return 19;
     }
@@ -442,7 +442,7 @@ int main() {
     gainResetEvents.pushNote(0, 33, 60);
     RenderResult gainResetAudio;
     if (!render(gainMod, gainResetEvents, gainResetAudio) ||
-        !matchesMasterGainStep(gainResetAudio, 0, 0.5f, 0.5f, 60)) {
+        !matchesGainStep(gainResetAudio, 0, 0.5f, 0.5f, 60)) {
         std::cerr << "reset did not clear Master Gain modulation while retaining its base\n";
         return 21;
     }
@@ -459,7 +459,7 @@ int main() {
         std::cerr << "finite out-of-range Master Gain PARAM_VALUE failed the process block\n";
         return 23;
     }
-    if (!matchesMasterGainStep(invalidMasterGainAudio, 0, 0.5f, 0.5f, 60)) {
+    if (!matchesGainStep(invalidMasterGainAudio, 0, 0.5f, 0.5f, 60)) {
         std::cerr << "finite out-of-range Master Gain PARAM_VALUE changed the DSP state\n";
         return 24;
     }
@@ -681,7 +681,7 @@ int main() {
     ampValueEvents.pushValue(8, kAmpLevelId, 0.5);
     RenderResult ampValueAudio;
     if (!render(ampValue, ampValueEvents, ampValueAudio) ||
-        !matchesMasterGainStep(ampValueAudio, 8, 1.0f, 0.5f, 60)) {
+        !matchesGainStep(ampValueAudio, 8, 1.0f, 0.5f, 60)) {
         std::cerr << "Amp Level PARAM_VALUE was not applied at its exact sample boundary\n";
         return 55;
     }
@@ -700,7 +700,7 @@ int main() {
     ampModEvents.pushMod(8, kAmpLevelId, -0.25);
     RenderResult ampModAudio;
     if (!render(ampMod, ampModEvents, ampModAudio) ||
-        !matchesMasterGainStep(ampModAudio, 8, 0.75f, 0.5f, 60)) {
+        !matchesGainStep(ampModAudio, 8, 0.75f, 0.5f, 60)) {
         std::cerr << "Amp Level PARAM_MOD was not composed sample-accurately with its base\n";
         return 58;
     }
@@ -714,7 +714,7 @@ int main() {
     ampResetEvents.pushNote(0, 103, 60);
     RenderResult ampResetAudio;
     if (!render(ampMod, ampResetEvents, ampResetAudio) ||
-        !matchesMasterGainStep(ampResetAudio, 0, 0.75f, 0.75f, 60)) {
+        !matchesGainStep(ampResetAudio, 0, 0.75f, 0.75f, 60)) {
         std::cerr << "reset did not clear Amp Level modulation while retaining its base\n";
         return 60;
     }
@@ -786,11 +786,11 @@ int main() {
     RenderResult ampExpressionAudio;
     constexpr float kExpectedComposedAmpGain = 0.5f * 0.5f * 0.5f * 1.5f;
     if (!render(ampExpressions, ampExpressionEvents, ampExpressionAudio) ||
-        !matchesMasterGainStep(ampExpressionAudio,
-                               0,
-                               kExpectedComposedAmpGain,
-                               kExpectedComposedAmpGain,
-                               60)) {
+        !matchesGainStep(ampExpressionAudio,
+                         0,
+                         kExpectedComposedAmpGain,
+                         kExpectedComposedAmpGain,
+                         60)) {
         std::cerr << "Amp Level did not compose with VOLUME / EXPRESSION / PRESSURE\n";
         return 69;
     }
