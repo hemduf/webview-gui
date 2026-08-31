@@ -70,31 +70,33 @@ int main() {
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
 
-    // The pinned WCLAP bridge constructs this helper around its native wrapper
-    // before it has called the module's clap_plugin.init(). If helper init queries
-    // wrapper plug-in extensions, the bridge forwards that query into the still
-    // uninitialized module and strict clap-helpers terminates. Identity/thread
-    // binding must therefore be extension-free on the native bridge side too.
+    // The pinned native WCLAP bridge constructs this helper before it calls the
+    // module's clap_plugin.init(). It immediately copies extHostWebview, so the
+    // host side must already be resolved. Querying the wrapper plug-in here is
+    // unsafe because pluginGetExtension forwards into the uninitialized module.
     if (!expect(pluginExtensionQueries == 0,
                 "bridge-side GUI init queried plug-in extensions before module init"))
         return 1;
-    if (!expect(hostExtensionQueries == 0,
-                "bridge-side GUI init queried host extensions before module init"))
+    if (!expect(hostExtensionQueries == 1,
+                "bridge-side GUI init did not resolve the host WebView proxy exactly once"))
         return 2;
+    if (!expect(gui.extHostWebview == &hostWebview,
+                "bridge-side GUI init did not publish the resolved host WebView proxy"))
+        return 3;
 
     if (!expect(gui.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, false),
-                "post-init native WebView negotiation did not resolve both sides"))
-        return 3;
-    if (!expect(pluginExtensionQueries == 1 && hostExtensionQueries == 1,
-                "post-init native WebView negotiation did not resolve exactly once"))
+                "post-init native WebView negotiation did not resolve plug-in support"))
         return 4;
+    if (!expect(pluginExtensionQueries == 1 && hostExtensionQueries == 1,
+                "post-init native WebView negotiation did not preserve cached host resolution"))
+        return 5;
 
     if (!expect(gui.isApiSupported(webview_gui::CLAP_WINDOW_API_WEBVIEW, false),
                 "cached native WebView negotiation changed result"))
-        return 5;
+        return 6;
     if (!expect(pluginExtensionQueries == 1 && hostExtensionQueries == 1,
                 "native WebView negotiation was not cached"))
-        return 6;
+        return 7;
 
     return 0;
 }
