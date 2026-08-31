@@ -90,6 +90,16 @@ public:
                polyphonicState_.setGlobalModulation(filterResonanceSlot(), 0.0);
     }
 
+    bool setFilterEnvelopeAmount(float amount) noexcept {
+        if (!VoiceEngine::setFilterEnvelopeAmount(amount))
+            return false;
+
+        filterEnvelopeAmountBase_ = static_cast<double>(amount);
+        return polyphonicState_.setGlobalBase(filterEnvelopeAmountSlot(),
+                                              filterEnvelopeAmountBase_) &&
+               polyphonicState_.setGlobalModulation(filterEnvelopeAmountSlot(), 0.0);
+    }
+
     [[nodiscard]] bool parameterBaseValue(clap_id id, double &value) const noexcept {
         const auto *spec = parameterSpecForId(id);
         if (!spec)
