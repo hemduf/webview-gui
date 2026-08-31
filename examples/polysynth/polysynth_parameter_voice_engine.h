@@ -282,6 +282,10 @@ private:
         return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterResonance);
     }
 
+    static constexpr clap_id filterEnvelopeAmountId() noexcept {
+        return kFirstParameterId + static_cast<clap_id>(ParameterSlot::FilterEnvelopeAmount);
+    }
+
     static constexpr std::size_t fineTuneSlot() noexcept {
         return static_cast<std::size_t>(ParameterSlot::FineTuning);
     }
@@ -675,6 +679,33 @@ private:
         return true;
     }
 
+    bool applyFilterEnvelopeAmountState() noexcept {
+        if (!syncVoices())
+            return false;
+
+        const auto *spec = parameterSpecForId(filterEnvelopeAmountId());
+        if (!spec)
+            return false;
+        const auto slot = filterEnvelopeAmountSlot();
+        for (VoiceAllocator::VoiceIndex index = 0; index < capacity(); ++index) {
+            if (!trackedVoices_[index])
+                continue;
+
+            double base = 0.0;
+            double modulation = 0.0;
+            if (!polyphonicState_.baseValue(index, slot, base) ||
+                !polyphonicState_.modulation(index, slot, modulation))
+                return false;
+
+            const auto effectiveAmount =
+                std::clamp(base + modulation, spec->minValue, spec->maxValue);
+            if (!VoiceEngine::setVoiceFilterEnvelopeAmount(
+                    index, static_cast<float>(effectiveAmount)))
+                return false;
+        }
+        return true;
+    }
+
     bool applyPanState() noexcept {
         if (!syncVoices())
             return false;
@@ -756,7 +787,9 @@ private:
         if (!applyPanState())
             return false;
 
-        if (!applyFilterCutoffState() || !applyFilterResonanceState())
+        if (!applyFilterCutoffState() ||
+            !applyFilterResonanceState() ||
+            !applyFilterEnvelopeAmountState())
             return false;
 
         double brightness = 0.0;
@@ -1095,12 +1128,7 @@ private:
                                     event.channel,
                                     event.key))
                     filterEnvelopeAmountBase_ = event.value;
-                // Retain and address the parameter in the fixed-capacity RT model,
-                // but do not call VoiceEngine::setFilterEnvelopeAmount() here: that
-                // setter performs coefficient preparation with exp2 and is not an
-                // audio-thread handoff. A later bounded slice will add the RT-safe
-                // per-voice coefficient update before host publication.
-                return true;
+                return applyFilterEnvelopeAmountState();
             }
 
             if (spec->slot == ParameterSlot::Pan) {
@@ -1166,9 +1194,7 @@ private:
                 if (!syncVoices() ||
                     !polyphonicState_.applyModulation(filterEnvelopeAmountSlot(), event))
                     return false;
-                // Store modulation only. DSP application is intentionally deferred
-                // until the voice engine exposes a bounded RT-safe handoff.
-                return true;
+                return applyFilterEnvelopeAmountState();
             }
 
             if (spec->slot == ParameterSlot::Pan) {
