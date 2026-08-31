@@ -304,6 +304,20 @@ struct ClapWebviewGui {
 #endif
 
 private:
+    bool resolvePluginWebviewExtension() noexcept {
+        if (!pluginWebviewResolved) {
+            pluginWebviewResolved = true;
+            if (plugin && plugin->get_extension) {
+                pluginWebview = static_cast<const clap_plugin_webview *>(
+                    plugin->get_extension(plugin, CLAP_EXT_WEBVIEW));
+            }
+        }
+        return pluginWebview != nullptr
+            && pluginWebview->get_uri != nullptr
+            && pluginWebview->get_resource != nullptr
+            && pluginWebview->receive != nullptr;
+    }
+
     bool resolveHostWebviewExtension() noexcept {
         if (!hostWebviewResolved) {
             hostWebviewResolved = true;
@@ -319,22 +333,17 @@ private:
     [[nodiscard]] bool hasHostWebviewPath() noexcept {
 #if defined(WEBVIEW_GUI_WEBVIEW_ONLY) || defined(__EMSCRIPTEN__) || defined(__wasm__) || \
     defined(__wasm32__) || defined(__wasm64__)
-        // WCLAP hosts may proxy host.get_extension() through a bridge which can
-        // re-enter plug-in extension code. During clap_plugin.init() strict CLAP
-        // helpers have not marked initialization complete yet, so both sides of
-        // WebView negotiation are deliberately deferred until the first GUI call.
-        // The module-side GUI needs only the host-owned send path; resources and
-        // receive remain exposed by the plug-in's clap.webview/3 extension.
+        // The WCLAP module needs only the host-owned send path. Both module- and
+        // bridge-side helpers defer extension discovery until after plug-in init:
+        // the pinned bridge forwards wrapper plug-in extension queries into the
+        // module, so even native helper init must remain extension-free.
         return plugin != nullptr
             && host != nullptr
             && resolveHostWebviewExtension();
 #else
         return plugin != nullptr
             && host != nullptr
-            && pluginWebview != nullptr
-            && pluginWebview->get_uri != nullptr
-            && pluginWebview->get_resource != nullptr
-            && pluginWebview->receive != nullptr
+            && resolvePluginWebviewExtension()
             && resolveHostWebviewExtension();
 #endif
     }
@@ -344,17 +353,8 @@ private:
         pluginWebview = nullptr;
         hostWebview = nullptr;
         extHostWebview = nullptr;
+        pluginWebviewResolved = false;
         hostWebviewResolved = false;
-
-#if !defined(WEBVIEW_GUI_WEBVIEW_ONLY) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
-    !defined(__wasm32__) && !defined(__wasm64__)
-        if (plugin && plugin->get_extension)
-            pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
-        if (host && host->get_extension)
-            hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
-        hostWebviewResolved = true;
-        extHostWebview = hostWebview;
-#endif
         setSelf(plugin);
     }
 
@@ -366,6 +366,7 @@ private:
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
     bool guiCreated = false;
     bool usingHostWebview = false;
+    bool pluginWebviewResolved = false;
     bool hostWebviewResolved = false;
 
     inline static detail::CallbackRegistry<ClapWebviewGui> pluginRegistry;
@@ -393,7 +394,7 @@ private:
 
     char startUrlBuffer[2048] = {0};
     const char * getNativeStartUrl() {
-        if (!isOnGuiThread()) return "";
+        if (!isOnGuiThread() || !resolvePluginWebviewExtension()) return "";
         if (pluginWebview && pluginWebview->get_uri && plugin) {
             auto uriLength = pluginWebview->get_uri(plugin, startUrlBuffer, 2047);
             if (uriLength >= 2048) {
