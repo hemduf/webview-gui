@@ -274,6 +274,27 @@ inline bool coarseTuningValueFromText(const char *display, double &value) noexce
     return true;
 }
 
+inline bool continuousParameterTextForValue(clap_id id,
+                                            double value,
+                                            char *display,
+                                            std::uint32_t size) noexcept {
+    const auto *spec = parameterSpecForId(id);
+    if (!spec || (spec->flags & CLAP_PARAM_IS_STEPPED) != 0u ||
+        !display || size == 0u || !std::isfinite(value) ||
+        value < spec->minValue || value > spec->maxValue)
+        return false;
+
+    std::array<char, CLAP_NAME_SIZE> text{};
+    const auto result = std::to_chars(text.data(),
+                                      text.data() + text.size() - 1u,
+                                      value,
+                                      std::chars_format::general);
+    if (result.ec != std::errc())
+        return false;
+    *result.ptr = '\0';
+    return detail::copyStaticParameterDisplayText(text.data(), display, size);
+}
+
 inline bool continuousParameterValueFromText(clap_id id,
                                              const char *display,
                                              double &value) noexcept {
