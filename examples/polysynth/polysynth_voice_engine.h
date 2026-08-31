@@ -28,7 +28,8 @@ public:
             return false;
 
         sampleRate_ = sampleRate;
-        if (!prepareRealtimeFilterGTable())
+        if (!prepareRealtimeFilterGTable() ||
+            !prepareRealtimeFilterEnvelopeMultiplierTable())
             return false;
         oscillatorWaveform_ = OscillatorWaveform::Sine;
         coarseTuningSemitones_ = 0;
@@ -433,6 +434,39 @@ public:
         return true;
     }
 
+    // Audio-thread Filter Envelope Amount handoff. The +/-4-octave multiplier
+    // is read from a configure-time lookup table, then the target cutoff reuses
+    // the existing cutoff->TPT-g lookup. This updates only voice-local scalar
+    // state and preserves the filter integrators and BRIGHTNESS expression.
+    bool setVoiceFilterEnvelopeAmount(VoiceAllocator::VoiceIndex index,
+                                      float amount) noexcept {
+        if (!configured_ || index >= lifecycle_.capacity() || !voices_[index].active ||
+            !std::isfinite(amount) || amount < -1.0f || amount > 1.0f)
+            return false;
+
+        auto &voice = voices_[index];
+        if (!voice.filterEnabled)
+            return true;
+
+        double multiplier = 1.0;
+        if (!realtimeFilterEnvelopeMultiplier(static_cast<double>(amount), multiplier))
+            return false;
+
+        const double maximumCutoff = sampleRate_ * kMaximumFilterCutoffFraction;
+        const double targetCutoff = std::clamp(
+            static_cast<double>(voice.filterCutoffHz) * multiplier,
+            static_cast<double>(kMinimumFilterCutoffHz),
+            maximumCutoff);
+        double targetG = 0.0;
+        if (!realtimeFilterG(targetCutoff, targetG))
+            return false;
+
+        voice.filterEnvelopeCutoffMultiplier = multiplier;
+        voice.filterEnvelopeGDelta = targetG - voice.filterBaseG;
+        voice.filterEnvelopeEnabled = amount != 0.0f;
+        return std::isfinite(voice.filterEnvelopeGDelta);
+    }
+
     template <typename NoteEndSink>
     bool process(const clap_input_events_t *events,
                  std::uint32_t framesCount,
@@ -566,6 +600,7 @@ private:
     static constexpr float kMaximumFilterResonance = 0.99f;
     static constexpr double kMaximumFilterEnvelopeOctaves = 4.0;
     static constexpr std::size_t kRealtimeFilterGTableSize = 2049;
+    static constexpr std::size_t kRealtimeFilterEnvelopeMultiplierTableSize = 257;
     static constexpr float kMinimumMasterGainDb = -60.0f;
     static constexpr float kMaximumMasterGainDb = 12.0f;
 
@@ -621,6 +656,45 @@ private:
         const double upperG = realtimeFilterGTable_[lower + 1u];
         g = lowerG + (upperG - lowerG) * fraction;
         return std::isfinite(g) && g >= 0.0;
+    }
+
+    bool prepareRealtimeFilterEnvelopeMultiplierTable() noexcept {
+        for (std::size_t index = 0;
+             index < realtimeFilterEnvelopeMultiplierTable_.size();
+             ++index) {
+            const double normalized =
+                static_cast<double>(index) /
+                static_cast<double>(realtimeFilterEnvelopeMultiplierTable_.size() - 1u);
+            const double amount = -1.0 + 2.0 * normalized;
+            const double multiplier =
+                std::exp2(kMaximumFilterEnvelopeOctaves * amount);
+            if (!std::isfinite(multiplier) || !(multiplier > 0.0))
+                return false;
+            realtimeFilterEnvelopeMultiplierTable_[index] = multiplier;
+        }
+        return true;
+    }
+
+    bool realtimeFilterEnvelopeMultiplier(double amount,
+                                          double &multiplier) const noexcept {
+        if (!std::isfinite(amount) || amount < -1.0 || amount > 1.0)
+            return false;
+
+        const double normalized = (amount + 1.0) * 0.5;
+        const double tablePosition =
+            normalized *
+            static_cast<double>(realtimeFilterEnvelopeMultiplierTable_.size() - 1u);
+        std::size_t lower = static_cast<std::size_t>(tablePosition);
+        if (lower >= realtimeFilterEnvelopeMultiplierTable_.size() - 1u) {
+            multiplier = realtimeFilterEnvelopeMultiplierTable_.back();
+            return std::isfinite(multiplier) && multiplier > 0.0;
+        }
+        const double fraction = tablePosition - static_cast<double>(lower);
+        const double lowerMultiplier = realtimeFilterEnvelopeMultiplierTable_[lower];
+        const double upperMultiplier = realtimeFilterEnvelopeMultiplierTable_[lower + 1u];
+        multiplier = lowerMultiplier +
+                     (upperMultiplier - lowerMultiplier) * fraction;
+        return std::isfinite(multiplier) && multiplier > 0.0;
     }
 
     // Compact polyBLEP correction keeps the discontinuities of the educational
@@ -1002,6 +1076,8 @@ private:
     VoiceLifecycle lifecycle_{};
     std::array<Voice, VoiceAllocator::kMaximumVoices> voices_{};
     std::array<double, kRealtimeFilterGTableSize> realtimeFilterGTable_{};
+    std::array<double, kRealtimeFilterEnvelopeMultiplierTableSize>
+        realtimeFilterEnvelopeMultiplierTable_{};
     double sampleRate_ = 0.0;
     OscillatorWaveform oscillatorWaveform_ = OscillatorWaveform::Sine;
     int coarseTuningSemitones_ = 0;
