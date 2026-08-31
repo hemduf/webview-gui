@@ -274,6 +274,21 @@ public:
         return lifecycle_.activeCount();
     }
 
+    // Audio-thread/lifecycle-serialized query used by host tail publication. Each
+    // active generation owns an immutable NOTE_ON release snapshot, so the exact
+    // release tail floor is the maximum of those bounded fixed-array values. The
+    // caller must not race this scan against process() or configuration methods.
+    [[nodiscard]] std::uint32_t maximumActiveReleaseSamples() const noexcept {
+        std::uint32_t maximum = 0u;
+        for (VoiceAllocator::VoiceIndex index = 0;
+             index < lifecycle_.capacity(); ++index) {
+            const auto &voice = voices_[index];
+            if (voice.active)
+                maximum = std::max(maximum, voice.releaseSamples);
+        }
+        return maximum;
+    }
+
     [[nodiscard]] bool voiceIdentity(VoiceAllocator::VoiceIndex index,
                                      VoiceIdentity &identity) const noexcept {
         return lifecycle_.voiceIdentity(index, identity);
