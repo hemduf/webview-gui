@@ -40,17 +40,18 @@ function(require_pinned_checkout workflow_file)
     set(workflow_path "${CMAKE_CURRENT_LIST_DIR}/../.github/workflows/${workflow_file}")
     file(READ "${workflow_path}" workflow_content)
     set(checkout_pin "actions/checkout@11d5960a326750d5838078e36cf38b85af677262")
-    string(FIND "${workflow_content}" "${checkout_pin}" pinned_offset)
-    if(pinned_offset EQUAL -1)
+    string(REGEX MATCHALL "actions/checkout@[^ \t\r\n]+" checkout_uses "${workflow_content}")
+    if(NOT checkout_uses)
         message(FATAL_ERROR
-            "Policy workflow '${workflow_file}' must pin actions/checkout to ${checkout_pin}")
+            "Policy workflow '${workflow_file}' must use ${checkout_pin}")
     endif()
 
-    string(FIND "${workflow_content}" "actions/checkout@v4" floating_offset)
-    if(NOT floating_offset EQUAL -1)
-        message(FATAL_ERROR
-            "Policy workflow '${workflow_file}' must not use floating actions/checkout@v4")
-    endif()
+    foreach(checkout_use IN LISTS checkout_uses)
+        if(NOT checkout_use STREQUAL checkout_pin)
+            message(FATAL_ERROR
+                "Policy workflow '${workflow_file}' has non-reproducible checkout reference '${checkout_use}'; expected '${checkout_pin}'")
+        endif()
+    endforeach()
 endfunction()
 
 require_workflow_contract("ci.yml" "CI")
