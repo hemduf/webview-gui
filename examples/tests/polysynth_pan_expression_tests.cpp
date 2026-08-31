@@ -8,8 +8,12 @@
 #include <iostream>
 
 namespace {
+using webview_gui::examples::polysynth::ParameterSlot;
 using webview_gui::examples::polysynth::ParameterVoiceEngine;
 
+constexpr clap_id kPanParameterId =
+    webview_gui::examples::polysynth::kFirstParameterId +
+    static_cast<clap_id>(ParameterSlot::Pan);
 constexpr double kTwoPi = 6.283185307179586476925286766559;
 constexpr double kSampleRate = 48000.0;
 
@@ -60,6 +64,54 @@ struct InputEvents {
         return true;
     }
 
+    bool pushPanValue(std::uint32_t time,
+                      double value,
+                      std::int32_t noteId = -1,
+                      std::int16_t portIndex = -1,
+                      std::int16_t channel = -1,
+                      std::int16_t key = -1) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = values[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kPanParameterId;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
+        event.value = value;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool pushPanMod(std::uint32_t time,
+                    double amount,
+                    std::int32_t noteId = -1,
+                    std::int16_t portIndex = -1,
+                    std::int16_t channel = -1,
+                    std::int16_t key = -1) noexcept {
+        if (count >= headers.size())
+            return false;
+        auto &event = mods[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_MOD;
+        event.param_id = kPanParameterId;
+        event.note_id = noteId;
+        event.port_index = portIndex;
+        event.channel = channel;
+        event.key = key;
+        event.amount = amount;
+        headers[count++] = &event.header;
+        return true;
+    }
+
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
         return events && events->ctx
                    ? static_cast<const InputEvents *>(events->ctx)->count
@@ -74,9 +126,11 @@ struct InputEvents {
         return index < self.count ? self.headers[index] : nullptr;
     }
 
-    std::array<clap_event_note_t, 4> notes{};
-    std::array<clap_event_note_expression_t, 4> expressions{};
-    std::array<const clap_event_header_t *, 4> headers{};
+    std::array<clap_event_note_t, 8> notes{};
+    std::array<clap_event_note_expression_t, 8> expressions{};
+    std::array<clap_event_param_value_t, 8> values{};
+    std::array<clap_event_param_mod_t, 8> mods{};
+    std::array<const clap_event_header_t *, 8> headers{};
     std::uint32_t count = 0;
     clap_input_events_t input{};
 };
@@ -89,12 +143,16 @@ float sineAt(double phase) noexcept {
     phase -= std::floor(phase);
     return static_cast<float>(std::sin(phase * kTwoPi));
 }
+
+bool configure(ParameterVoiceEngine &engine) noexcept {
+    return engine.configure(4, kSampleRate, 16) &&
+           engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
 }
 
 int main() {
     ParameterVoiceEngine engine;
-    if (!engine.configure(4, kSampleRate, 16) ||
-        !engine.setAmpEnvelope(0, 0, 1.0f, 16))
+    if (!configure(engine))
         return 1;
 
     InputEvents events;
@@ -123,6 +181,79 @@ int main() {
             std::cerr << "targeted PAN note expression was not sample-accurate or leaked across voices\n";
             return 4;
         }
+    }
+
+    // Pan is also a polyphonically addressable CLAP parameter. A global base
+    // change must affect an already-active voice at the event sample and remain
+    // visible through the retained base-value query.
+    ParameterVoiceEngine globalPan;
+    if (!configure(globalPan))
+        return 5;
+    InputEvents globalEvents;
+    if (!globalEvents.pushNote(0, 301, 60) ||
+        !globalEvents.pushPanValue(8, 1.0))
+        return 6;
+    std::array<float, 32> globalLeft{};
+    std::array<float, 32> globalRight{};
+    if (!globalPan.process(&globalEvents.input,
+                           static_cast<std::uint32_t>(globalLeft.size()),
+                           globalLeft.data(),
+                           globalRight.data(),
+                           noteEnd))
+        return 7;
+    for (std::uint32_t frame = 0; frame < globalLeft.size(); ++frame) {
+        const float sample = sineAt(0.25 + static_cast<double>(frame) * increment);
+        const float expectedLeft = frame < 8 ? sample : 0.0f;
+        const float expectedRight = sample;
+        if (std::fabs(globalLeft[frame] - expectedLeft) > 1.0e-5f ||
+            std::fabs(globalRight[frame] - expectedRight) > 1.0e-5f) {
+            std::cerr << "global Pan PARAM_VALUE was not applied at its exact sample boundary\n";
+            return 8;
+        }
+    }
+    double panBase = -2.0;
+    if (!globalPan.parameterBaseValue(kPanParameterId, panBase) || panBase != 1.0) {
+        std::cerr << "global Pan PARAM_VALUE was not retained as the host-visible base\n";
+        return 9;
+    }
+
+    // The pinned CLAP note-expression contract defines PAN as an offset from the
+    // non-note-expression voice default. Compose the signed Pan parameter base +
+    // modulation first, then add the expression's center-relative offset. The
+    // polyphonic value/modulation pair must affect only the addressed voice and
+    // must not overwrite the global host-visible base.
+    ParameterVoiceEngine composedPan;
+    if (!configure(composedPan))
+        return 10;
+    InputEvents composedEvents;
+    if (!composedEvents.pushNote(0, 401, 60) ||
+        !composedEvents.pushNote(0, 402, 60) ||
+        !composedEvents.pushPanValue(8, 0.25, 401, 0, 0, 60) ||
+        !composedEvents.pushPanMod(8, 0.25, 401, 0, 0, 60) ||
+        !composedEvents.pushPan(8, 0.0, 401, 60))
+        return 11;
+    std::array<float, 32> composedLeft{};
+    std::array<float, 32> composedRight{};
+    if (!composedPan.process(&composedEvents.input,
+                             static_cast<std::uint32_t>(composedLeft.size()),
+                             composedLeft.data(),
+                             composedRight.data(),
+                             noteEnd))
+        return 12;
+    for (std::uint32_t frame = 0; frame < composedLeft.size(); ++frame) {
+        const float sample = sineAt(0.25 + static_cast<double>(frame) * increment);
+        const float expectedLeft = sample * 2.0f;
+        const float expectedRight = sample * (frame < 8 ? 2.0f : 1.5f);
+        if (std::fabs(composedLeft[frame] - expectedLeft) > 1.0e-5f ||
+            std::fabs(composedRight[frame] - expectedRight) > 1.0e-5f) {
+            std::cerr << "Pan base/modulation/note-expression composition was not isolated or sample-accurate\n";
+            return 13;
+        }
+    }
+    panBase = -2.0;
+    if (!composedPan.parameterBaseValue(kPanParameterId, panBase) || panBase != 0.0) {
+        std::cerr << "targeted Pan PARAM_VALUE overwrote the global host-visible base\n";
+        return 14;
     }
 
     return 0;
