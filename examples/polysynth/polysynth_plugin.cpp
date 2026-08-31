@@ -80,6 +80,8 @@ constexpr std::uint32_t kPolySynthBootstrapReleaseSamples = 64u;
 constexpr std::uint32_t kMaximumFiniteTailSamples =
     static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 1u;
 constexpr double kMaximumPublishedReleaseSeconds = 10.0;
+constexpr double kMinimumFilterCutoffHz = 20.0;
+constexpr double kMaximumFilterCutoffFraction = 0.45;
 
 static_assert(std::atomic<float>::is_always_lock_free,
               "PolySynth requires lock-free host-visible float parameter snapshots");
@@ -143,6 +145,73 @@ constexpr std::size_t kStateV7Size = 44u;
 constexpr std::size_t kStateV8Size = 48u;
 constexpr std::size_t kStateV9Size = 52u;
 constexpr std::size_t kStateSize = 68u;
+
+struct ParameterSnapshot {
+    float fineTuneCents = 0.0f;
+    float masterGainDb = 0.0f;
+    std::uint32_t waveform = 0u;
+    std::int32_t coarseTuneSemitones = 0;
+    float pan = 0.0f;
+    float filterCutoffHz = 6000.0f;
+    float filterResonance = 0.0f;
+    float filterEnvelopeAmount = 0.0f;
+    float ampLevel = 1.0f;
+    float ampAttackSeconds = 0.01f;
+    float ampDecaySeconds = 0.1f;
+    float ampSustain = 0.8f;
+    float ampReleaseSeconds = 0.25f;
+};
+
+bool parameterSnapshotsEqual(const ParameterSnapshot &a,
+                             const ParameterSnapshot &b) noexcept {
+    return a.fineTuneCents == b.fineTuneCents &&
+           a.masterGainDb == b.masterGainDb &&
+           a.waveform == b.waveform &&
+           a.coarseTuneSemitones == b.coarseTuneSemitones &&
+           a.pan == b.pan &&
+           a.filterCutoffHz == b.filterCutoffHz &&
+           a.filterResonance == b.filterResonance &&
+           a.filterEnvelopeAmount == b.filterEnvelopeAmount &&
+           a.ampLevel == b.ampLevel &&
+           a.ampAttackSeconds == b.ampAttackSeconds &&
+           a.ampDecaySeconds == b.ampDecaySeconds &&
+           a.ampSustain == b.ampSustain &&
+           a.ampReleaseSeconds == b.ampReleaseSeconds;
+}
+
+bool parameterSnapshotValue(const ParameterSnapshot &snapshot,
+                            clap_id paramId,
+                            double &value) noexcept {
+    if (paramId == kHostFineTuneParameterId)
+        value = snapshot.fineTuneCents;
+    else if (paramId == kHostMasterGainParameterId)
+        value = snapshot.masterGainDb;
+    else if (paramId == kHostWaveformParameterId)
+        value = snapshot.waveform;
+    else if (paramId == kHostCoarseTuneParameterId)
+        value = snapshot.coarseTuneSemitones;
+    else if (paramId == kHostPanParameterId)
+        value = snapshot.pan;
+    else if (paramId == kHostFilterCutoffParameterId)
+        value = snapshot.filterCutoffHz;
+    else if (paramId == kHostFilterResonanceParameterId)
+        value = snapshot.filterResonance;
+    else if (paramId == kHostFilterEnvelopeAmountParameterId)
+        value = snapshot.filterEnvelopeAmount;
+    else if (paramId == kHostAmpLevelParameterId)
+        value = snapshot.ampLevel;
+    else if (paramId == kHostAmpAttackParameterId)
+        value = snapshot.ampAttackSeconds;
+    else if (paramId == kHostAmpDecayParameterId)
+        value = snapshot.ampDecaySeconds;
+    else if (paramId == kHostAmpSustainParameterId)
+        value = snapshot.ampSustain;
+    else if (paramId == kHostAmpReleaseParameterId)
+        value = snapshot.ampReleaseSeconds;
+    else
+        return false;
+    return true;
+}
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -610,63 +679,79 @@ protected:
             maxFrameCount < minFrameCount)
             return false;
 
-        std::uint32_t initialTailSamples = 0;
-        const auto retainedRelease = hostAmpReleaseSeconds_.load(std::memory_order_acquire);
-        if (!releaseSecondsToTailSamples(retainedRelease, sampleRate, initialTailSamples))
+        ParameterSnapshot retained{};
+        std::uint32_t retainedRevision = 0u;
+        if (!readEffectiveParameterSnapshot(retained, &retainedRevision))
             return false;
+
+        std::uint32_t initialTailSamples = 0;
+        if (!releaseSecondsToTailSamples(retained.ampReleaseSeconds,
+                                         sampleRate,
+                                         initialTailSamples))
+            return false;
+
+        const double maximumFilterCutoffHz = sampleRate * kMaximumFilterCutoffFraction;
+        if (!std::isfinite(maximumFilterCutoffHz) ||
+            maximumFilterCutoffHz < kMinimumFilterCutoffHz)
+            return false;
+        auto maximumFilterCutoffForEngine = static_cast<float>(maximumFilterCutoffHz);
+        if (static_cast<double>(maximumFilterCutoffForEngine) > maximumFilterCutoffHz)
+            maximumFilterCutoffForEngine =
+                std::nextafter(maximumFilterCutoffForEngine, 0.0f);
+        if (maximumFilterCutoffForEngine < static_cast<float>(kMinimumFilterCutoffHz))
+            return false;
+        const auto initialFilterCutoffHz =
+            std::clamp(retained.filterCutoffHz,
+                       static_cast<float>(kMinimumFilterCutoffHz),
+                       maximumFilterCutoffForEngine);
 
         activeSampleRate_ = sampleRate;
         if (!engine_.configure(kPolySynthDefaultVoiceCount,
                                sampleRate,
                                kPolySynthBootstrapReleaseSamples) ||
-            !engine_.setFineTuningCents(
-                hostFineTuneCents_.load(std::memory_order_acquire)) ||
+            !engine_.setFilter(initialFilterCutoffHz, retained.filterResonance) ||
+            !engine_.setFineTuningCents(retained.fineTuneCents) ||
             !applyRetainedParameterBaseToEngine(
-                kHostMasterGainParameterId,
-                hostMasterGainDb_.load(std::memory_order_acquire)) ||
+                kHostMasterGainParameterId, retained.masterGainDb) ||
             !applyRetainedParameterBaseToEngine(
-                kHostWaveformParameterId,
-                hostWaveform_.load(std::memory_order_acquire)) ||
+                kHostWaveformParameterId, retained.waveform) ||
             !applyRetainedParameterBaseToEngine(
-                kHostCoarseTuneParameterId,
-                hostCoarseTuneSemitones_.load(std::memory_order_acquire)) ||
+                kHostCoarseTuneParameterId, retained.coarseTuneSemitones) ||
             !applyRetainedParameterBaseToEngine(
-                kHostPanParameterId,
-                hostPan_.load(std::memory_order_acquire)) ||
+                kHostPanParameterId, retained.pan) ||
             !applyRetainedParameterBaseToEngine(
-                kHostFilterCutoffParameterId,
-                hostFilterCutoffHz_.load(std::memory_order_acquire)) ||
+                kHostFilterCutoffParameterId, retained.filterCutoffHz) ||
             !applyRetainedParameterBaseToEngine(
-                kHostFilterResonanceParameterId,
-                hostFilterResonance_.load(std::memory_order_acquire)) ||
+                kHostFilterResonanceParameterId, retained.filterResonance) ||
             !applyRetainedParameterBaseToEngine(
-                kHostFilterEnvelopeAmountParameterId,
-                hostFilterEnvelopeAmount_.load(std::memory_order_acquire)) ||
+                kHostFilterEnvelopeAmountParameterId, retained.filterEnvelopeAmount) ||
             !applyRetainedParameterBaseToEngine(
-                kHostAmpLevelParameterId,
-                hostAmpLevel_.load(std::memory_order_acquire)) ||
+                kHostAmpLevelParameterId, retained.ampLevel) ||
             !applyRetainedParameterBaseToEngine(
-                kHostAmpAttackParameterId,
-                hostAmpAttackSeconds_.load(std::memory_order_acquire)) ||
+                kHostAmpAttackParameterId, retained.ampAttackSeconds) ||
             !applyRetainedParameterBaseToEngine(
-                kHostAmpDecayParameterId,
-                hostAmpDecaySeconds_.load(std::memory_order_acquire)) ||
+                kHostAmpDecayParameterId, retained.ampDecaySeconds) ||
             !applyRetainedParameterBaseToEngine(
-                kHostAmpSustainParameterId,
-                hostAmpSustain_.load(std::memory_order_acquire)) ||
+                kHostAmpSustainParameterId, retained.ampSustain) ||
             !applyRetainedParameterBaseToEngine(
-                kHostAmpReleaseParameterId,
-                retainedRelease))
+                kHostAmpReleaseParameterId, retained.ampReleaseSeconds))
             return false;
 
+        publishHostParameterSnapshot(retained);
         currentTailSamples_.store(initialTailSamples, std::memory_order_release);
-        appliedLoadedStateRevision_ = loadedStateRevision_.load(std::memory_order_acquire);
+        pendingLoadedTailSamples_.store(initialTailSamples, std::memory_order_release);
+        tailLoadedStateRevisionPublished_.store(retainedRevision,
+                                                std::memory_order_release);
+        appliedLoadedStateRevision_ = retainedRevision;
+        appliedLoadedStateRevisionPublished_.store(retainedRevision,
+                                                   std::memory_order_release);
         active_ = true;
         return true;
     }
 
     void deactivate() noexcept override {
         active_ = false;
+        (void)materializePendingParameterSnapshotOnMainThread();
         engine_.reset();
     }
 
@@ -688,27 +773,33 @@ protected:
         output.constant_mask = 0;
 
         const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
-        const bool replayLoadedState = loadedRevision != appliedLoadedStateRevision_;
+        bool replayLoadedState = loadedRevision != appliedLoadedStateRevision_;
         const clap_input_events_t *inputEvents = processData->in_events;
         PendingParameterStateInput pendingInput;
+        ParameterSnapshot pendingSnapshot{};
         if (replayLoadedState) {
-            if (!pendingInput.prepare(
-                    processData->in_events,
-                    hostFineTuneCents_.load(std::memory_order_acquire),
-                    hostMasterGainDb_.load(std::memory_order_acquire),
-                    hostWaveform_.load(std::memory_order_acquire),
-                    hostCoarseTuneSemitones_.load(std::memory_order_acquire),
-                    hostPan_.load(std::memory_order_acquire),
-                    hostFilterCutoffHz_.load(std::memory_order_acquire),
-                    hostFilterResonance_.load(std::memory_order_acquire),
-                    hostFilterEnvelopeAmount_.load(std::memory_order_acquire),
-                    hostAmpLevel_.load(std::memory_order_acquire),
-                    hostAmpAttackSeconds_.load(std::memory_order_acquire),
-                    hostAmpDecaySeconds_.load(std::memory_order_acquire),
-                    hostAmpSustain_.load(std::memory_order_acquire),
-                    hostAmpReleaseSeconds_.load(std::memory_order_acquire)))
+            if (!tryReadPendingParameterSnapshot(pendingSnapshot) ||
+                loadedRevision != loadedStateRevision_.load(std::memory_order_acquire)) {
+                replayLoadedState = false;
+            } else if (!pendingInput.prepare(
+                           processData->in_events,
+                           pendingSnapshot.fineTuneCents,
+                           pendingSnapshot.masterGainDb,
+                           pendingSnapshot.waveform,
+                           pendingSnapshot.coarseTuneSemitones,
+                           pendingSnapshot.pan,
+                           pendingSnapshot.filterCutoffHz,
+                           pendingSnapshot.filterResonance,
+                           pendingSnapshot.filterEnvelopeAmount,
+                           pendingSnapshot.ampLevel,
+                           pendingSnapshot.ampAttackSeconds,
+                           pendingSnapshot.ampDecaySeconds,
+                           pendingSnapshot.ampSustain,
+                           pendingSnapshot.ampReleaseSeconds)) {
                 return CLAP_PROCESS_ERROR;
-            inputEvents = &pendingInput.input;
+            } else {
+                inputEvents = &pendingInput.input;
+            }
         }
 
         NoteEndOutputSink noteEndSink{processData->out_events};
@@ -733,26 +824,37 @@ protected:
     bool implementsTail() const noexcept override { return true; }
 
     std::uint32_t tailGet() const noexcept override {
-        return currentTailSamples_.load(std::memory_order_acquire);
+        const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+        const auto tailRevision =
+            tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+        const auto publishedTail = currentTailSamples_.load(std::memory_order_acquire);
+        if (loadedRevision == tailRevision || !active_)
+            return publishedTail;
+        const auto pendingTail =
+            pendingLoadedTailSamples_.load(std::memory_order_acquire);
+        return std::max(publishedTail, pendingTail);
     }
 
     bool implementsState() const noexcept override { return true; }
 
     bool stateSave(const clap_ostream_t *stream) noexcept override {
+        ParameterSnapshot snapshot{};
+        if (!readEffectiveParameterSnapshot(snapshot))
+            return false;
         const auto bytes = encodeState(
-            static_cast<double>(hostFineTuneCents_.load(std::memory_order_relaxed)),
-            hostMasterGainDb_.load(std::memory_order_relaxed),
-            hostWaveform_.load(std::memory_order_relaxed),
-            hostCoarseTuneSemitones_.load(std::memory_order_relaxed),
-            hostPan_.load(std::memory_order_relaxed),
-            hostFilterCutoffHz_.load(std::memory_order_relaxed),
-            hostFilterResonance_.load(std::memory_order_relaxed),
-            hostFilterEnvelopeAmount_.load(std::memory_order_relaxed),
-            hostAmpLevel_.load(std::memory_order_relaxed),
-            hostAmpAttackSeconds_.load(std::memory_order_relaxed),
-            hostAmpDecaySeconds_.load(std::memory_order_relaxed),
-            hostAmpSustain_.load(std::memory_order_relaxed),
-            hostAmpReleaseSeconds_.load(std::memory_order_relaxed));
+            static_cast<double>(snapshot.fineTuneCents),
+            snapshot.masterGainDb,
+            snapshot.waveform,
+            snapshot.coarseTuneSemitones,
+            snapshot.pan,
+            snapshot.filterCutoffHz,
+            snapshot.filterResonance,
+            snapshot.filterEnvelopeAmount,
+            snapshot.ampLevel,
+            snapshot.ampAttackSeconds,
+            snapshot.ampDecaySeconds,
+            snapshot.ampSustain,
+            snapshot.ampReleaseSeconds);
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -831,80 +933,59 @@ protected:
             return false;
 
         double fineTuneCents = 0.0;
-        float masterGainDb = 0.0f;
-        std::uint32_t waveform = 0u;
-        std::int32_t coarseTuneSemitones = 0;
-        float pan = 0.0f;
-        float filterCutoffHz = 6000.0f;
-        float filterResonance = 0.0f;
-        float filterEnvelopeAmount = 0.0f;
-        float ampLevel = 1.0f;
-        float ampAttackSeconds = 0.01f;
-        float ampDecaySeconds = 0.1f;
-        float ampSustain = 0.8f;
-        float ampReleaseSeconds = 0.25f;
+        ParameterSnapshot loaded{};
         if (!decodeState(bytes,
                          encodedSize,
                          fineTuneCents,
-                         masterGainDb,
-                         waveform,
-                         coarseTuneSemitones,
-                         pan,
-                         filterCutoffHz,
-                         filterResonance,
-                         filterEnvelopeAmount,
-                         ampLevel,
-                         ampAttackSeconds,
-                         ampDecaySeconds,
-                         ampSustain,
-                         ampReleaseSeconds))
+                         loaded.masterGainDb,
+                         loaded.waveform,
+                         loaded.coarseTuneSemitones,
+                         loaded.pan,
+                         loaded.filterCutoffHz,
+                         loaded.filterResonance,
+                         loaded.filterEnvelopeAmount,
+                         loaded.ampLevel,
+                         loaded.ampAttackSeconds,
+                         loaded.ampDecaySeconds,
+                         loaded.ampSustain,
+                         loaded.ampReleaseSeconds))
             return false;
+        loaded.fineTuneCents = static_cast<float>(fineTuneCents);
 
-        const auto fineTune = static_cast<float>(fineTuneCents);
+        ParameterSnapshot current{};
+        const bool haveCurrent = readEffectiveParameterSnapshot(current);
         const bool parameterValueChanged =
-            hostFineTuneCents_.load(std::memory_order_relaxed) != fineTune ||
-            hostMasterGainDb_.load(std::memory_order_relaxed) != masterGainDb ||
-            hostWaveform_.load(std::memory_order_relaxed) != waveform ||
-            hostCoarseTuneSemitones_.load(std::memory_order_relaxed) != coarseTuneSemitones ||
-            hostPan_.load(std::memory_order_relaxed) != pan ||
-            hostFilterCutoffHz_.load(std::memory_order_relaxed) != filterCutoffHz ||
-            hostFilterResonance_.load(std::memory_order_relaxed) != filterResonance ||
-            hostFilterEnvelopeAmount_.load(std::memory_order_relaxed) != filterEnvelopeAmount ||
-            hostAmpLevel_.load(std::memory_order_relaxed) != ampLevel ||
-            hostAmpAttackSeconds_.load(std::memory_order_relaxed) != ampAttackSeconds ||
-            hostAmpDecaySeconds_.load(std::memory_order_relaxed) != ampDecaySeconds ||
-            hostAmpSustain_.load(std::memory_order_relaxed) != ampSustain ||
-            hostAmpReleaseSeconds_.load(std::memory_order_relaxed) != ampReleaseSeconds;
+            !haveCurrent || !parameterSnapshotsEqual(current, loaded);
 
-        pendingLoadedFineTuneCents_.store(fineTune, std::memory_order_relaxed);
-        pendingLoadedMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
-        pendingLoadedWaveform_.store(waveform, std::memory_order_relaxed);
-        pendingLoadedCoarseTuneSemitones_.store(coarseTuneSemitones,
-                                                std::memory_order_relaxed);
-        pendingLoadedPan_.store(pan, std::memory_order_relaxed);
-        pendingLoadedFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
-        pendingLoadedFilterResonance_.store(filterResonance, std::memory_order_relaxed);
-        pendingLoadedFilterEnvelopeAmount_.store(filterEnvelopeAmount, std::memory_order_relaxed);
-        pendingLoadedAmpLevel_.store(ampLevel, std::memory_order_relaxed);
-        pendingLoadedAmpAttackSeconds_.store(ampAttackSeconds, std::memory_order_relaxed);
-        pendingLoadedAmpDecaySeconds_.store(ampDecaySeconds, std::memory_order_relaxed);
-        pendingLoadedAmpSustain_.store(ampSustain, std::memory_order_relaxed);
-        pendingLoadedAmpReleaseSeconds_.store(ampReleaseSeconds, std::memory_order_relaxed);
+        if (active_) {
+            std::uint32_t loadedTailSamples = 0u;
+            if (!releaseSecondsToTailSamples(loaded.ampReleaseSeconds,
+                                             activeSampleRate_,
+                                             loadedTailSamples))
+                return false;
+            const auto loadedRevisionBefore =
+                loadedStateRevision_.load(std::memory_order_acquire);
+            const auto tailRevision =
+                tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+            if (loadedRevisionBefore != tailRevision) {
+                loadedTailSamples = std::max(
+                    loadedTailSamples,
+                    pendingLoadedTailSamples_.load(std::memory_order_acquire));
+            }
+            pendingLoadedTailSamples_.store(loadedTailSamples,
+                                            std::memory_order_release);
+        }
 
-        hostFineTuneCents_.store(fineTune, std::memory_order_relaxed);
-        hostMasterGainDb_.store(masterGainDb, std::memory_order_relaxed);
-        hostWaveform_.store(waveform, std::memory_order_relaxed);
-        hostCoarseTuneSemitones_.store(coarseTuneSemitones, std::memory_order_relaxed);
-        hostPan_.store(pan, std::memory_order_relaxed);
-        hostFilterCutoffHz_.store(filterCutoffHz, std::memory_order_relaxed);
-        hostFilterResonance_.store(filterResonance, std::memory_order_relaxed);
-        hostFilterEnvelopeAmount_.store(filterEnvelopeAmount, std::memory_order_relaxed);
-        hostAmpLevel_.store(ampLevel, std::memory_order_relaxed);
-        hostAmpAttackSeconds_.store(ampAttackSeconds, std::memory_order_relaxed);
-        hostAmpDecaySeconds_.store(ampDecaySeconds, std::memory_order_relaxed);
-        hostAmpSustain_.store(ampSustain, std::memory_order_relaxed);
-        hostAmpReleaseSeconds_.store(ampReleaseSeconds, std::memory_order_relaxed);
-        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
+        publishPendingParameterSnapshot(loaded);
+        const auto loadedRevision =
+            loadedStateRevision_.fetch_add(1u, std::memory_order_release) + 1u;
+
+        if (!active_) {
+            publishHostParameterSnapshot(loaded);
+            appliedLoadedStateRevision_ = loadedRevision;
+            appliedLoadedStateRevisionPublished_.store(loadedRevision,
+                                                       std::memory_order_release);
+        }
 
         if (parameterValueChanged && hostParams_ && hostParams_->rescan)
             hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
@@ -1077,59 +1158,10 @@ protected:
     bool paramsValue(clap_id paramId, double *value) noexcept override {
         if (!value || !isPublishedHostParameter(paramId))
             return false;
-        if (paramId == kHostFineTuneParameterId) {
-            *value = static_cast<double>(hostFineTuneCents_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostWaveformParameterId) {
-            *value = static_cast<double>(hostWaveform_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostCoarseTuneParameterId) {
-            *value = static_cast<double>(hostCoarseTuneSemitones_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostPanParameterId) {
-            *value = static_cast<double>(hostPan_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostFilterCutoffParameterId) {
-            *value = static_cast<double>(hostFilterCutoffHz_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostFilterResonanceParameterId) {
-            *value = static_cast<double>(hostFilterResonance_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostFilterEnvelopeAmountParameterId) {
-            *value = static_cast<double>(hostFilterEnvelopeAmount_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostAmpLevelParameterId) {
-            *value = static_cast<double>(hostAmpLevel_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostAmpAttackParameterId) {
-            *value = static_cast<double>(hostAmpAttackSeconds_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostAmpDecayParameterId) {
-            *value = static_cast<double>(hostAmpDecaySeconds_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostAmpSustainParameterId) {
-            *value = static_cast<double>(hostAmpSustain_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostAmpReleaseParameterId) {
-            *value = static_cast<double>(hostAmpReleaseSeconds_.load(std::memory_order_acquire));
-            return true;
-        }
-        if (paramId == kHostMasterGainParameterId) {
-            *value = static_cast<double>(hostMasterGainDb_.load(std::memory_order_acquire));
-            return true;
-        }
-        return false;
+        ParameterSnapshot snapshot{};
+        if (!readEffectiveParameterSnapshot(snapshot))
+            return false;
+        return parameterSnapshotValue(snapshot, paramId, *value);
     }
 
     bool paramsValueToText(clap_id paramId,
@@ -1153,6 +1185,13 @@ protected:
                      const clap_output_events_t *) noexcept override {
         if (!in || !in->size || !in->get)
             return;
+
+        if (active_) {
+            if (!applyPendingParameterSnapshotToEngine())
+                return;
+        } else if (!materializePendingParameterSnapshotOnMainThread()) {
+            return;
+        }
 
         const auto count = in->size(in);
         for (std::uint32_t index = 0; index < count; ++index) {
@@ -1205,35 +1244,186 @@ protected:
     }
 
 private:
+    ParameterSnapshot loadHostParameterSnapshotRelaxed() const noexcept {
+        ParameterSnapshot snapshot{};
+        snapshot.fineTuneCents = hostFineTuneCents_.load(std::memory_order_relaxed);
+        snapshot.masterGainDb = hostMasterGainDb_.load(std::memory_order_relaxed);
+        snapshot.waveform = hostWaveform_.load(std::memory_order_relaxed);
+        snapshot.coarseTuneSemitones =
+            hostCoarseTuneSemitones_.load(std::memory_order_relaxed);
+        snapshot.pan = hostPan_.load(std::memory_order_relaxed);
+        snapshot.filterCutoffHz = hostFilterCutoffHz_.load(std::memory_order_relaxed);
+        snapshot.filterResonance = hostFilterResonance_.load(std::memory_order_relaxed);
+        snapshot.filterEnvelopeAmount =
+            hostFilterEnvelopeAmount_.load(std::memory_order_relaxed);
+        snapshot.ampLevel = hostAmpLevel_.load(std::memory_order_relaxed);
+        snapshot.ampAttackSeconds = hostAmpAttackSeconds_.load(std::memory_order_relaxed);
+        snapshot.ampDecaySeconds = hostAmpDecaySeconds_.load(std::memory_order_relaxed);
+        snapshot.ampSustain = hostAmpSustain_.load(std::memory_order_relaxed);
+        snapshot.ampReleaseSeconds = hostAmpReleaseSeconds_.load(std::memory_order_relaxed);
+        return snapshot;
+    }
+
+    ParameterSnapshot loadPendingParameterSnapshotRelaxed() const noexcept {
+        ParameterSnapshot snapshot{};
+        snapshot.fineTuneCents = pendingLoadedFineTuneCents_.load(std::memory_order_relaxed);
+        snapshot.masterGainDb = pendingLoadedMasterGainDb_.load(std::memory_order_relaxed);
+        snapshot.waveform = pendingLoadedWaveform_.load(std::memory_order_relaxed);
+        snapshot.coarseTuneSemitones =
+            pendingLoadedCoarseTuneSemitones_.load(std::memory_order_relaxed);
+        snapshot.pan = pendingLoadedPan_.load(std::memory_order_relaxed);
+        snapshot.filterCutoffHz = pendingLoadedFilterCutoffHz_.load(std::memory_order_relaxed);
+        snapshot.filterResonance = pendingLoadedFilterResonance_.load(std::memory_order_relaxed);
+        snapshot.filterEnvelopeAmount =
+            pendingLoadedFilterEnvelopeAmount_.load(std::memory_order_relaxed);
+        snapshot.ampLevel = pendingLoadedAmpLevel_.load(std::memory_order_relaxed);
+        snapshot.ampAttackSeconds =
+            pendingLoadedAmpAttackSeconds_.load(std::memory_order_relaxed);
+        snapshot.ampDecaySeconds =
+            pendingLoadedAmpDecaySeconds_.load(std::memory_order_relaxed);
+        snapshot.ampSustain = pendingLoadedAmpSustain_.load(std::memory_order_relaxed);
+        snapshot.ampReleaseSeconds =
+            pendingLoadedAmpReleaseSeconds_.load(std::memory_order_relaxed);
+        return snapshot;
+    }
+
+    bool tryReadHostParameterSnapshot(ParameterSnapshot &snapshot) const noexcept {
+        const auto before = hostSnapshotSequence_.load(std::memory_order_acquire);
+        if ((before & 1u) != 0u)
+            return false;
+        const auto candidate = loadHostParameterSnapshotRelaxed();
+        const auto after = hostSnapshotSequence_.load(std::memory_order_acquire);
+        if (before != after || (after & 1u) != 0u)
+            return false;
+        snapshot = candidate;
+        return true;
+    }
+
+    bool tryReadPendingParameterSnapshot(ParameterSnapshot &snapshot) const noexcept {
+        const auto before = pendingSnapshotSequence_.load(std::memory_order_acquire);
+        if ((before & 1u) != 0u)
+            return false;
+        const auto candidate = loadPendingParameterSnapshotRelaxed();
+        const auto after = pendingSnapshotSequence_.load(std::memory_order_acquire);
+        if (before != after || (after & 1u) != 0u)
+            return false;
+        snapshot = candidate;
+        return true;
+    }
+
+    bool readHostParameterSnapshot(ParameterSnapshot &snapshot) const noexcept {
+        while (!tryReadHostParameterSnapshot(snapshot)) {
+        }
+        return true;
+    }
+
+    bool readPendingParameterSnapshot(ParameterSnapshot &snapshot) const noexcept {
+        while (!tryReadPendingParameterSnapshot(snapshot)) {
+        }
+        return true;
+    }
+
+    bool readEffectiveParameterSnapshot(ParameterSnapshot &snapshot,
+                                        std::uint32_t *revision = nullptr) const noexcept {
+        for (;;) {
+            const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+            const auto appliedRevision =
+                appliedLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+            if (loadedRevision != appliedRevision) {
+                if (!readPendingParameterSnapshot(snapshot))
+                    continue;
+                if (loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
+                    continue;
+                if (revision)
+                    *revision = loadedRevision;
+                return true;
+            }
+
+            if (!readHostParameterSnapshot(snapshot))
+                continue;
+            if (loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
+                continue;
+            if (revision)
+                *revision = loadedRevision;
+            return true;
+        }
+    }
+
+    void publishHostParameterSnapshot(const ParameterSnapshot &snapshot) noexcept {
+        hostSnapshotSequence_.fetch_add(1u, std::memory_order_acq_rel);
+        hostFineTuneCents_.store(snapshot.fineTuneCents, std::memory_order_relaxed);
+        hostMasterGainDb_.store(snapshot.masterGainDb, std::memory_order_relaxed);
+        hostWaveform_.store(snapshot.waveform, std::memory_order_relaxed);
+        hostCoarseTuneSemitones_.store(snapshot.coarseTuneSemitones,
+                                       std::memory_order_relaxed);
+        hostPan_.store(snapshot.pan, std::memory_order_relaxed);
+        hostFilterCutoffHz_.store(snapshot.filterCutoffHz, std::memory_order_relaxed);
+        hostFilterResonance_.store(snapshot.filterResonance, std::memory_order_relaxed);
+        hostFilterEnvelopeAmount_.store(snapshot.filterEnvelopeAmount,
+                                        std::memory_order_relaxed);
+        hostAmpLevel_.store(snapshot.ampLevel, std::memory_order_relaxed);
+        hostAmpAttackSeconds_.store(snapshot.ampAttackSeconds, std::memory_order_relaxed);
+        hostAmpDecaySeconds_.store(snapshot.ampDecaySeconds, std::memory_order_relaxed);
+        hostAmpSustain_.store(snapshot.ampSustain, std::memory_order_relaxed);
+        hostAmpReleaseSeconds_.store(snapshot.ampReleaseSeconds, std::memory_order_relaxed);
+        hostSnapshotSequence_.fetch_add(1u, std::memory_order_release);
+    }
+
+    void publishPendingParameterSnapshot(const ParameterSnapshot &snapshot) noexcept {
+        pendingSnapshotSequence_.fetch_add(1u, std::memory_order_acq_rel);
+        pendingLoadedFineTuneCents_.store(snapshot.fineTuneCents, std::memory_order_relaxed);
+        pendingLoadedMasterGainDb_.store(snapshot.masterGainDb, std::memory_order_relaxed);
+        pendingLoadedWaveform_.store(snapshot.waveform, std::memory_order_relaxed);
+        pendingLoadedCoarseTuneSemitones_.store(snapshot.coarseTuneSemitones,
+                                                std::memory_order_relaxed);
+        pendingLoadedPan_.store(snapshot.pan, std::memory_order_relaxed);
+        pendingLoadedFilterCutoffHz_.store(snapshot.filterCutoffHz, std::memory_order_relaxed);
+        pendingLoadedFilterResonance_.store(snapshot.filterResonance,
+                                            std::memory_order_relaxed);
+        pendingLoadedFilterEnvelopeAmount_.store(snapshot.filterEnvelopeAmount,
+                                                 std::memory_order_relaxed);
+        pendingLoadedAmpLevel_.store(snapshot.ampLevel, std::memory_order_relaxed);
+        pendingLoadedAmpAttackSeconds_.store(snapshot.ampAttackSeconds,
+                                             std::memory_order_relaxed);
+        pendingLoadedAmpDecaySeconds_.store(snapshot.ampDecaySeconds,
+                                            std::memory_order_relaxed);
+        pendingLoadedAmpSustain_.store(snapshot.ampSustain, std::memory_order_relaxed);
+        pendingLoadedAmpReleaseSeconds_.store(snapshot.ampReleaseSeconds,
+                                              std::memory_order_relaxed);
+        pendingSnapshotSequence_.fetch_add(1u, std::memory_order_release);
+    }
+
     void storeGlobalHostParameterSnapshot(clap_id paramId, double value) noexcept {
+        hostSnapshotSequence_.fetch_add(1u, std::memory_order_acq_rel);
         if (paramId == kHostFineTuneParameterId) {
-            hostFineTuneCents_.store(static_cast<float>(value), std::memory_order_release);
+            hostFineTuneCents_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostWaveformParameterId) {
-            hostWaveform_.store(static_cast<std::uint32_t>(value), std::memory_order_release);
+            hostWaveform_.store(static_cast<std::uint32_t>(value), std::memory_order_relaxed);
         } else if (paramId == kHostCoarseTuneParameterId) {
             hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(value),
-                                           std::memory_order_release);
+                                           std::memory_order_relaxed);
         } else if (paramId == kHostPanParameterId) {
-            hostPan_.store(static_cast<float>(value), std::memory_order_release);
+            hostPan_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostFilterCutoffParameterId) {
-            hostFilterCutoffHz_.store(static_cast<float>(value), std::memory_order_release);
+            hostFilterCutoffHz_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostFilterResonanceParameterId) {
-            hostFilterResonance_.store(static_cast<float>(value), std::memory_order_release);
+            hostFilterResonance_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostFilterEnvelopeAmountParameterId) {
-            hostFilterEnvelopeAmount_.store(static_cast<float>(value), std::memory_order_release);
+            hostFilterEnvelopeAmount_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostAmpLevelParameterId) {
-            hostAmpLevel_.store(static_cast<float>(value), std::memory_order_release);
+            hostAmpLevel_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostAmpAttackParameterId) {
-            hostAmpAttackSeconds_.store(static_cast<float>(value), std::memory_order_release);
+            hostAmpAttackSeconds_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostAmpDecayParameterId) {
-            hostAmpDecaySeconds_.store(static_cast<float>(value), std::memory_order_release);
+            hostAmpDecaySeconds_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostAmpSustainParameterId) {
-            hostAmpSustain_.store(static_cast<float>(value), std::memory_order_release);
+            hostAmpSustain_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostAmpReleaseParameterId) {
-            hostAmpReleaseSeconds_.store(static_cast<float>(value), std::memory_order_release);
+            hostAmpReleaseSeconds_.store(static_cast<float>(value), std::memory_order_relaxed);
         } else if (paramId == kHostMasterGainParameterId) {
-            hostMasterGainDb_.store(static_cast<float>(value), std::memory_order_release);
+            hostMasterGainDb_.store(static_cast<float>(value), std::memory_order_relaxed);
         }
+        hostSnapshotSequence_.fetch_add(1u, std::memory_order_release);
     }
 
     bool applyRetainedParameterBaseToEngine(clap_id paramId, double value) noexcept {
@@ -1249,6 +1439,74 @@ private:
         event.key = -1;
         event.value = value;
         return engine_.applyParameterFlushEvent(event.header);
+    }
+
+    bool applyParameterSnapshotToEngine(const ParameterSnapshot &snapshot) noexcept {
+        return applyRetainedParameterBaseToEngine(
+                   kHostFineTuneParameterId, snapshot.fineTuneCents) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostMasterGainParameterId, snapshot.masterGainDb) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostWaveformParameterId, snapshot.waveform) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostCoarseTuneParameterId, snapshot.coarseTuneSemitones) &&
+               applyRetainedParameterBaseToEngine(kHostPanParameterId, snapshot.pan) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostFilterCutoffParameterId, snapshot.filterCutoffHz) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostFilterResonanceParameterId, snapshot.filterResonance) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostFilterEnvelopeAmountParameterId, snapshot.filterEnvelopeAmount) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostAmpLevelParameterId, snapshot.ampLevel) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostAmpAttackParameterId, snapshot.ampAttackSeconds) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostAmpDecayParameterId, snapshot.ampDecaySeconds) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostAmpSustainParameterId, snapshot.ampSustain) &&
+               applyRetainedParameterBaseToEngine(
+                   kHostAmpReleaseParameterId, snapshot.ampReleaseSeconds);
+    }
+
+    bool applyPendingParameterSnapshotToEngine() noexcept {
+        const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+        if (loadedRevision == appliedLoadedStateRevision_)
+            return true;
+
+        ParameterSnapshot pending{};
+        if (!tryReadPendingParameterSnapshot(pending) ||
+            loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
+            return true;
+        if (!applyParameterSnapshotToEngine(pending))
+            return false;
+
+        appliedLoadedStateRevision_ = loadedRevision;
+        if (!syncParameterSnapshotsPreservingConcurrentStateLoad())
+            return false;
+        return syncTailFromEngine(true);
+    }
+
+    bool materializePendingParameterSnapshotOnMainThread() noexcept {
+        const auto loadedRevision = loadedStateRevision_.load(std::memory_order_acquire);
+        const auto appliedRevision =
+            appliedLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+        if (loadedRevision == appliedRevision) {
+            appliedLoadedStateRevision_ = loadedRevision;
+            return true;
+        }
+
+        ParameterSnapshot pending{};
+        if (!readPendingParameterSnapshot(pending))
+            return false;
+        if (loadedRevision != loadedStateRevision_.load(std::memory_order_acquire))
+            return materializePendingParameterSnapshotOnMainThread();
+
+        publishHostParameterSnapshot(pending);
+        appliedLoadedStateRevision_ = loadedRevision;
+        appliedLoadedStateRevisionPublished_.store(loadedRevision,
+                                                   std::memory_order_release);
+        return true;
     }
 
     bool syncTailFromEngine(bool notifyHost) noexcept {
@@ -1267,57 +1525,17 @@ private:
         const auto tailSamples = std::max(defaultTailSamples,
                                           engine_.maximumActiveReleaseSamples());
         const auto previous = currentTailSamples_.load(std::memory_order_acquire);
-        if (tailSamples == previous)
-            return true;
-
-        currentTailSamples_.store(tailSamples, std::memory_order_release);
-        if (notifyHost && hostTail_ && hostTail_->changed)
+        const bool changed = tailSamples != previous;
+        if (changed)
+            currentTailSamples_.store(tailSamples, std::memory_order_release);
+        tailLoadedStateRevisionPublished_.store(appliedLoadedStateRevision_,
+                                                std::memory_order_release);
+        if (changed && notifyHost && hostTail_ && hostTail_->changed)
             hostTail_->changed(host_);
         return true;
     }
 
-    bool syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
-        const auto revisionBefore = loadedStateRevision_.load(std::memory_order_acquire);
-        if (revisionBefore != appliedLoadedStateRevision_) {
-            hostFineTuneCents_.store(
-                pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostMasterGainDb_.store(
-                pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostWaveform_.store(
-                pendingLoadedWaveform_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostCoarseTuneSemitones_.store(
-                pendingLoadedCoarseTuneSemitones_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostPan_.store(pendingLoadedPan_.load(std::memory_order_relaxed),
-                           std::memory_order_relaxed);
-            hostFilterCutoffHz_.store(
-                pendingLoadedFilterCutoffHz_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostFilterResonance_.store(
-                pendingLoadedFilterResonance_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostFilterEnvelopeAmount_.store(
-                pendingLoadedFilterEnvelopeAmount_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpLevel_.store(pendingLoadedAmpLevel_.load(std::memory_order_relaxed),
-                                std::memory_order_relaxed);
-            hostAmpAttackSeconds_.store(
-                pendingLoadedAmpAttackSeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpDecaySeconds_.store(
-                pendingLoadedAmpDecaySeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpSustain_.store(pendingLoadedAmpSustain_.load(std::memory_order_relaxed),
-                                  std::memory_order_relaxed);
-            hostAmpReleaseSeconds_.store(
-                pendingLoadedAmpReleaseSeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            return true;
-        }
-
+    bool snapshotFromEngine(ParameterSnapshot &snapshot) noexcept {
         double fineTune = 0.0;
         double masterGain = 0.0;
         double waveform = 0.0;
@@ -1346,65 +1564,30 @@ private:
             !engine_.parameterBaseValue(kHostAmpSustainParameterId, ampSustain) ||
             !engine_.parameterBaseValue(kHostAmpReleaseParameterId, ampReleaseSeconds))
             return false;
-        hostFineTuneCents_.store(static_cast<float>(fineTune), std::memory_order_relaxed);
-        hostMasterGainDb_.store(static_cast<float>(masterGain), std::memory_order_relaxed);
-        hostWaveform_.store(static_cast<std::uint32_t>(waveform), std::memory_order_relaxed);
-        hostCoarseTuneSemitones_.store(static_cast<std::int32_t>(coarseTune),
-                                      std::memory_order_relaxed);
-        hostPan_.store(static_cast<float>(pan), std::memory_order_relaxed);
-        hostFilterCutoffHz_.store(static_cast<float>(filterCutoff), std::memory_order_relaxed);
-        hostFilterResonance_.store(static_cast<float>(filterResonance),
-                                   std::memory_order_relaxed);
-        hostFilterEnvelopeAmount_.store(static_cast<float>(filterEnvelopeAmount),
-                                        std::memory_order_relaxed);
-        hostAmpLevel_.store(static_cast<float>(ampLevel), std::memory_order_relaxed);
-        hostAmpAttackSeconds_.store(static_cast<float>(ampAttackSeconds),
-                                    std::memory_order_relaxed);
-        hostAmpDecaySeconds_.store(static_cast<float>(ampDecaySeconds),
-                                   std::memory_order_relaxed);
-        hostAmpSustain_.store(static_cast<float>(ampSustain), std::memory_order_relaxed);
-        hostAmpReleaseSeconds_.store(static_cast<float>(ampReleaseSeconds),
-                                     std::memory_order_relaxed);
 
-        const auto revisionAfter = loadedStateRevision_.load(std::memory_order_acquire);
-        if (revisionAfter != revisionBefore) {
-            hostFineTuneCents_.store(
-                pendingLoadedFineTuneCents_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostMasterGainDb_.store(
-                pendingLoadedMasterGainDb_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostWaveform_.store(
-                pendingLoadedWaveform_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostCoarseTuneSemitones_.store(
-                pendingLoadedCoarseTuneSemitones_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostPan_.store(pendingLoadedPan_.load(std::memory_order_relaxed),
-                           std::memory_order_relaxed);
-            hostFilterCutoffHz_.store(
-                pendingLoadedFilterCutoffHz_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostFilterResonance_.store(
-                pendingLoadedFilterResonance_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostFilterEnvelopeAmount_.store(
-                pendingLoadedFilterEnvelopeAmount_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpLevel_.store(pendingLoadedAmpLevel_.load(std::memory_order_relaxed),
-                                std::memory_order_relaxed);
-            hostAmpAttackSeconds_.store(
-                pendingLoadedAmpAttackSeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpDecaySeconds_.store(
-                pendingLoadedAmpDecaySeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-            hostAmpSustain_.store(pendingLoadedAmpSustain_.load(std::memory_order_relaxed),
-                                  std::memory_order_relaxed);
-            hostAmpReleaseSeconds_.store(
-                pendingLoadedAmpReleaseSeconds_.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
-        }
+        snapshot.fineTuneCents = static_cast<float>(fineTune);
+        snapshot.masterGainDb = static_cast<float>(masterGain);
+        snapshot.waveform = static_cast<std::uint32_t>(waveform);
+        snapshot.coarseTuneSemitones = static_cast<std::int32_t>(coarseTune);
+        snapshot.pan = static_cast<float>(pan);
+        snapshot.filterCutoffHz = static_cast<float>(filterCutoff);
+        snapshot.filterResonance = static_cast<float>(filterResonance);
+        snapshot.filterEnvelopeAmount = static_cast<float>(filterEnvelopeAmount);
+        snapshot.ampLevel = static_cast<float>(ampLevel);
+        snapshot.ampAttackSeconds = static_cast<float>(ampAttackSeconds);
+        snapshot.ampDecaySeconds = static_cast<float>(ampDecaySeconds);
+        snapshot.ampSustain = static_cast<float>(ampSustain);
+        snapshot.ampReleaseSeconds = static_cast<float>(ampReleaseSeconds);
+        return true;
+    }
+
+    bool syncParameterSnapshotsPreservingConcurrentStateLoad() noexcept {
+        ParameterSnapshot snapshot{};
+        if (!snapshotFromEngine(snapshot))
+            return false;
+        publishHostParameterSnapshot(snapshot);
+        appliedLoadedStateRevisionPublished_.store(appliedLoadedStateRevision_,
+                                                   std::memory_order_release);
         return true;
     }
 
@@ -1412,6 +1595,7 @@ private:
     const clap_host_params_t *hostParams_ = nullptr;
     const clap_host_tail_t *hostTail_ = nullptr;
     ParameterVoiceEngine engine_{};
+    std::atomic<std::uint32_t> hostSnapshotSequence_{0u};
     std::atomic<float> hostFineTuneCents_{0.0f};
     std::atomic<float> hostMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> hostWaveform_{0u};
@@ -1425,6 +1609,7 @@ private:
     std::atomic<float> hostAmpDecaySeconds_{0.1f};
     std::atomic<float> hostAmpSustain_{0.8f};
     std::atomic<float> hostAmpReleaseSeconds_{0.25f};
+    std::atomic<std::uint32_t> pendingSnapshotSequence_{0u};
     std::atomic<float> pendingLoadedFineTuneCents_{0.0f};
     std::atomic<float> pendingLoadedMasterGainDb_{0.0f};
     std::atomic<std::uint32_t> pendingLoadedWaveform_{0u};
@@ -1439,7 +1624,10 @@ private:
     std::atomic<float> pendingLoadedAmpSustain_{0.8f};
     std::atomic<float> pendingLoadedAmpReleaseSeconds_{0.25f};
     std::atomic<std::uint32_t> currentTailSamples_{kPolySynthBootstrapReleaseSamples};
+    std::atomic<std::uint32_t> pendingLoadedTailSamples_{kPolySynthBootstrapReleaseSamples};
+    std::atomic<std::uint32_t> tailLoadedStateRevisionPublished_{0u};
     std::atomic<std::uint32_t> loadedStateRevision_{0u};
+    std::atomic<std::uint32_t> appliedLoadedStateRevisionPublished_{0u};
     double activeSampleRate_ = 0.0;
     std::uint32_t appliedLoadedStateRevision_ = 0u;
     bool active_ = false;

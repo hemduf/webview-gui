@@ -296,6 +296,19 @@ target_link_libraries(webview_gui_example_polysynth_state_tests PRIVATE
 )
 target_compile_features(webview_gui_example_polysynth_state_tests PRIVATE cxx_std_17)
 
+find_package(Threads REQUIRED)
+add_executable(webview_gui_example_polysynth_state_snapshot_concurrency_tests
+    ../tests/polysynth_state_snapshot_concurrency_tests.cpp
+)
+target_include_directories(webview_gui_example_polysynth_state_snapshot_concurrency_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+target_link_libraries(webview_gui_example_polysynth_state_snapshot_concurrency_tests PRIVATE
+    webview_gui_example_polysynth_clap_core
+    Threads::Threads
+)
+target_compile_features(webview_gui_example_polysynth_state_snapshot_concurrency_tests PRIVATE cxx_std_17)
+
 add_executable(webview_gui_example_polysynth_state_context_tests
     ../tests/polysynth_state_context_tests.cpp
 )
@@ -366,6 +379,8 @@ add_test(NAME webview_gui_examples_polysynth_voice_info
     COMMAND webview_gui_example_polysynth_voice_info_tests)
 add_test(NAME webview_gui_examples_polysynth_state
     COMMAND webview_gui_example_polysynth_state_tests)
+add_test(NAME webview_gui_examples_polysynth_state_snapshot_concurrency
+    COMMAND webview_gui_example_polysynth_state_snapshot_concurrency_tests)
 add_test(NAME webview_gui_examples_polysynth_state_context
     COMMAND webview_gui_example_polysynth_state_context_tests)
 add_test(NAME webview_gui_examples_polysynth_tail

@@ -28,6 +28,14 @@ function(require_absent haystack_var needle label)
     endif()
 endfunction()
 
+function(require_before haystack_var first second label)
+    string(FIND "${${haystack_var}}" "${first}" first_at)
+    string(FIND "${${haystack_var}}" "${second}" second_at)
+    if(first_at EQUAL -1 OR second_at EQUAL -1 OR first_at GREATER second_at)
+        message(FATAL_ERROR "Invalid ${label}: expected '${first}' before '${second}'")
+    endif()
+endfunction()
+
 # The runtime CLAP contract is exercised by polysynth_clap_ports/state/voice-info/
 # tail tests. This static guard keeps the human-facing extension matrix synchronized
 # with the exact helper overrides that decide extension discovery.
@@ -49,6 +57,49 @@ require_contains(plugin_source
 require_absent(plugin_source
     "std::strlen(display)"
     "unbounded host parameter text scan")
+
+# Post-merge #32 review contract (#78): the production plugin must actually
+# instantiate the filter that its CLAP parameter surface advertises. Unit-level
+# ParameterVoiceEngine tests are insufficient because they call setFilter()
+# explicitly and can hide an inactive production path.
+require_contains(plugin_source
+    "engine_.setFilter("
+    "production PolySynth filter activation")
+
+# One logical plugin state must not be represented to state.save/get_value/replay
+# as an unchecked collection of independent scalar atomics. Keep explicit
+# sequence markers for the live host snapshot and the main-thread loaded snapshot,
+# and route main-thread reads through a coherent effective-snapshot helper.
+require_contains(plugin_source
+    "hostSnapshotSequence_"
+    "coherent live parameter snapshot sequence")
+require_contains(plugin_source
+    "pendingSnapshotSequence_"
+    "coherent loaded-state snapshot sequence")
+require_contains(plugin_source
+    "readEffectiveParameterSnapshot"
+    "coherent effective parameter snapshot reader")
+require_contains(plugin_source
+    "publishHostParameterSnapshot"
+    "coherent live parameter snapshot publisher")
+
+# A loaded state can expose a new Release before the audio thread has replayed it.
+# Tail publication therefore needs its own applied-revision marker: reusing the
+# parameter-snapshot revision creates a window where tail.get() can see the new
+# state revision while currentTailSamples_ still belongs to the old state.
+require_contains(plugin_source
+    "tailLoadedStateRevisionPublished_"
+    "coherent loaded-state tail publication revision")
+require_contains(plugin_source
+    "pendingLoadedTailSamples_"
+    "coherent pending loaded-state tail samples")
+# The acquire of the tail revision must happen before reading the published sample
+# count; otherwise an audio-thread tail.get() may read the old sample count first,
+# then synchronize with the new revision and incorrectly return that stale value.
+require_before(plugin_source
+    "tailLoadedStateRevisionPublished_.load(std::memory_order_acquire)"
+    "currentTailSamples_.load(std::memory_order_acquire)"
+    "tail revision/sample publication ordering")
 
 # Existing host indices 0..8 are ABI and project-state compatibility surface.
 # The four Amp Envelope controls must therefore append at 9..12 even though their

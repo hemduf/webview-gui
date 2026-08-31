@@ -23,8 +23,6 @@ constexpr clap_id kAmpAttackId = parameterId(ParameterSlot::AmpAttack);
 constexpr clap_id kAmpDecayId = parameterId(ParameterSlot::AmpDecay);
 constexpr clap_id kAmpSustainId = parameterId(ParameterSlot::AmpSustain);
 constexpr clap_id kAmpReleaseId = parameterId(ParameterSlot::AmpRelease);
-constexpr double kPi = 3.1415926535897932384626433832795;
-constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
 constexpr std::uint32_t kFrames = 8;
 constexpr std::int32_t kNoteId = 901;
@@ -110,7 +108,7 @@ struct FlushModEvent {
     explicit FlushModEvent(double amount) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 73;
+        event.header.time = 73; // params.flush() intentionally ignores sample offsets.
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_MOD;
         event.param_id = kFineTuneId;
@@ -143,7 +141,7 @@ struct FlushValueEvent {
     explicit FlushValueEvent(double value) noexcept {
         event = {};
         event.header.size = sizeof(event);
-        event.header.time = 91;
+        event.header.time = 91; // params.flush() intentionally ignores sample offsets.
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_PARAM_VALUE;
         event.param_id = kFineTuneId;
@@ -216,12 +214,12 @@ bool setGlobalParameter(const clap_plugin_t *plugin,
            std::fabs(observed - value) <= 1.0e-6;
 }
 
-double phaseIncrement(double fineCents) noexcept {
-    return (440.0 * std::exp2((fineCents / 100.0) / 12.0)) / kSampleRate;
-}
-
-double wrappedPhase(double phase) noexcept {
-    return phase - std::floor(phase);
+bool configureImmediateEnvelope(const clap_plugin_t *plugin,
+                                const clap_plugin_params_t *params) noexcept {
+    return setGlobalParameter(plugin, params, kAmpAttackId, 0.0) &&
+           setGlobalParameter(plugin, params, kAmpDecayId, 0.0) &&
+           setGlobalParameter(plugin, params, kAmpSustainId, 1.0) &&
+           setGlobalParameter(plugin, params, kAmpReleaseId, 0.001);
 }
 
 bool processBlock(const clap_plugin_t *plugin,
@@ -242,19 +240,50 @@ bool processBlock(const clap_plugin_t *plugin,
     return plugin->process(plugin, &process) != CLAP_PROCESS_ERROR;
 }
 
-bool matchesSineBlock(const std::array<float, kFrames> &left,
-                      const std::array<float, kFrames> &right,
-                      double startPhase,
-                      double increment) noexcept {
-    for (std::uint32_t frame = 0; frame < kFrames; ++frame) {
-        const auto expected = static_cast<float>(std::sin(
-            wrappedPhase(startPhase + static_cast<double>(frame) * increment) * kTwoPi));
-        if (std::fabs(left[frame] - expected) > 1.0e-5f ||
-            std::fabs(right[frame] - expected) > 1.0e-5f)
+bool sameBlock(const std::array<float, kFrames> &aLeft,
+               const std::array<float, kFrames> &aRight,
+               const std::array<float, kFrames> &bLeft,
+               const std::array<float, kFrames> &bRight,
+               float tolerance = 1.0e-6f) noexcept {
+    for (std::size_t i = 0; i < aLeft.size(); ++i) {
+        if (std::fabs(aLeft[i] - bLeft[i]) > tolerance ||
+            std::fabs(aRight[i] - bRight[i]) > tolerance)
             return false;
     }
     return true;
 }
+
+struct PluginFixture {
+    const clap_plugin_t *plugin = nullptr;
+    const clap_plugin_params_t *params = nullptr;
+
+    bool create(const clap_plugin_factory_t *factory) noexcept {
+        plugin = factory->create_plugin(
+            factory, &kHost, webview_gui::examples::polysynth::kPolySynthPluginId);
+        if (!plugin || !plugin->init(plugin))
+            return false;
+        params = static_cast<const clap_plugin_params_t *>(
+            plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+        return params && params->count && params->get_info && params->get_value &&
+               params->flush && params->count(plugin) == 13u &&
+               configureImmediateEnvelope(plugin, params);
+    }
+
+    bool activate() noexcept {
+        return plugin->activate(plugin, kSampleRate, 1, 64) &&
+               plugin->start_processing(plugin);
+    }
+
+    void destroy() noexcept {
+        if (!plugin)
+            return;
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        plugin = nullptr;
+        params = nullptr;
+    }
+};
 
 } // namespace
 
@@ -263,133 +292,139 @@ int main() {
     if (!factory)
         return 1;
 
-    const auto *plugin = factory->create_plugin(
-        factory, &kHost, webview_gui::examples::polysynth::kPolySynthPluginId);
-    if (!plugin)
+    PluginFixture subject;
+    PluginFixture reference;
+    if (!subject.create(factory) || !reference.create(factory)) {
+        subject.destroy();
+        reference.destroy();
         return 2;
-    if (!plugin->init(plugin)) {
-        plugin->destroy(plugin);
+    }
+
+    if (!subject.activate() || !reference.activate()) {
+        subject.destroy();
+        reference.destroy();
         return 3;
     }
 
-    const auto *params = static_cast<const clap_plugin_params_t *>(
-        plugin->get_extension(plugin, CLAP_EXT_PARAMS));
-    if (!params || !params->count || !params->get_info || !params->get_value ||
-        !params->flush || params->count(plugin) != 13u) {
-        plugin->destroy(plugin);
+    // Both real plugin instances begin with the same production filter, envelope,
+    // oscillator and note state. The reference instance therefore provides a
+    // filter-aware oracle without duplicating DSP equations in this CLAP test.
+    InputEvents subjectNoteOn;
+    InputEvents referenceNoteOn;
+    subjectNoteOn.pushNoteOn();
+    referenceNoteOn.pushNoteOn();
+    std::array<float, kFrames> subjectFirstLeft{};
+    std::array<float, kFrames> subjectFirstRight{};
+    std::array<float, kFrames> referenceFirstLeft{};
+    std::array<float, kFrames> referenceFirstRight{};
+    if (!processBlock(subject.plugin, subjectNoteOn, subjectFirstLeft, subjectFirstRight) ||
+        !processBlock(reference.plugin, referenceNoteOn, referenceFirstLeft, referenceFirstRight) ||
+        !sameBlock(subjectFirstLeft,
+                   subjectFirstRight,
+                   referenceFirstLeft,
+                   referenceFirstRight)) {
+        subject.destroy();
+        reference.destroy();
         return 4;
     }
 
-    // This test is specifically about sample-exact Fine Tune params.flush()
-    // composition. The newly published product ADSR defaults are intentionally
-    // non-zero, so establish the old immediate-envelope fixture explicitly rather
-    // than baking a product-default assumption into the pitch waveform oracle.
-    if (!setGlobalParameter(plugin, params, kAmpAttackId, 0.0) ||
-        !setGlobalParameter(plugin, params, kAmpDecayId, 0.0) ||
-        !setGlobalParameter(plugin, params, kAmpSustainId, 1.0) ||
-        !setGlobalParameter(plugin, params, kAmpReleaseId, 0.001)) {
-        plugin->destroy(plugin);
+    // Targeted +100-cent modulation on the subject must be audibly identical to
+    // a +100-cent global base on the otherwise identical reference. Only the
+    // subject's host-visible global base must remain zero.
+    subject.plugin->stop_processing(subject.plugin);
+    reference.plugin->stop_processing(reference.plugin);
+    OutputEvents flushOutput;
+    FlushModEvent targetedMod(100.0);
+    subject.params->flush(subject.plugin, &targetedMod.input, &flushOutput.output);
+    if (!setGlobalParameter(reference.plugin, reference.params, kFineTuneId, 100.0) ||
+        !subject.plugin->start_processing(subject.plugin) ||
+        !reference.plugin->start_processing(reference.plugin)) {
+        subject.destroy();
+        reference.destroy();
         return 5;
     }
 
-    if (!plugin->activate(plugin, kSampleRate, 1, 64) ||
-        !plugin->start_processing(plugin)) {
-        plugin->destroy(plugin);
+    InputEvents noSubjectEvents;
+    InputEvents noReferenceEvents;
+    std::array<float, kFrames> subjectSecondLeft{};
+    std::array<float, kFrames> subjectSecondRight{};
+    std::array<float, kFrames> referenceSecondLeft{};
+    std::array<float, kFrames> referenceSecondRight{};
+    if (!processBlock(subject.plugin, noSubjectEvents, subjectSecondLeft, subjectSecondRight) ||
+        !processBlock(reference.plugin,
+                      noReferenceEvents,
+                      referenceSecondLeft,
+                      referenceSecondRight) ||
+        !sameBlock(subjectSecondLeft,
+                   subjectSecondRight,
+                   referenceSecondLeft,
+                   referenceSecondRight)) {
+        std::fprintf(stderr,
+                     "targeted PARAM_MOD from active params.flush was not applied at the next sample\n");
+        subject.destroy();
+        reference.destroy();
         return 6;
     }
 
-    InputEvents noteOn;
-    noteOn.pushNoteOn();
-    std::array<float, kFrames> firstLeft{};
-    std::array<float, kFrames> firstRight{};
-    if (!processBlock(plugin, noteOn, firstLeft, firstRight)) {
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
+    double hostBase = -1.0;
+    if (!subject.params->get_value(subject.plugin, kFineTuneId, &hostBase) || hostBase != 0.0) {
+        subject.destroy();
+        reference.destroy();
         return 7;
     }
 
-    const double baseIncrement = phaseIncrement(0.0);
-    const double modulatedIncrement = phaseIncrement(100.0);
-    const double secondStartPhase = 0.25 + static_cast<double>(kFrames) * baseIncrement;
-
-    plugin->stop_processing(plugin);
-    OutputEvents flushOutput;
-    FlushModEvent modulateOneSemitone(100.0);
-    params->flush(plugin, &modulateOneSemitone.input, &flushOutput.output);
-    if (!plugin->start_processing(plugin)) {
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
+    // Targeted -100-cent base + retained targeted +100-cent modulation must
+    // compose back to zero. Make the reference global base zero; with identical
+    // oscillator/filter histories the next blocks must match exactly.
+    subject.plugin->stop_processing(subject.plugin);
+    reference.plugin->stop_processing(reference.plugin);
+    FlushValueEvent targetedBase(-100.0);
+    subject.params->flush(subject.plugin, &targetedBase.input, &flushOutput.output);
+    if (!setGlobalParameter(reference.plugin, reference.params, kFineTuneId, 0.0) ||
+        !subject.plugin->start_processing(subject.plugin) ||
+        !reference.plugin->start_processing(reference.plugin)) {
+        subject.destroy();
+        reference.destroy();
         return 8;
     }
 
-    InputEvents noEvents;
-    std::array<float, kFrames> secondLeft{};
-    std::array<float, kFrames> secondRight{};
-    if (!processBlock(plugin, noEvents, secondLeft, secondRight) ||
-        !matchesSineBlock(secondLeft,
-                          secondRight,
-                          secondStartPhase,
-                          modulatedIncrement)) {
+    std::array<float, kFrames> subjectThirdLeft{};
+    std::array<float, kFrames> subjectThirdRight{};
+    std::array<float, kFrames> referenceThirdLeft{};
+    std::array<float, kFrames> referenceThirdRight{};
+    if (!processBlock(subject.plugin, noSubjectEvents, subjectThirdLeft, subjectThirdRight) ||
+        !processBlock(reference.plugin,
+                      noReferenceEvents,
+                      referenceThirdLeft,
+                      referenceThirdRight) ||
+        !sameBlock(subjectThirdLeft,
+                   subjectThirdRight,
+                   referenceThirdLeft,
+                   referenceThirdRight)) {
         std::fprintf(stderr,
-                     "targeted PARAM_MOD from active params.flush was not applied at the next sample\n");
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
+                     "targeted PARAM_VALUE from active params.flush was not composed with modulation\n");
+        subject.destroy();
+        reference.destroy();
         return 9;
     }
 
-    double hostBase = -1.0;
-    if (!params->get_value(plugin, kFineTuneId, &hostBase) || hostBase != 0.0) {
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
+    if (!subject.params->get_value(subject.plugin, kFineTuneId, &hostBase) || hostBase != 0.0) {
+        subject.destroy();
+        reference.destroy();
         return 10;
     }
 
-    const double thirdStartPhase =
-        secondStartPhase + static_cast<double>(kFrames) * modulatedIncrement;
-    plugin->stop_processing(plugin);
-    FlushValueEvent targetedBase(-100.0);
-    params->flush(plugin, &targetedBase.input, &flushOutput.output);
-    if (!plugin->start_processing(plugin)) {
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
-        return 11;
-    }
-
-    std::array<float, kFrames> thirdLeft{};
-    std::array<float, kFrames> thirdRight{};
-    if (!processBlock(plugin, noEvents, thirdLeft, thirdRight) ||
-        !matchesSineBlock(thirdLeft, thirdRight, thirdStartPhase, baseIncrement)) {
-        std::fprintf(stderr,
-                     "targeted PARAM_VALUE from active params.flush was not composed with modulation\n");
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
-        return 12;
-    }
-
-    if (!params->get_value(plugin, kFineTuneId, &hostBase) || hostBase != 0.0) {
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
-        return 13;
-    }
-
     clap_param_info_t info{};
-    if (!params->get_info(plugin, 0, &info) || info.id != kFineTuneId ||
+    if (!subject.params->get_info(subject.plugin, 0, &info) || info.id != kFineTuneId ||
         info.flags != webview_gui::examples::polysynth::kPolyphonicParameterFlags) {
         std::fprintf(stderr,
                      "Fine Tune did not advertise the qualified polyphonic/modulation capability flags\n");
-        plugin->stop_processing(plugin);
-        plugin->deactivate(plugin);
-        plugin->destroy(plugin);
-        return 14;
+        subject.destroy();
+        reference.destroy();
+        return 11;
     }
 
-    plugin->stop_processing(plugin);
-    plugin->deactivate(plugin);
-    plugin->destroy(plugin);
+    subject.destroy();
+    reference.destroy();
     return 0;
 }
