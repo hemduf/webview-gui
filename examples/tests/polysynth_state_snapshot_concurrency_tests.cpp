@@ -5,6 +5,7 @@
 #include <clap/ext/params.h>
 #include <clap/ext/state.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
