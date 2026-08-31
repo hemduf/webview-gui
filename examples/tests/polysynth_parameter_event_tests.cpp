@@ -23,6 +23,8 @@ constexpr clap_id kFilterCutoffId =
     kFirstParameterId + static_cast<unsigned>(ParameterSlot::FilterCutoff);
 constexpr clap_id kFilterResonanceId =
     kFirstParameterId + static_cast<unsigned>(ParameterSlot::FilterResonance);
+constexpr clap_id kAmpLevelId =
+    kFirstParameterId + static_cast<unsigned>(ParameterSlot::AmpLevel);
 constexpr double kPi = 3.1415926535897932384626433832795;
 constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kSampleRate = 48000.0;
@@ -103,7 +105,8 @@ struct InputEvents {
         return true;
     }
 
-    bool pushBrightness(std::uint32_t time,
+    bool pushExpression(std::uint32_t time,
+                        std::int32_t expressionId,
                         double value,
                         std::int32_t noteId,
                         std::int16_t key) noexcept {
@@ -115,7 +118,7 @@ struct InputEvents {
         event.header.time = time;
         event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
         event.header.type = CLAP_EVENT_NOTE_EXPRESSION;
-        event.expression_id = CLAP_NOTE_EXPRESSION_BRIGHTNESS;
+        event.expression_id = expressionId;
         event.note_id = noteId;
         event.port_index = 0;
         event.channel = 0;
@@ -123,6 +126,17 @@ struct InputEvents {
         event.value = value;
         headers[count++] = &event.header;
         return true;
+    }
+
+    bool pushBrightness(std::uint32_t time,
+                        double value,
+                        std::int32_t noteId,
+                        std::int16_t key) noexcept {
+        return pushExpression(time,
+                              CLAP_NOTE_EXPRESSION_BRIGHTNESS,
+                              value,
+                              noteId,
+                              key);
     }
 
     static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
@@ -195,6 +209,11 @@ bool matchesSum(const RenderResult &sum,
 
 bool configure(ParameterVoiceEngine &engine) noexcept {
     return engine.configure(4, kSampleRate, 16) &&
+           engine.setAmpEnvelope(0, 0, 1.0f, 16);
+}
+
+bool configureSingle(ParameterVoiceEngine &engine) noexcept {
+    return engine.configure(1, kSampleRate, 16) &&
            engine.setAmpEnvelope(0, 0, 1.0f, 16);
 }
 
@@ -652,6 +671,128 @@ int main() {
                     resonancePlainVoiceAudio)) {
         std::cerr << "targeted Filter Resonance PARAM_MOD leaked across overlapping voices\n";
         return 53;
+    }
+
+    static ParameterVoiceEngine ampValue;
+    if (!configure(ampValue))
+        return 54;
+    InputEvents ampValueEvents;
+    ampValueEvents.pushNote(0, 101, 60);
+    ampValueEvents.pushValue(8, kAmpLevelId, 0.5);
+    RenderResult ampValueAudio;
+    if (!render(ampValue, ampValueEvents, ampValueAudio) ||
+        !matchesMasterGainStep(ampValueAudio, 8, 1.0f, 0.5f, 60)) {
+        std::cerr << "Amp Level PARAM_VALUE was not applied at its exact sample boundary\n";
+        return 55;
+    }
+    if (!ampValue.parameterBaseValue(kAmpLevelId, baseValue) ||
+        std::fabs(baseValue - 0.5) > 1.0e-12) {
+        std::cerr << "Amp Level PARAM_VALUE was not retained as the global base\n";
+        return 56;
+    }
+
+    static ParameterVoiceEngine ampMod;
+    if (!configure(ampMod))
+        return 57;
+    InputEvents ampModEvents;
+    ampModEvents.pushValue(0, kAmpLevelId, 0.75);
+    ampModEvents.pushNote(0, 102, 60);
+    ampModEvents.pushMod(8, kAmpLevelId, -0.25);
+    RenderResult ampModAudio;
+    if (!render(ampMod, ampModEvents, ampModAudio) ||
+        !matchesMasterGainStep(ampModAudio, 8, 0.75f, 0.5f, 60)) {
+        std::cerr << "Amp Level PARAM_MOD was not composed sample-accurately with its base\n";
+        return 58;
+    }
+    if (!ampMod.parameterBaseValue(kAmpLevelId, baseValue) ||
+        std::fabs(baseValue - 0.75) > 1.0e-12) {
+        std::cerr << "Amp Level PARAM_MOD overwrote the retained base\n";
+        return 59;
+    }
+    ampMod.reset();
+    InputEvents ampResetEvents;
+    ampResetEvents.pushNote(0, 103, 60);
+    RenderResult ampResetAudio;
+    if (!render(ampMod, ampResetEvents, ampResetAudio) ||
+        !matchesMasterGainStep(ampResetAudio, 0, 0.75f, 0.75f, 60)) {
+        std::cerr << "reset did not clear Amp Level modulation while retaining its base\n";
+        return 60;
+    }
+
+    static ParameterVoiceEngine ampTargeted;
+    static ParameterVoiceEngine ampTargetVoice;
+    static ParameterVoiceEngine ampPlainVoice;
+    if (!configure(ampTargeted) || !configure(ampTargetVoice) || !configure(ampPlainVoice))
+        return 61;
+    InputEvents ampTargetedEvents;
+    InputEvents ampTargetVoiceEvents;
+    InputEvents ampPlainVoiceEvents;
+    ampTargetedEvents.pushNote(0, 111, 60);
+    ampTargetedEvents.pushNote(0, 112, 60);
+    ampTargetedEvents.pushMod(8, kAmpLevelId, -0.5, 111, 0, 0, 60);
+    ampTargetVoiceEvents.pushNote(0, 111, 60);
+    ampTargetVoiceEvents.pushMod(8, kAmpLevelId, -0.5, 111, 0, 0, 60);
+    ampPlainVoiceEvents.pushNote(0, 112, 60);
+    RenderResult ampTargetedAudio;
+    RenderResult ampTargetVoiceAudio;
+    RenderResult ampPlainVoiceAudio;
+    if (!render(ampTargeted, ampTargetedEvents, ampTargetedAudio) ||
+        !render(ampTargetVoice, ampTargetVoiceEvents, ampTargetVoiceAudio) ||
+        !render(ampPlainVoice, ampPlainVoiceEvents, ampPlainVoiceAudio)) {
+        std::cerr << "targeted Amp Level PARAM_MOD failed the process block\n";
+        return 62;
+    }
+    if (sameAudio(ampTargetVoiceAudio, ampPlainVoiceAudio)) {
+        std::cerr << "targeted Amp Level PARAM_MOD did not affect its selected voice\n";
+        return 63;
+    }
+    if (!matchesSum(ampTargetedAudio, ampTargetVoiceAudio, ampPlainVoiceAudio)) {
+        std::cerr << "targeted Amp Level PARAM_MOD leaked across overlapping voices\n";
+        return 64;
+    }
+
+    static ParameterVoiceEngine ampReuse;
+    static ParameterVoiceEngine ampReuseReference;
+    if (!configureSingle(ampReuse) || !configureSingle(ampReuseReference))
+        return 65;
+    InputEvents ampReuseFirstEvents;
+    ampReuseFirstEvents.pushNote(0, 121, 60);
+    ampReuseFirstEvents.pushMod(0, kAmpLevelId, -0.75, 121, 0, 0, 60);
+    RenderResult ampReuseFirstAudio;
+    if (!render(ampReuse, ampReuseFirstEvents, ampReuseFirstAudio))
+        return 66;
+    InputEvents ampReuseSecondEvents;
+    ampReuseSecondEvents.pushNote(0, 122, 60);
+    RenderResult ampReuseSecondAudio;
+    InputEvents ampReuseReferenceEvents;
+    ampReuseReferenceEvents.pushNote(0, 122, 60);
+    RenderResult ampReuseReferenceAudio;
+    if (!render(ampReuse, ampReuseSecondEvents, ampReuseSecondAudio) ||
+        !render(ampReuseReference, ampReuseReferenceEvents, ampReuseReferenceAudio) ||
+        !sameAudio(ampReuseSecondAudio, ampReuseReferenceAudio)) {
+        std::cerr << "voice reuse leaked targeted Amp Level modulation into a new generation\n";
+        return 67;
+    }
+
+    static ParameterVoiceEngine ampExpressions;
+    if (!configure(ampExpressions))
+        return 68;
+    InputEvents ampExpressionEvents;
+    ampExpressionEvents.pushValue(0, kAmpLevelId, 0.5);
+    ampExpressionEvents.pushExpression(0, CLAP_NOTE_EXPRESSION_VOLUME, 0.5, 131, 60);
+    ampExpressionEvents.pushExpression(0, CLAP_NOTE_EXPRESSION_EXPRESSION, 0.5, 131, 60);
+    ampExpressionEvents.pushExpression(0, CLAP_NOTE_EXPRESSION_PRESSURE, 0.5, 131, 60);
+    ampExpressionEvents.pushNote(0, 131, 60);
+    RenderResult ampExpressionAudio;
+    constexpr float kExpectedComposedAmpGain = 0.5f * 0.5f * 0.5f * 1.5f;
+    if (!render(ampExpressions, ampExpressionEvents, ampExpressionAudio) ||
+        !matchesMasterGainStep(ampExpressionAudio,
+                               0,
+                               kExpectedComposedAmpGain,
+                               kExpectedComposedAmpGain,
+                               60)) {
+        std::cerr << "Amp Level did not compose with VOLUME / EXPRESSION / PRESSURE\n";
+        return 69;
     }
 
     return 0;
