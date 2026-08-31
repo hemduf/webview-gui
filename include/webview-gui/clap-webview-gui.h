@@ -304,18 +304,26 @@ struct ClapWebviewGui {
 #endif
 
 private:
-    [[nodiscard]] bool hasHostWebviewPath() const noexcept {
+    bool resolveHostWebviewExtension() noexcept {
+        if (!hostWebview && host && host->get_extension)
+            hostWebview = static_cast<const clap_host_webview *>(
+                host->get_extension(host, CLAP_EXT_WEBVIEW));
+        extHostWebview = hostWebview;
+        return hostWebview != nullptr && hostWebview->send != nullptr;
+    }
+
+    [[nodiscard]] bool hasHostWebviewPath() noexcept {
 #if defined(WEBVIEW_GUI_WEBVIEW_ONLY) || defined(__EMSCRIPTEN__) || defined(__wasm__) || \
     defined(__wasm32__) || defined(__wasm64__)
-        // In WCLAP the bridge queries the plug-in's clap.webview/3 extension after
-        // clap_plugin.init(). Re-entering plugin->get_extension() from inside the
-        // plug-in's init callback is unnecessary and breaks strict CLAP helpers
-        // across pointer-translating WASM bridges. The module-side GUI only needs
-        // the host-owned send path; resources/receive stay on clap_plugin_webview.
+        // WCLAP hosts may proxy host.get_extension() through a bridge which can
+        // re-enter plug-in extension code. During clap_plugin.init() strict CLAP
+        // helpers have not marked initialization complete yet, so both sides of
+        // WebView negotiation are deliberately deferred until the first GUI call.
+        // The module-side GUI needs only the host-owned send path; resources and
+        // receive remain exposed by the plug-in's clap.webview/3 extension.
         return plugin != nullptr
             && host != nullptr
-            && hostWebview != nullptr
-            && hostWebview->send != nullptr;
+            && resolveHostWebviewExtension();
 #else
         return plugin != nullptr
             && host != nullptr
@@ -323,8 +331,7 @@ private:
             && pluginWebview->get_uri != nullptr
             && pluginWebview->get_resource != nullptr
             && pluginWebview->receive != nullptr
-            && hostWebview != nullptr
-            && hostWebview->send != nullptr;
+            && resolveHostWebviewExtension();
 #endif
     }
 
@@ -338,11 +345,10 @@ private:
     !defined(__wasm32__) && !defined(__wasm64__)
         if (plugin && plugin->get_extension)
             pluginWebview = (const clap_plugin_webview *)plugin->get_extension(plugin, CLAP_EXT_WEBVIEW);
-#endif
         if (host && host->get_extension)
             hostWebview = (const clap_host_webview *)host->get_extension(host, CLAP_EXT_WEBVIEW);
-
         extHostWebview = hostWebview;
+#endif
         setSelf(plugin);
     }
 
