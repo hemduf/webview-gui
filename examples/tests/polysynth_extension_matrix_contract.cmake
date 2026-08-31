@@ -75,6 +75,14 @@ require_contains(plugin_source
     "publishHostParameterSnapshot"
     "coherent live parameter snapshot publisher")
 
+# A loaded state can expose a new Release before the audio thread has replayed it.
+# Tail publication therefore needs its own applied-revision marker: reusing the
+# parameter-snapshot revision creates a window where tail.get() can see the new
+# state revision while currentTailSamples_ still belongs to the old state.
+require_contains(plugin_source
+    "tailLoadedStateRevisionPublished_"
+    "coherent loaded-state tail publication revision")
+
 # Existing host indices 0..8 are ABI and project-state compatibility surface.
 # The four Amp Envelope controls must therefore append at 9..12 even though their
 # stable parameter IDs numerically precede Filter Env / Pan / Amp Level.
