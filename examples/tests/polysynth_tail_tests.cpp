@@ -5,6 +5,7 @@
 #include <clap/ext/params.h>
 #include <clap/ext/tail.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -66,13 +67,63 @@ struct FlushInputEvents {
 
     static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
                                                     std::uint32_t index) noexcept {
-        if (!events || !events->ctx || index != 0)
+        if (!events || !events->ctx || index != 0u)
             return nullptr;
         return &static_cast<const FlushInputEvents *>(events->ctx)->event.header;
     }
 
     clap_event_param_value_t event{};
     clap_input_events_t input{};
+};
+
+struct NoteInputEvents {
+    NoteInputEvents(std::uint16_t type, std::int32_t noteId) noexcept {
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = type;
+        event.note_id = noteId;
+        event.port_index = 0;
+        event.channel = 0;
+        event.key = 69;
+        event.velocity = 1.0;
+        input.ctx = this;
+        input.size = size;
+        input.get = get;
+    }
+
+    static std::uint32_t CLAP_ABI size(const clap_input_events_t *events) noexcept {
+        return events && events->ctx ? 1u : 0u;
+    }
+
+    static const clap_event_header_t *CLAP_ABI get(const clap_input_events_t *events,
+                                                    std::uint32_t index) noexcept {
+        if (!events || !events->ctx || index != 0u)
+            return nullptr;
+        return &static_cast<const NoteInputEvents *>(events->ctx)->event.header;
+    }
+
+    clap_event_note_t event{};
+    clap_input_events_t input{};
+};
+
+struct AcceptingOutputEvents {
+    AcceptingOutputEvents() noexcept {
+        output.ctx = this;
+        output.try_push = tryPush;
+    }
+
+    static bool CLAP_ABI tryPush(const clap_output_events_t *events,
+                                 const clap_event_header_t *header) noexcept {
+        if (!events || !events->ctx || !header)
+            return false;
+        ++static_cast<AcceptingOutputEvents *>(events->ctx)->count;
+        return true;
+    }
+
+    std::uint32_t count = 0;
+    clap_output_events_t output{};
 };
 
 bool setRelease(const clap_plugin_t *plugin,
@@ -83,6 +134,26 @@ bool setRelease(const clap_plugin_t *plugin,
     double observed = -1.0;
     return params->get_value(plugin, kAmpReleaseId, &observed) &&
            std::fabs(observed - seconds) <= 1.0e-6;
+}
+
+bool processNoteEvent(const clap_plugin_t *plugin,
+                      const clap_input_events_t *events,
+                      AcceptingOutputEvents &outputEvents) noexcept {
+    constexpr std::uint32_t kFrames = 4u;
+    std::array<float, kFrames> left{};
+    std::array<float, kFrames> right{};
+    std::array<float *, 2> channels{{left.data(), right.data()}};
+    clap_audio_buffer_t output{};
+    output.data32 = channels.data();
+    output.channel_count = 2u;
+
+    clap_process_t process{};
+    process.frames_count = kFrames;
+    process.audio_outputs = &output;
+    process.audio_outputs_count = 1u;
+    process.in_events = events;
+    process.out_events = &outputEvents.output;
+    return plugin->process(plugin, &process) != CLAP_PROCESS_ERROR;
 }
 
 } // namespace
@@ -125,8 +196,8 @@ int main() {
         return 4;
     }
 
-    // Release becomes a published 0.25-second parameter. At 48 kHz the finite
-    // CLAP tail must therefore be 12,000 samples before any user automation.
+    // Release is a published 0.25-second parameter. At 48 kHz the finite CLAP
+    // tail is therefore 12,000 samples before any user automation.
     double releaseSeconds = -1.0;
     if (!params->get_value(plugin, kAmpReleaseId, &releaseSeconds) ||
         std::fabs(releaseSeconds - 0.25) > 1.0e-6 ||
@@ -145,9 +216,8 @@ int main() {
         return 6;
     }
 
-    // Active params.flush() executes on the audio thread. A Release change must
-    // update the actual VoiceEngine default, publish the new finite tail and call
-    // host.tail.changed() exactly once. Merely reading tail must not notify again.
+    // Active params.flush() is an audio-thread path. Increasing Release while no
+    // voice is active must publish the new tail and notify exactly once.
     if (!plugin->start_processing(plugin)) {
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
@@ -162,20 +232,65 @@ int main() {
         return 8;
     }
 
-    plugin->deactivate(plugin);
-
-    // Inactive flush runs on the main thread, where CLAP forbids host.tail.changed().
-    // Retain the new seconds value silently; activation at a different sample rate
-    // must still expose the correct sample-domain tail immediately.
-    if (!setRelease(plugin, params, 0.125) || hostState.changedCalls != 1u ||
-        !plugin->activate(plugin, 96000.0, 1, 128)) {
+    // Start one generation while the 0.5-second Release default is active. It
+    // snapshots 24,000 samples and must keep that lifecycle after the host changes
+    // the default for future voices.
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 9;
     }
-    if (tail->get(plugin) != 12000u || hostState.changedCalls != 1u) {
+    NoteInputEvents noteOn(CLAP_EVENT_NOTE_ON, 700);
+    AcceptingOutputEvents noteOnOutput;
+    if (!processNoteEvent(plugin, &noteOn.input, noteOnOutput)) {
+        plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
         return 10;
+    }
+    plugin->stop_processing(plugin);
+
+    // A shorter default cannot lower the advertised tail while that older voice
+    // is alive. No host notification is required because the published tail did
+    // not change, even though get_value() immediately reflects the new base value.
+    if (!setRelease(plugin, params, 0.125) || tail->get(plugin) != 24000u ||
+        hostState.changedCalls != 1u) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 11;
+    }
+
+    // Once the old generation is choked and retired, process() observes an empty
+    // active set, publishes the new 6,000-sample default and notifies the host.
+    if (!plugin->start_processing(plugin)) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 12;
+    }
+    NoteInputEvents choke(CLAP_EVENT_NOTE_CHOKE, 700);
+    AcceptingOutputEvents chokeOutput;
+    if (!processNoteEvent(plugin, &choke.input, chokeOutput) ||
+        tail->get(plugin) != 6000u || hostState.changedCalls != 2u) {
+        plugin->stop_processing(plugin);
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 13;
+    }
+    plugin->stop_processing(plugin);
+    plugin->deactivate(plugin);
+
+    // Inactive flush runs on the main thread, where CLAP forbids host.tail.changed().
+    // Retain the seconds value silently; activation at a different sample rate
+    // exposes the correct sample-domain tail immediately without a callback.
+    if (!setRelease(plugin, params, 0.125) || hostState.changedCalls != 2u ||
+        !plugin->activate(plugin, 96000.0, 1, 128)) {
+        plugin->destroy(plugin);
+        return 14;
+    }
+    if (tail->get(plugin) != 12000u || hostState.changedCalls != 2u) {
+        plugin->deactivate(plugin);
+        plugin->destroy(plugin);
+        return 15;
     }
 
     plugin->deactivate(plugin);
