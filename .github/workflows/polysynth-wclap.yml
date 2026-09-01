@@ -105,21 +105,25 @@ jobs:
               raise SystemExit('pinned clap-trap entry guard changed; revalidate WCLAP host patch')
           text = text.replace(entry_needle, 'if (!loader->isWasm() && !loader->entry()) {')
 
-          validate_io_needle = '''        process.audio_inputs = buffers.inputBuffer();
-        process.audio_outputs = buffers.outputBuffer();
-        process.audio_inputs_count = 1;
-        process.audio_outputs_count = 1;'''
+          validate_io_needle = (
+              '        process.audio_inputs = buffers.inputBuffer();\n'
+              '        process.audio_outputs = buffers.outputBuffer();\n'
+              '        process.audio_inputs_count = 1;\n'
+              '        process.audio_outputs_count = 1;'
+          )
           validate_io_count = text.count(validate_io_needle)
           if validate_io_count == 0:
               raise SystemExit('pinned clap-trap validate audio topology changed; revalidate instrument host patch')
-          validate_io_replacement = '''        const auto* audioPorts = static_cast<const clap_plugin_audio_ports_t*>(
-            plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
-        const uint32_t audioInputCount =
-            audioPorts && audioPorts->count ? audioPorts->count(plugin, true) : 0u;
-        process.audio_inputs = audioInputCount == 0u ? nullptr : buffers.inputBuffer();
-        process.audio_outputs = buffers.outputBuffer();
-        process.audio_inputs_count = audioInputCount;
-        process.audio_outputs_count = 1;'''
+          validate_io_replacement = (
+              '        const auto* audioPorts = static_cast<const clap_plugin_audio_ports_t*>(\n'
+              '            plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));\n'
+              '        const uint32_t audioInputCount =\n'
+              '            audioPorts && audioPorts->count ? audioPorts->count(plugin, true) : 0u;\n'
+              '        process.audio_inputs = audioInputCount == 0u ? nullptr : buffers.inputBuffer();\n'
+              '        process.audio_outputs = buffers.outputBuffer();\n'
+              '        process.audio_inputs_count = audioInputCount;\n'
+              '        process.audio_outputs_count = 1;'
+          )
           text = text.replace(validate_io_needle, validate_io_replacement, 1)
 
           path.write_text(text)
