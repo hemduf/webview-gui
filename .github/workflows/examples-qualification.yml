@@ -41,6 +41,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Test native artifact verifier
+        run: python examples/tests/verify_native_artifacts_tests.py
+
       - name: Verify aggregate qualification ownership and gates
         run: >-
           cmake
