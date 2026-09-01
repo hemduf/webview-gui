@@ -229,32 +229,39 @@ inline bool copyStaticParameterDisplayText(const char *text,
 }
 
 // AUv2 transports parameter values as Float32. A legal CLAP double endpoint such
-// as 0.99 therefore reaches value_to_text() as 0.9900000095..., which is slightly
-// beyond the declared double range. Accept only the exact Float32 representation
-// of either endpoint (or values already inside the range) and canonicalize it back
-// to the CLAP endpoint before formatting. This does not widen automation/state
-// ranges or the text-to-value parser.
+// as 0.99 therefore reaches value_to_text() as 0.9900000095..., which can land
+// just outside or just inside the declared double range. Recognize only the exact
+// Float32 representation of a declared endpoint and canonicalize it back to the
+// CLAP double endpoint before formatting. Ordinary interior values remain exact;
+// automation/state ranges and the text-to-value parser are not widened.
 inline bool canonicalContinuousDisplayValue(const ParameterSpec &spec,
                                             double value,
                                             double &canonical) noexcept {
     if (!std::isfinite(value))
         return false;
 
-    if (value < spec.minValue) {
-        const double floatMin = static_cast<double>(static_cast<float>(spec.minValue));
-        if (value != floatMin)
-            return false;
+    if (value == spec.minValue) {
         canonical = spec.minValue;
         return true;
     }
-
-    if (value > spec.maxValue) {
-        const double floatMax = static_cast<double>(static_cast<float>(spec.maxValue));
-        if (value != floatMax)
-            return false;
+    if (value == spec.maxValue) {
         canonical = spec.maxValue;
         return true;
     }
+
+    const double floatMin = static_cast<double>(static_cast<float>(spec.minValue));
+    const double floatMax = static_cast<double>(static_cast<float>(spec.maxValue));
+    if (value == floatMin) {
+        canonical = spec.minValue;
+        return true;
+    }
+    if (value == floatMax) {
+        canonical = spec.maxValue;
+        return true;
+    }
+
+    if (value < spec.minValue || value > spec.maxValue)
+        return false;
 
     canonical = value;
     return true;
