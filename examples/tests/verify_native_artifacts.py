@@ -143,10 +143,13 @@ def main() -> int:
     for product in products:
         qualify_product(product, workspace)
 
-    standalone_names = (
-        "WebviewGuiGain.exe" if os.name == "nt" else "WebviewGuiGain",
-        "WebviewGuiPolySynth.exe" if os.name == "nt" else "WebviewGuiPolySynth",
-    )
+    if sys.platform == "darwin":
+        standalone_names = ("WebviewGuiGain.app", "WebviewGuiPolySynth.app")
+    elif os.name == "nt":
+        standalone_names = ("WebviewGuiGain.exe", "WebviewGuiPolySynth.exe")
+    else:
+        standalone_names = ("WebviewGuiGain", "WebviewGuiPolySynth")
+
     for name in standalone_names:
         standalone = find_named(root, name)
         qualify_product(standalone, workspace)
