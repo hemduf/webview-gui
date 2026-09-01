@@ -9,6 +9,7 @@ set(WEBVIEW_GUI_EXAMPLES_ASSET_OUTPUT_DIRECTORY
     "Predictable build-tree directory for wrapped example products")
 
 function(webview_gui_add_example_wrappers)
+    set(options SUPPORTS_ALL_NOTE_EXPRESSIONS)
     set(one_value_args
         TARGET_PREFIX
         CLAP_TARGET
@@ -20,7 +21,7 @@ function(webview_gui_add_example_wrappers)
         AU_SUBTYPE
         AU_TYPE)
     set(multi_value_args EXTRA_LINK_LIBRARIES)
-    cmake_parse_arguments(FMT "" "${one_value_args}" "${multi_value_args}" ${ARGN})
+    cmake_parse_arguments(FMT "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
     foreach(required_arg IN ITEMS
             TARGET_PREFIX CLAP_TARGET IMPL_TARGET ENTRY_SOURCE OUTPUT_NAME
@@ -54,11 +55,14 @@ function(webview_gui_add_example_wrappers)
         target_add_vst3_wrapper(
             TARGET ${target}
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
+            SUPPORTS_ALL_NOTE_EXPRESSIONS "${FMT_SUPPORTS_ALL_NOTE_EXPRESSIONS}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.vst3"
             BUNDLE_VERSION "0.1.0"
-            ASSET_OUTPUT_DIRECTORY "${asset_root}"
             WINDOWS_FOLDER_VST3 FALSE
             RESOURCE_DIRECTORY "")
+        # clap-wrapper 0.16.0 has a platform-specific target-name typo in its
+        # ASSET_OUTPUT_DIRECTORY branch on macOS/Windows. Keep the wrapper's
+        # native VST3 output layout instead of exercising that broken branch.
         add_dependencies(${all_target} ${target})
     endif()
 
@@ -172,7 +176,6 @@ function(webview_gui_add_example_wrappers)
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.aaxplugin"
             BUNDLE_VERSION "0.1.0"
-            ASSET_OUTPUT_DIRECTORY "${asset_root}"
             RESOURCE_DIRECTORY "")
         add_dependencies(${all_target} ${target})
     endif()
@@ -202,5 +205,6 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
         BUNDLE_IDENTIFIER com.webview-gui.example.polysynth
         AU_SUBTYPE WvPs
         AU_TYPE aumu
+        SUPPORTS_ALL_NOTE_EXPRESSIONS
         EXTRA_LINK_LIBRARIES webview-gui)
 endif()
