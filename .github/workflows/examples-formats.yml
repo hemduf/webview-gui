@@ -31,14 +31,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libx11-dev
+          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libx11-dev xvfb xauth
+
       - name: Configure formats
         run: >-
           cmake -S examples -B build-formats
+          -DCMAKE_BUILD_TYPE=Release
           -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
@@ -49,6 +52,7 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
           -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+
       - name: Verify format contract
         run: >-
           cmake
@@ -56,10 +60,68 @@ jobs:
           -DPOLYSYNTH_CMAKE=${{ github.workspace }}/examples/polysynth/CMakeLists.txt
           -DFORMATS_CMAKE=${{ github.workspace }}/examples/cmake/ExampleFormats.cmake
           -P examples/tests/wrapper_formats_contract.cmake
+
       - name: Build wrapped products
         run: >-
-          cmake --build build-formats --config Debug --parallel
+          cmake --build build-formats --config Release --parallel
           --target webview_gui_example_gain_formats_all webview_gui_example_polysynth_formats_all
+
+      # #34 already downloads this exact Steinberg SDK through pinned clap-wrapper.
+      # Reuse that source tree so the validator cannot silently drift from the SDK
+      # used to compile the VST3 adapters.
+      - name: Build Steinberg VST3 validator
+        run: >-
+          cmake -S build-formats/cpm/vst3sdk -B build-vst3-validator
+          -DCMAKE_BUILD_TYPE=Release
+          -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF
+          -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+          -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF
+          -DSMTG_RUN_VST_VALIDATOR=OFF
+      - name: Build Steinberg VST3 validator executable
+        run: cmake --build build-vst3-validator --config Release --target validator --parallel
+
+      - name: Validate wrapped VST3 products
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          validator="$(find build-vst3-validator -type f -name validator -perm -111 -print -quit)"
+          gain="$(find build-formats -name WebviewGuiGain.vst3 -print -quit)"
+          polysynth="$(find build-formats -name WebviewGuiPolySynth.vst3 -print -quit)"
+          test -n "$validator" && test -x "$validator"
+          test -n "$gain" && test -e "$gain"
+          test -n "$polysynth" && test -e "$polysynth"
+          "$validator" --version
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a "$validator" "$gain"
+            xvfb-run -a "$validator" "$polysynth"
+          else
+            "$validator" "$gain"
+            "$validator" "$polysynth"
+          fi
+
+      - name: Validate wrapped VST3 products
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $validator = Get-ChildItem build-vst3-validator -Recurse -File -Filter validator.exe | Select-Object -First 1
+          $gain = Get-ChildItem build-formats -Recurse | Where-Object { $_.Name -eq 'WebviewGuiGain.vst3' } | Select-Object -First 1
+          $polysynth = Get-ChildItem build-formats -Recurse | Where-Object { $_.Name -eq 'WebviewGuiPolySynth.vst3' } | Select-Object -First 1
+          if (-not $validator -or -not $gain -or -not $polysynth) { throw 'Missing validator or VST3 product' }
+          & $validator.FullName --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $validator.FullName $gain.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $validator.FullName $polysynth.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify native artifact hygiene
+        run: >-
+          python examples/tests/verify_native_artifacts.py
+          --root build-formats
+          --workspace "${{ github.workspace }}"
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
 
   macos-auv2:
     name: macOS / AUv2
@@ -68,9 +130,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+
       - name: Configure AUv2
         run: >-
           cmake -S examples -B build-auv2
+          -DCMAKE_BUILD_TYPE=Release
           -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
           -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
@@ -81,10 +145,32 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=OFF
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
           -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+
       - name: Build AUv2 products
         run: >-
-          cmake --build build-auv2 --config Debug --parallel
+          cmake --build build-auv2 --config Release --parallel
           --target webview_gui_example_gain_formats_auv2 webview_gui_example_polysynth_formats_auv2
+
+      - name: Run auval for AUv2
+        shell: bash
+        run: |
+          set -euo pipefail
+          gain="$(find build-auv2 -type d -name WebviewGuiGain.component -print -quit)"
+          polysynth="$(find build-auv2 -type d -name WebviewGuiPolySynth.component -print -quit)"
+          test -n "$gain" && test -d "$gain"
+          test -n "$polysynth" && test -d "$polysynth"
+
+          components="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$components"
+          rm -rf "$components/WebviewGuiGain.component" "$components/WebviewGuiPolySynth.component"
+          cp -R "$gain" "$components/WebviewGuiGain.component"
+          cp -R "$polysynth" "$components/WebviewGuiPolySynth.component"
+          codesign --force --deep --sign - "$components/WebviewGuiGain.component"
+          codesign --force --deep --sign - "$components/WebviewGuiPolySynth.component"
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -v aufx WvGn WvGu
+          auval -v aumu WvPs WvGu
 
   macos-auv3:
     name: macOS / AUv3+host
@@ -93,6 +179,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+
       - name: Configure AUv3
         run: >-
           cmake -S examples -B build-auv3 -G Xcode
@@ -105,11 +192,21 @@ jobs:
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=OFF
           -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
+
       - name: Build AUv3 extensions and hosts
         run: >-
-          cmake --build build-auv3 --config Debug --parallel
+          cmake --build build-auv3 --config Release --parallel
           --target
           webview_gui_example_gain_formats_auv3
           webview_gui_example_gain_formats_auv3_standalone
           webview_gui_example_polysynth_formats_auv3
           webview_gui_example_polysynth_formats_auv3_standalone
+
+      - name: Verify AUv3 product layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(find build-auv3 -type d -name WebviewGuiGain.appex -print -quit)"
+          test -n "$(find build-auv3 -type d -name WebviewGuiPolySynth.appex -print -quit)"
+          test -n "$(find build-auv3 -type d -name 'WebviewGuiGain AUv3.app' -print -quit)"
+          test -n "$(find build-auv3 -type d -name 'WebviewGuiPolySynth AUv3.app' -print -quit)"
