@@ -389,15 +389,16 @@ int testHostedWebview(const clap_plugin_factory_t *factory) {
     process.in_events = &input2.input;
     if (b->process(b, &process) == CLAP_PROCESS_ERROR) { b->stop_processing(b); b->deactivate(b); a->destroy(a); b->destroy(b); return 13; }
     b->stop_processing(b);
-    b->deactivate(b);
 
     hostB.sawTelemetry = false;
     double cutoffBase = 0.0;
     if (!wvB->receive(b, sync.data(), sync.size()) || !hostB.sawTelemetry ||
         hostB.lastModParam != cutoffId || hostB.lastModAmount != 0.5f ||
         !paramsB->get_value(b, cutoffId, &cutoffBase) || cutoffBase != 7000.0) {
+        b->deactivate(b);
         a->destroy(a); b->destroy(b); return 14;
     }
+    b->deactivate(b);
 
     guiA->destroy(a);
     const auto bBefore = hostB.sends;
