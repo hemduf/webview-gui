@@ -86,13 +86,17 @@ function(webview_gui_add_example_wrappers)
         add_library(${target} MODULE ${FMT_ENTRY_SOURCE})
         target_link_libraries(${target} PRIVATE ${common_libraries})
         target_compile_features(${target} PRIVATE cxx_std_17)
+        set_target_properties(${target} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN YES
+        )
         target_add_vst3_wrapper(
             TARGET ${target}
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             SUPPORTS_ALL_NOTE_EXPRESSIONS "${FMT_SUPPORTS_ALL_NOTE_EXPRESSIONS}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.vst3"
             BUNDLE_VERSION "0.1.0"
-            WINDOWS_FOLDER_VST3 FALSE)
+            WINDOWS_FOLDER_VST3 TRUE)
 
         # Linux VST3 is a shared module assembled from clap-wrapper and Steinberg
         # static archives. clap-wrapper 0.16.0 does not mark those archives PIC,
@@ -114,9 +118,11 @@ function(webview_gui_add_example_wrappers)
             endif()
         endif()
 
-        # clap-wrapper 0.16.0 has a platform-specific target-name typo in its
-        # ASSET_OUTPUT_DIRECTORY branch on macOS/Windows. Keep the wrapper's
-        # native VST3 output layout instead of exercising that broken branch.
+        # No ASSET_OUTPUT_DIRECTORY is passed to the pinned wrapper because its
+        # 0.16.0 macOS/Windows branch contains a target-name typo. The wrapper's
+        # native output layout is therefore retained. On Windows, the standard
+        # folder bundle is still required so Steinberg's validator sees a valid
+        # distributable VST3 rather than a legacy single-file module.
         add_dependencies(${all_target} ${target})
     endif()
 
