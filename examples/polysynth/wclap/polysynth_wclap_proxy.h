@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../polysynth_plugin.h"
 #include "../polysynth_parameters.h"
 #include "webview-gui/clap-webview-gui.h"
 
