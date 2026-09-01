@@ -176,6 +176,35 @@ struct MyClapPlugin {
 };
 ```
 
+## WCLAP / WASI
+
+The WCLAP profile uses a host-owned `clap.webview/3` path and compiles with `WEBVIEW_GUI_WEBVIEW_ONLY=1`, so `module.wasm` does not instantiate a native CHOC/Cocoa/Win32/X11 backend. The qualified toolchain is WASI SDK 33.0 with `wasi-sdk-pthread.cmake`.
+
+With `WASI_SDK_PATH` pointing to the unpacked SDK:
+
+```bash
+cmake -S examples/gain/wclap -B build-gain-wclap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK_PATH/share/cmake/wasi-sdk-pthread.cmake"
+cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
+
+cmake -S examples/polysynth/wclap -B build-polysynth-wclap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK_PATH/share/cmake/wasi-sdk-pthread.cmake"
+cmake --build build-polysynth-wclap --target webview_gui_example_polysynth_wclap --parallel
+```
+
+The resulting bundles are:
+
+```text
+build-gain-wclap/WebviewGuiGain.wclap/module.wasm
+build-gain-wclap/WebviewGuiGain.wclap.tar.gz
+build-polysynth-wclap/WebviewGuiPolySynth.wclap/module.wasm
+build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz
+```
+
+Both examples reuse their existing CLAP/DSP implementation. UI resources are embedded and served through `clap.webview/3`; no remote UI resource is required. See [`WCLAP.md`](WCLAP.md) for lifecycle compatibility, real-time rules, PolySynth parameter/telemetry flow, contract tests and pinned runtime qualification.
+
 ## TDD and CI
 
 Tests use **doctest 2.5.3** and are run through CTest.

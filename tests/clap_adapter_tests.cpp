@@ -254,8 +254,11 @@ TEST_CASE("CLAP reinitialisation tears down an active native GUI before switchin
     CHECK(stateA.receiveCalls.load(std::memory_order_relaxed) == 0);
     CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
 
-    // B must use B's host extension rather than silently sending through A's
-    // stale native WebView.
+    // B must explicitly enter a complete host-owned WebView lifetime before
+    // routing messages through B's host extension. Reinitialisation must never
+    // silently retain A's native WebView.
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    REQUIRE(gui.testUsesHostWebview());
     hostSendCalls.store(0, std::memory_order_relaxed);
     CHECK(gui.send(&byte, 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
@@ -274,6 +277,8 @@ TEST_CASE("CLAP reinitialisation tears down an active native GUI before switchin
     CHECK_FALSE(gui.testHasNativeWebview());
     CHECK_FALSE(gui.testDeliverNativeMessage(&byte, 1));
     CHECK(stateB.receiveCalls.load(std::memory_order_relaxed) == 0);
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
+    REQUIRE(gui.testUsesHostWebview());
     CHECK(gui.send(&byte, 1));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 2);
 }
@@ -363,10 +368,12 @@ TEST_CASE("reference CLAP adapter has no process entry and audio handoff never e
     static_assert(!HasProcessMember<webview_gui::ClapWebviewGui>::value,
                   "ClapWebviewGui must remain a GUI-only adapter");
 
+    PluginWebviewState state;
     auto host = makeHostWithWebview();
-    auto plugin = makePlugin();
+    auto plugin = makePluginWithWebview(state);
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
 
     hostSendCalls.store(0, std::memory_order_relaxed);
     webview_gui::RealtimeToUiQueue<std::uint32_t, 8> queue;
@@ -387,15 +394,17 @@ TEST_CASE("reference CLAP adapter has no process entry and audio handoff never e
     REQUIRE(queue.tryPop(value));
     CHECK(value == 42);
 
-    // The UI thread may decide how/when to publish the drained state.
+    // The UI thread may decide how/when to publish the drained state, but only
+    // while a complete host-owned GUI lifetime is active.
     CHECK(gui.send(&value, sizeof(value)));
     CHECK(hostSendCalls.load(std::memory_order_relaxed) == 1);
 }
 
 TEST_CASE("main-thread CLAP callbacks survive repeated create destroy cycles")
 {
-    auto host = makeHost();
-    auto plugin = makePlugin();
+    PluginWebviewState state;
+    auto host = makeHostWithWebview();
+    auto plugin = makePluginWithWebview(state);
 
     for (uint32_t iteration = 0; iteration < 32; ++iteration) {
         webview_gui::ClapWebviewGui gui{&plugin, &host};
@@ -418,13 +427,15 @@ TEST_CASE("main-thread CLAP callbacks survive repeated create destroy cycles")
 
 TEST_CASE("CLAP send rejects oversized payloads before calling the host extension")
 {
+    PluginWebviewState state;
     auto host = makeHostWithWebview();
-    auto plugin = makePlugin();
+    auto plugin = makePluginWithWebview(state);
 
     hostSendCalls.store(0, std::memory_order_relaxed);
 
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();
+    REQUIRE(gui.create(webview_gui::CLAP_WINDOW_API_WEBVIEW, false));
 
     const unsigned char byte = 0x7f;
     CHECK(gui.send(&byte, 1));
@@ -471,8 +482,9 @@ TEST_CASE("CLAP native set_size does not commit dimensions rejected by the nativ
 
 TEST_CASE("CLAP exported set_size fails outside a successful GUI lifetime")
 {
-    auto host = makeHost();
-    auto plugin = makePlugin();
+    PluginWebviewState state;
+    auto host = makeHostWithWebview();
+    auto plugin = makePluginWithWebview(state);
 
     webview_gui::ClapWebviewGui gui{&plugin, &host};
     gui.init();

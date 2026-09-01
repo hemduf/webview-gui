@@ -1,0 +1,45 @@
+name: WCLAP host-WebView contract
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'include/webview-gui/clap-webview-gui.h'
+      - 'include/webview-gui/_impl/webview-gui.hxx'
+      - 'include/webview-gui/_impl/platform/webview-only.h'
+      - 'tests/wclap_contract/**'
+      - '.github/workflows/wclap-contract.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: wclap-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-webview-contract:
+    name: Ubuntu host-owned WebView contract
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux WebView dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure contract
+        run: >-
+          cmake -S tests/wclap_contract -B build-wclap-contract -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build contract
+        run: cmake --build build-wclap-contract --parallel
+
+      - name: Run contract
+        run: ctest --test-dir build-wclap-contract --output-on-failure --no-tests=error

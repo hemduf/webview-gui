@@ -357,12 +357,12 @@ public:
 
 protected:
     bool init() noexcept override {
+        // Keep clap_plugin.init() free of host extension discovery. WCLAP bridges
+        // may cross the WASM/native boundary from host.get_extension() and the
+        // native host is allowed to inspect plug-in extensions in that callback,
+        // which would re-enter strict clap-helpers before init has completed.
         gui_.init();
         guiParameterBridge_.init(host_);
-        if (host_ && host_->get_extension) {
-            hostParams_ = static_cast<const clap_host_params_t *>(
-                host_->get_extension(host_, CLAP_EXT_PARAMS));
-        }
         return true;
     }
 
@@ -446,38 +446,11 @@ protected:
     bool implementsGui() const noexcept override { return true; }
 
     bool guiIsApiSupported(const char *api, bool isFloating) noexcept override {
-        if (api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0)
-            return !isFloating && gui_.extHostWebview != nullptr &&
-                   gui_.extHostWebview->send != nullptr;
         return gui_.isApiSupported(api, isFloating);
     }
 
     bool guiGetPreferredApi(const char **api, bool *isFloating) noexcept override {
-        if (!api || !isFloating)
-            return false;
-
-        if (gui_.extHostWebview && gui_.extHostWebview->send)
-            return gui_.getPreferredApi(api, isFloating);
-
-        *isFloating = false;
-#if defined(__APPLE__)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::COCOA)) {
-            *api = CLAP_WINDOW_API_COCOA;
-            return true;
-        }
-#elif defined(_WIN32) || defined(_WIN64)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::HWND)) {
-            *api = CLAP_WINDOW_API_WIN32;
-            return true;
-        }
-#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && !defined(__wasm__) && \
-      !defined(__wasm32__) && !defined(__wasm64__)
-        if (::webview_gui::WebviewGui::supports(::webview_gui::WebviewGui::X11EMBED)) {
-            *api = CLAP_WINDOW_API_X11;
-            return true;
-        }
-#endif
-        return false;
+        return gui_.getPreferredApi(api, isFloating);
     }
 
     bool guiCreate(const char *api, bool isFloating) noexcept override {
@@ -486,9 +459,6 @@ protected:
 
         const bool hostOwnedWebview =
             api && std::strcmp(api, ::webview_gui::CLAP_WINDOW_API_WEBVIEW) == 0;
-        if (hostOwnedWebview &&
-            (isFloating || !gui_.extHostWebview || !gui_.extHostWebview->send))
-            return false;
         if (!gui_.create(api, isFloating))
             return false;
         if (!gui_.setSize(kEditorWidth, kEditorHeight)) {
@@ -603,8 +573,11 @@ protected:
         gainDbSnapshot_.store(gain, std::memory_order_relaxed);
         bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
 
-        if (parameterValuesChanged && hostParams_ && hostParams_->rescan)
-            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        if (parameterValuesChanged) {
+            const auto *hostParams = resolveHostParams();
+            if (hostParams && hostParams->rescan)
+                hostParams->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        }
         return true;
     }
 
@@ -745,6 +718,17 @@ protected:
     }
 
 private:
+    const clap_host_params_t *resolveHostParams() noexcept {
+        if (!hostParamsResolved_) {
+            hostParamsResolved_ = true;
+            if (host_ && host_->get_extension) {
+                hostParams_ = static_cast<const clap_host_params_t *>(
+                    host_->get_extension(host_, CLAP_EXT_PARAMS));
+            }
+        }
+        return hostParams_;
+    }
+
     bool sendParameterSnapshotToWebview() const noexcept {
         const auto gainMessage = encodeUiParameterMessage(
             kUiGainParameter,
@@ -818,6 +802,7 @@ private:
 
     const clap_host_t *host_ = nullptr;
     const clap_host_params_t *hostParams_ = nullptr;
+    bool hostParamsResolved_ = false;
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};

@@ -1,0 +1,111 @@
+name: Gain WCLAP WASI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'examples/gain/**'
+      - 'examples/CMakeLists.txt'
+      - 'cmake/WebviewGuiWclap.cmake'
+      - 'include/webview-gui/**'
+      - '.github/scripts/patch_clap_trap_wclap.py'
+      - '.github/workflows/gain-wclap.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gain-wclap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gain-wasi:
+    name: wasi-sdk-33 Gain WCLAP bundle
+    runs-on: ubuntu-24.04
+    env:
+      WASI_VERSION: '33'
+      WASI_VERSION_FULL: '33.0'
+      WASI_ARCHIVE: wasi-sdk-33.0-x86_64-linux.tar.gz
+      WASI_SHA256: 0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+      CLAP_TRAP_REV: c75d353dc57140cfceebf96dcbea9c491bef4f10
+      WCLAP_BRIDGE_REV: cd11d22afbe2af350f24cd56e6e0536e5ca86452
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install build and lifecycle-host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install pinned WASI SDK
+        run: |
+          curl --fail --location --retry 3 \
+            --output "${WASI_ARCHIVE}" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/${WASI_ARCHIVE}"
+          echo "${WASI_SHA256}  ${WASI_ARCHIVE}" | sha256sum --check --strict
+          tar xzf "${WASI_ARCHIVE}"
+          echo "WASI_SDK_PATH=${GITHUB_WORKSPACE}/wasi-sdk-${WASI_VERSION_FULL}-x86_64-linux" >> "${GITHUB_ENV}"
+
+      - name: Configure current Gain WCLAP
+        run: >-
+          cmake -S examples/gain/wclap -B build-gain-wclap -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="${WASI_SDK_PATH}/share/cmake/wasi-sdk-pthread.cmake"
+
+      - name: Build current Gain WCLAP
+        run: cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
+
+      - name: Verify bundle layout and WASM ABI
+        run: |
+          test -f build-gain-wclap/WebviewGuiGain.wclap/module.wasm
+          test -f build-gain-wclap/WebviewGuiGain.wclap.tar.gz
+          node - <<'NODE'
+          const fs = require('fs');
+          const bytes = fs.readFileSync('build-gain-wclap/WebviewGuiGain.wclap/module.wasm');
+          const module = new WebAssembly.Module(bytes);
+          const exports = WebAssembly.Module.exports(module).map(x => x.name);
+          for (const required of ['clap_entry', 'malloc']) {
+            if (!exports.includes(required)) throw new Error(`missing WASM export: ${required}`);
+          }
+          const imports = WebAssembly.Module.imports(module);
+          for (const entry of imports) {
+            if (/gtk|webkit|cocoa|user32|ole32/i.test(`${entry.module}:${entry.name}`))
+              throw new Error(`native GUI import leaked into WCLAP: ${entry.module}:${entry.name}`);
+          }
+          NODE
+          tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
+
+      - name: Build pinned WCLAP lifecycle and WebView smoke host
+        run: |
+          git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
+          git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
+          git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git .ci/clap-trap/wclap-bridge
+          git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
+          git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+
+          python3 .github/scripts/patch_clap_trap_wclap.py \
+            --source .ci/clap-trap/examples/cli.cpp \
+            --sync-magic WVQ1
+
+          cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCLAP_TRAP_BUILD_TESTS=OFF
+          cmake --build build-clap-trap --target clap-trap-cli --parallel
+
+      - name: Execute real WCLAP lifecycle and WebView smoke twice
+        run: |
+          ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
+          ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
+
+      - name: Upload Gain WCLAP bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: webview-gui-gain-wclap
+          if-no-files-found: error
+          path: |
+            build-gain-wclap/WebviewGuiGain.wclap/
+            build-gain-wclap/WebviewGuiGain.wclap.tar.gz
