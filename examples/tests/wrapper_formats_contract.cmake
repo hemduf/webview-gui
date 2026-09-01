@@ -73,9 +73,15 @@ endforeach()
 # - Xcode 26 rejects the pinned AUv3 host's unscoped switch case because its block
 #   capture has a lifetime that crosses the following case label. Keep the patch
 #   explicit and fail-closed in the pinned-wrapper compatibility layer.
+# #35 adds two distributable VST3 requirements discovered by real validator and
+# artifact runs: Windows must use Steinberg's bundle layout, and wrapper modules
+# must keep implementation/inlined WebView symbols hidden just like native CLAP.
 foreach(required_compatibility_token IN ITEMS
         "set_property(TARGET \${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON)"
         "set_property(TARGET base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON)"
+        "WINDOWS_FOLDER_VST3 TRUE"
+        "CXX_VISIBILITY_PRESET hidden"
+        "VISIBILITY_INLINES_HIDDEN YES"
         "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
         "webview_gui_apply_clap_wrapper_auv3_host_switch_patch")
     string(FIND "${all_cmake}" "${required_compatibility_token}" compatibility_index)
