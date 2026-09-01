@@ -74,8 +74,8 @@ endforeach()
 #   capture has a lifetime that crosses the following case label. Keep the patch
 #   explicit and fail-closed in the pinned-wrapper compatibility layer.
 foreach(required_compatibility_token IN ITEMS
-        "${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON"
-        "base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON"
+        "set_property(TARGET \${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON)"
+        "set_property(TARGET base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON)"
         "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
         "webview_gui_apply_clap_wrapper_auv3_host_switch_patch")
     string(FIND "${all_cmake}" "${required_compatibility_token}" compatibility_index)
