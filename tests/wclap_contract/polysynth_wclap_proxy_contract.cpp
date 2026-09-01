@@ -10,6 +10,7 @@ namespace {
 
 using namespace webview_gui::examples::polysynth;
 using namespace webview_gui::examples::polysynth::wclap;
+namespace wclap_detail = webview_gui::examples::polysynth::wclap::detail;
 
 const char *const kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, nullptr};
 const clap_plugin_descriptor_t kDescriptor{
@@ -377,10 +378,10 @@ std::array<std::uint8_t, 24> editMessage(std::uint8_t kind,
     bytes[2] = 'P';
     bytes[3] = '1';
     bytes[4] = kind;
-    detail::storeU32Le(bytes.data() + 8u, paramId);
+    wclap_detail::storeU32Le(bytes.data() + 8u, paramId);
     std::uint64_t bits = 0u;
     std::memcpy(&bits, &value, sizeof(bits));
-    detail::storeU64Le(bytes.data() + 16u, bits);
+    wclap_detail::storeU64Le(bytes.data() + 16u, bits);
     return bytes;
 }
 
@@ -533,13 +534,13 @@ int main() {
         return 15;
 
     const auto &telemetry = host.lastTelemetry;
-    if (detail::loadU32Le(telemetry.data() + 4u) != 1u ||
-        !near(detail::floatFromBits(detail::loadU32Le(telemetry.data() + 8u)), 0.25f) ||
-        !near(detail::floatFromBits(detail::loadU32Le(telemetry.data() + 12u)), 0.5f) ||
-        detail::loadU32Le(telemetry.data() + 16u) != 1004u ||
-        !near(detail::floatFromBits(detail::loadU32Le(telemetry.data() + 20u)), 0.25f) ||
-        detail::loadU32Le(telemetry.data() + 24u) != CLAP_NOTE_EXPRESSION_PRESSURE ||
-        !near(detail::floatFromBits(detail::loadU32Le(telemetry.data() + 28u)), 0.7f))
+    if (wclap_detail::loadU32Le(telemetry.data() + 4u) != 1u ||
+        !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(telemetry.data() + 8u)), 0.25f) ||
+        !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(telemetry.data() + 12u)), 0.5f) ||
+        wclap_detail::loadU32Le(telemetry.data() + 16u) != 1004u ||
+        !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(telemetry.data() + 20u)), 0.25f) ||
+        wclap_detail::loadU32Le(telemetry.data() + 24u) != CLAP_NOTE_EXPRESSION_PRESSURE ||
+        !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(telemetry.data() + 28u)), 0.7f))
         return 16;
 
     gui->destroy(plugin);
