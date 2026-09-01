@@ -1,0 +1,110 @@
+name: Example format wrappers
+
+on:
+  pull_request:
+    paths:
+      - 'examples/**'
+      - 'cmake/**'
+      - '.github/workflows/examples-formats.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/**'
+      - 'cmake/**'
+      - '.github/workflows/examples-formats.yml'
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }} / CLAP+VST3+Standalone
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
+      - name: Configure formats
+        run: >-
+          cmake -S examples -B build-formats
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_CLAP=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_VST3=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
+          -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+      - name: Verify format contract
+        run: >-
+          cmake
+          -DEXAMPLES_CMAKE=${{ github.workspace }}/examples/CMakeLists.txt
+          -DPOLYSYNTH_CMAKE=${{ github.workspace }}/examples/polysynth/CMakeLists.txt
+          -P examples/tests/wrapper_formats_contract.cmake
+      - name: Build wrapped products
+        run: >-
+          cmake --build build-formats --config Debug --parallel
+          --target webview_gui_example_gain_formats_all webview_gui_example_polysynth_formats_all
+
+  macos-auv2:
+    name: macOS / AUv2
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure AUv2
+        run: >-
+          cmake -S examples -B build-auv2
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_CLAP=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_VST3=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
+          -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+      - name: Build AUv2 products
+        run: >-
+          cmake --build build-auv2 --config Debug --parallel
+          --target webview_gui_example_gain_formats_auv2 webview_gui_example_polysynth_formats_auv2
+
+  macos-auv3:
+    name: macOS / AUv3+host
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure AUv3
+        run: >-
+          cmake -S examples -B build-auv3 -G Xcode
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_CLAP=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_VST3=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=OFF
+          -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF
+      - name: Build AUv3 extensions and hosts
+        run: >-
+          cmake --build build-auv3 --config Debug --parallel
+          --target
+          webview_gui_example_gain_formats_auv3
+          webview_gui_example_gain_formats_auv3_standalone
+          webview_gui_example_polysynth_formats_auv3
+          webview_gui_example_polysynth_formats_auv3_standalone
