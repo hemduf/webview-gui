@@ -231,28 +231,32 @@ inline bool copyStaticParameterDisplayText(const char *text,
 // AUv2 transports parameter values as Float32. A legal CLAP double endpoint such
 // as 0.99 therefore reaches value_to_text() as 0.9900000095..., which is slightly
 // beyond the declared double range. Accept only the exact Float32 representation
-// of either endpoint (or values inside the range) and canonicalize it back to the
-// CLAP endpoint before formatting. This does not widen automation/state ranges or
-// the text-to-value parser.
+// of either endpoint (or values already inside the range) and canonicalize it back
+// to the CLAP endpoint before formatting. This does not widen automation/state
+// ranges or the text-to-value parser.
 inline bool canonicalContinuousDisplayValue(const ParameterSpec &spec,
                                             double value,
                                             double &canonical) noexcept {
     if (!std::isfinite(value))
         return false;
 
-    const double floatMin = static_cast<double>(static_cast<float>(spec.minValue));
-    const double floatMax = static_cast<double>(static_cast<float>(spec.maxValue));
-    const double acceptedMin = floatMin < spec.minValue ? floatMin : spec.minValue;
-    const double acceptedMax = floatMax > spec.maxValue ? floatMax : spec.maxValue;
-    if (value < acceptedMin || value > acceptedMax)
-        return false;
-
-    if (value < spec.minValue)
+    if (value < spec.minValue) {
+        const double floatMin = static_cast<double>(static_cast<float>(spec.minValue));
+        if (value != floatMin)
+            return false;
         canonical = spec.minValue;
-    else if (value > spec.maxValue)
+        return true;
+    }
+
+    if (value > spec.maxValue) {
+        const double floatMax = static_cast<double>(static_cast<float>(spec.maxValue));
+        if (value != floatMax)
+            return false;
         canonical = spec.maxValue;
-    else
-        canonical = value;
+        return true;
+    }
+
+    canonical = value;
     return true;
 }
 } // namespace detail
