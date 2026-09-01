@@ -220,9 +220,12 @@ require_absent(plugin_source
 require_absent(plugin_source
     "bool implementsPresetLoad() const noexcept override { return true; }"
     "preset-load advertisement")
+# #33 exposes clap.gui/clap.webview in the native/WCLAP proxy, not in the DSP/core
+# plugin object. Keep the core free of GUI ownership while documenting the complete
+# externally visible plugin surface below.
 require_absent(plugin_source
     "bool implementsGui() const noexcept override { return true; }"
-    "GUI advertisement")
+    "GUI advertisement in the PolySynth core")
 
 require_contains(readme "## PolySynth CLAP extension matrix" "extension-matrix heading")
 require_contains(readme "| `clap.audio-ports` | Implemented |" "audio-ports matrix row")
@@ -245,7 +248,7 @@ require_contains(readme "`Oscillator / Tuning` maps Fine Tune, Waveform, and Coa
 require_contains(readme "`Output / Performance` maps Master Gain, Pan, and Amp Level" "Amp Level remote-controls page")
 require_contains(readme "`Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env" "Filter Envelope Amount remote-controls page")
 require_contains(readme "`Amp Envelope / ADSR` maps Attack, Decay, Sustain, and Release" "Amp Envelope remote-controls page")
-require_contains(readme "| `clap.gui` | Not advertised (owned by #33) |" "GUI ownership matrix row")
+require_contains(readme "| `clap.gui` + `clap.webview` | Implemented |" "GUI/WebView matrix row")
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
 require_contains(readme "| `clap.note-name` | Implemented |" "note-name matrix row")
@@ -255,6 +258,6 @@ require_absent(readme "| Pending |" "pending extension status after #32 completi
 require_contains(readme "surround/ambisonics" "unrelated-extension rationale")
 require_contains(readme "NOTE_EXPRESSION" "note-expression event coverage")
 require_contains(readme "PARAM_MOD" "parameter-modulation event coverage")
-require_contains(readme "PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` belong to the editor path in #33" "GUI gesture ownership")
+require_contains(readme "Editor-originated `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` are emitted by the shared #33 GUI path" "GUI gesture ownership")
 
-message(STATUS "PolySynth CLAP extension matrix contract is synchronized and #32-complete")
+message(STATUS "PolySynth CLAP extension matrix contract is synchronized with completed #32/#33")
