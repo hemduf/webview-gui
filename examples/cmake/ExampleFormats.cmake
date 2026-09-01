@@ -58,8 +58,7 @@ function(webview_gui_add_example_wrappers)
             SUPPORTS_ALL_NOTE_EXPRESSIONS "${FMT_SUPPORTS_ALL_NOTE_EXPRESSIONS}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.vst3"
             BUNDLE_VERSION "0.1.0"
-            WINDOWS_FOLDER_VST3 FALSE
-            RESOURCE_DIRECTORY "")
+            WINDOWS_FOLDER_VST3 FALSE)
         # clap-wrapper 0.16.0 has a platform-specific target-name typo in its
         # ASSET_OUTPUT_DIRECTORY branch on macOS/Windows. Keep the wrapper's
         # native VST3 output layout instead of exercising that broken branch.
@@ -175,8 +174,7 @@ function(webview_gui_add_example_wrappers)
             TARGET ${target}
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.aaxplugin"
-            BUNDLE_VERSION "0.1.0"
-            RESOURCE_DIRECTORY "")
+            BUNDLE_VERSION "0.1.0")
         add_dependencies(${all_target} ${target})
     endif()
 endfunction()

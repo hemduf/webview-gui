@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 project(webview_gui_examples LANGUAGES C CXX)
 
+# clap-wrapper adds Objective-C/Objective-C++ sources for every Apple wrapper.
+# Enable those languages from the common top-level directory before any wrapper
+# targets are created; enabling them only inside FetchContent is too narrow for
+# CMake to populate CMAKE_OBJCXX_COMPILE_OBJECT for our targets.
+if(APPLE)
+    enable_language(OBJC)
+    enable_language(OBJCXX)
+endif()
+
 # clap-wrapper documents C++17 as its default, but when it is embedded through
 # FetchContent its top-level-only default is not applied. Set the example tree's
 # language standards explicitly so the wrapper's C++ and Objective-C++ sources
@@ -341,14 +350,6 @@ endif()
 # existing canonical CLAP targets through these thin wrapper APIs; WCLAP remains
 # on the repository-owned #30 packaging path.
 if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
-    # VST3 note expressions can represent the PolySynth's note-expression input.
-    # Respect an explicit caller override, otherwise ask clap-wrapper to forward
-    # its complete VST3 note-expression set to the underlying CLAP.
-    if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH AND NOT DEFINED CLAP_SUPPORTS_ALL_NOTE_EXPRESSIONS)
-        set(CLAP_SUPPORTS_ALL_NOTE_EXPRESSIONS ON CACHE BOOL
-            "Forward all VST3 note expressions to the PolySynth CLAP")
-    endif()
-
     FetchContent_Declare(webview_gui_example_clap_wrapper
         GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
         GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
@@ -359,6 +360,10 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
         include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiClapWrapperMacOSPatch.cmake")
         webview_gui_apply_clap_wrapper_macos_string_patch(
             "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/detail/clap/mac_helpers.mm")
+        webview_gui_apply_clap_wrapper_uikit_constant_patch(
+            "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/detail/auv3/auv3_platform.h")
+        webview_gui_apply_clap_wrapper_uikit_constant_patch(
+            "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/clap_proxy.cpp")
     endif()
 
     # clap-wrapper must reuse the already-pinned CLAP target instead of creating

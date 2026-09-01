@@ -24,7 +24,10 @@ foreach(option_name IN ITEMS
     endif()
 endforeach()
 
-if(NOT examples_cmake MATCHES "option\\(WEBVIEW_GUI_EXAMPLES_FORMAT_AAX[^\\n]* OFF\\)")
+string(REGEX MATCH
+    "option\\(WEBVIEW_GUI_EXAMPLES_FORMAT_AAX[^)]*OFF\\)"
+    aax_default_off "${examples_cmake}")
+if("${aax_default_off}" STREQUAL "")
     message(FATAL_ERROR "AAX must remain explicitly OFF by default")
 endif()
 
@@ -54,7 +57,8 @@ foreach(required_token IN ITEMS
         WebviewGuiGain
         WebviewGuiPolySynth
         webview_gui_example_gain_formats
-        webview_gui_example_polysynth_formats)
+        webview_gui_example_polysynth_formats
+        SUPPORTS_ALL_NOTE_EXPRESSIONS)
     string(FIND "${all_cmake}" "${required_token}" token_index)
     if(token_index EQUAL -1)
         message(FATAL_ERROR "Wrapper integration is missing required token: ${required_token}")

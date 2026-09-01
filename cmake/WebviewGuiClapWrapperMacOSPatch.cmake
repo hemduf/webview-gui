@@ -49,3 +49,39 @@ function(webview_gui_apply_clap_wrapper_macos_string_patch source_file)
 
     file(WRITE "${source_file}" "${WEBVIEW_GUI_CLAP_WRAPPER_MACOS_CONTENT}")
 endfunction()
+
+function(webview_gui_apply_clap_wrapper_uikit_constant_patch source_file)
+    if(NOT EXISTS "${source_file}")
+        message(FATAL_ERROR
+            "Pinned clap-wrapper UIKit source is missing: ${source_file}")
+    endif()
+
+    file(READ "${source_file}" WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT)
+
+    set(WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_LEGACY_BLOCK [=[#ifndef CLAP_WINDOW_API_UIKIT
+#define CLAP_WINDOW_API_UIKIT "uikit"
+#endif]=])
+
+    string(FIND "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT}"
+        "#define CLAP_WINDOW_API_UIKIT"
+        WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_DEFINE_OFFSET)
+    if(WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_DEFINE_OFFSET EQUAL -1)
+        return()
+    endif()
+
+    string(FIND "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT}"
+        "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_LEGACY_BLOCK}"
+        WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_LEGACY_OFFSET)
+    if(WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_LEGACY_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned clap-wrapper UIKit compatibility shim changed; refusing to build without revalidating the compatibility patch")
+    endif()
+
+    string(REPLACE
+        "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_LEGACY_BLOCK}"
+        ""
+        WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT
+        "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT}")
+
+    file(WRITE "${source_file}" "${WEBVIEW_GUI_CLAP_WRAPPER_UIKIT_CONTENT}")
+endfunction()
