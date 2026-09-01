@@ -227,6 +227,34 @@ inline bool copyStaticParameterDisplayText(const char *text,
     std::memcpy(display, text, length + 1u);
     return true;
 }
+
+// AUv2 transports parameter values as Float32. A legal CLAP double endpoint such
+// as 0.99 therefore reaches value_to_text() as 0.9900000095..., which is slightly
+// beyond the declared double range. Accept only the exact Float32 representation
+// of either endpoint (or values inside the range) and canonicalize it back to the
+// CLAP endpoint before formatting. This does not widen automation/state ranges or
+// the text-to-value parser.
+inline bool canonicalContinuousDisplayValue(const ParameterSpec &spec,
+                                            double value,
+                                            double &canonical) noexcept {
+    if (!std::isfinite(value))
+        return false;
+
+    const double floatMin = static_cast<double>(static_cast<float>(spec.minValue));
+    const double floatMax = static_cast<double>(static_cast<float>(spec.maxValue));
+    const double acceptedMin = floatMin < spec.minValue ? floatMin : spec.minValue;
+    const double acceptedMax = floatMax > spec.maxValue ? floatMax : spec.maxValue;
+    if (value < acceptedMin || value > acceptedMax)
+        return false;
+
+    if (value < spec.minValue)
+        canonical = spec.minValue;
+    else if (value > spec.maxValue)
+        canonical = spec.maxValue;
+    else
+        canonical = value;
+    return true;
+}
 } // namespace detail
 
 inline const char *waveformNameForValue(double value) noexcept {
@@ -307,14 +335,17 @@ inline bool continuousParameterTextForValue(clap_id id,
                                             std::uint32_t size) noexcept {
     const auto *spec = parameterSpecForId(id);
     if (!spec || (spec->flags & CLAP_PARAM_IS_STEPPED) != 0u ||
-        !display || size == 0u || !std::isfinite(value) ||
-        value < spec->minValue || value > spec->maxValue)
+        !display || size == 0u)
+        return false;
+
+    double canonicalValue = 0.0;
+    if (!detail::canonicalContinuousDisplayValue(*spec, value, canonicalValue))
         return false;
 
     std::array<char, CLAP_NAME_SIZE> text{};
     const auto result = std::to_chars(text.data(),
                                       text.data() + text.size() - 1u,
-                                      value,
+                                      canonicalValue,
                                       std::chars_format::general);
     if (result.ec != std::errc())
         return false;
