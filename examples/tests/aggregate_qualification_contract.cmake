@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 foreach(required IN ITEMS
+        CI_WORKFLOW
         GAIN_CORE_WORKFLOW
         POLYSYNTH_CORE_WORKFLOW
         GAIN_WCLAP_WORKFLOW
@@ -12,6 +13,7 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
+file(READ "${CI_WORKFLOW}" ci)
 file(READ "${GAIN_CORE_WORKFLOW}" gain_core)
 file(READ "${POLYSYNTH_CORE_WORKFLOW}" polysynth_core)
 file(READ "${GAIN_WCLAP_WORKFLOW}" gain_wclap)
@@ -50,6 +52,15 @@ foreach(workflow_var IN ITEMS gain_wclap polysynth_wclap)
     require_contains(${workflow_var} ".wclap.tar.gz" "WCLAP distributable archive")
 endforeach()
 
+# Sanitizer ownership intentionally remains in the repository-wide CI and only
+# runs on main. This preserves the project's fast branch-iteration policy while
+# still making ASan/UBSan/TSan part of the merged-commit qualification surface.
+require_contains(ci "sanitizers:" "ASan/UBSan job")
+require_contains(ci "name: ${{ matrix.os }} / ASan+UBSan" "ASan/UBSan job name")
+require_contains(ci "thread-sanitizer:" "TSan job")
+require_contains(ci "name: ubuntu-latest / TSan registry" "TSan job name")
+require_contains(ci "if: github.ref == 'refs/heads/main'" "main-only sanitizer policy")
+
 # #34 owns production of the wrapped products; #35 upgrades that matrix from
 # build-only to actual format/artifact qualification.
 require_contains(formats "ubuntu-latest" "Linux wrapper platform")
@@ -60,7 +71,6 @@ require_contains(formats "WEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON" "standalone
 require_contains(formats "WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=ON" "AUv2 wrapper build")
 require_contains(formats "WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON" "AUv3 wrapper build")
 
-# RED for #35: these are the remaining aggregate qualification gates.
 require_contains(formats "Build Steinberg VST3 validator" "VST3 validator build step")
 require_contains(formats "Validate wrapped VST3 products" "VST3 validation step")
 require_contains(formats "Run auval for AUv2" "AUv2 auval step")
