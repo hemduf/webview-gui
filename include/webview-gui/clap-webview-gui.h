@@ -331,21 +331,15 @@ private:
     }
 
     [[nodiscard]] bool hasHostWebviewPath() noexcept {
-#if defined(WEBVIEW_GUI_WEBVIEW_ONLY) || defined(__EMSCRIPTEN__) || defined(__wasm__) || \
-    defined(__wasm32__) || defined(__wasm64__)
-        // The WCLAP module needs only the host-owned send path. Host WebView is
-        // resolved during init because the pinned native bridge immediately
-        // copies extHostWebview; the bridge's module host path special-cases this
-        // extension and returns a pre-registered proxy without native re-entry.
+        // The bridge-owned host proxy must still be resolved during init because
+        // historical WCLAP bridges copy extHostWebview immediately. Plug-in
+        // extension discovery remains deferred until post-init GUI negotiation,
+        // where both halves of clap.webview/3 must be complete before advertising
+        // CLAP_WINDOW_API_WEBVIEW.
         return plugin != nullptr
             && host != nullptr
-            && resolveHostWebviewExtension();
-#else
-        return plugin != nullptr
-            && host != nullptr
-            && resolvePluginWebviewExtension()
-            && resolveHostWebviewExtension();
-#endif
+            && resolveHostWebviewExtension()
+            && resolvePluginWebviewExtension();
     }
 
     void initialiseCurrentIdentity() {
