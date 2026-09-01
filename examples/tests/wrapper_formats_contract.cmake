@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 
-if(NOT DEFINED EXAMPLES_CMAKE OR NOT EXISTS "${EXAMPLES_CMAKE}")
-    message(FATAL_ERROR "EXAMPLES_CMAKE must point to examples/CMakeLists.txt")
-endif()
-if(NOT DEFINED POLYSYNTH_CMAKE OR NOT EXISTS "${POLYSYNTH_CMAKE}")
-    message(FATAL_ERROR "POLYSYNTH_CMAKE must point to examples/polysynth/CMakeLists.txt")
-endif()
+foreach(required_path_var IN ITEMS EXAMPLES_CMAKE POLYSYNTH_CMAKE FORMATS_CMAKE)
+    if(NOT DEFINED ${required_path_var} OR NOT EXISTS "${${required_path_var}}")
+        message(FATAL_ERROR "${required_path_var} must point to an existing CMake source")
+    endif()
+endforeach()
 
 file(READ "${EXAMPLES_CMAKE}" examples_cmake)
 file(READ "${POLYSYNTH_CMAKE}" polysynth_cmake)
-set(all_cmake "${examples_cmake}\n${polysynth_cmake}")
+file(READ "${FORMATS_CMAKE}" formats_cmake)
+set(all_cmake "${examples_cmake}\n${polysynth_cmake}\n${formats_cmake}")
 
 foreach(option_name IN ITEMS
         WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP
@@ -28,21 +28,33 @@ if(NOT examples_cmake MATCHES "option\\(WEBVIEW_GUI_EXAMPLES_FORMAT_AAX[^\\n]* O
     message(FATAL_ERROR "AAX must remain explicitly OFF by default")
 endif()
 
-string(REGEX MATCHALL "make_clapfirst_plugins\\(" clapfirst_calls "${all_cmake}")
-list(LENGTH clapfirst_calls clapfirst_count)
-if(clapfirst_count LESS 2)
-    message(FATAL_ERROR "Gain and PolySynth must each use make_clapfirst_plugins()")
-endif()
+# Keep the already-qualified native CLAP targets canonical. The clap-first
+# convenience function always creates another CLAP product, so #34 uses the
+# underlying thin format adapters and never duplicates processor/CLAP logic.
+foreach(wrapper_api IN ITEMS
+        target_add_vst3_wrapper
+        target_add_auv2_wrapper
+        target_add_auv3_wrapper
+        target_add_auv3_standalone_wrapper
+        target_add_standalone_wrapper
+        target_add_aax_wrapper)
+    string(FIND "${formats_cmake}" "${wrapper_api}(" api_index)
+    if(api_index EQUAL -1)
+        message(FATAL_ERROR "Missing clap-wrapper adapter API ${wrapper_api}")
+    endif()
+endforeach()
 
 foreach(required_token IN ITEMS
         webview_gui_example_gain_clap_core
         webview_gui_example_polysynth_clap_core
         gain/gain_entry.cpp
-        polysynth_entry.cpp
+        polysynth/polysynth_entry.cpp
         com.webview-gui.example.gain
         com.webview-gui.example.polysynth
         WebviewGuiGain
-        WebviewGuiPolySynth)
+        WebviewGuiPolySynth
+        webview_gui_example_gain_formats
+        webview_gui_example_polysynth_formats)
     string(FIND "${all_cmake}" "${required_token}" token_index)
     if(token_index EQUAL -1)
         message(FATAL_ERROR "Wrapper integration is missing required token: ${required_token}")

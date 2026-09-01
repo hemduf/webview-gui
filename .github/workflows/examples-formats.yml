@@ -15,6 +15,10 @@ on:
       - '.github/workflows/examples-formats.yml'
   workflow_dispatch:
 
+concurrency:
+  group: examples-formats-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   desktop:
     name: ${{ matrix.os }} / CLAP+VST3+Standalone
@@ -24,14 +28,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
+          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev libx11-dev
       - name: Configure formats
         run: >-
           cmake -S examples -B build-formats
@@ -50,6 +54,7 @@ jobs:
           cmake
           -DEXAMPLES_CMAKE=${{ github.workspace }}/examples/CMakeLists.txt
           -DPOLYSYNTH_CMAKE=${{ github.workspace }}/examples/polysynth/CMakeLists.txt
+          -DFORMATS_CMAKE=${{ github.workspace }}/examples/cmake/ExampleFormats.cmake
           -P examples/tests/wrapper_formats_contract.cmake
       - name: Build wrapped products
         run: >-
@@ -60,7 +65,7 @@ jobs:
     name: macOS / AUv2
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
       - name: Configure AUv2
@@ -85,7 +90,7 @@ jobs:
     name: macOS / AUv3+host
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
       - name: Configure AUv3

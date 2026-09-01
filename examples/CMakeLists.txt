@@ -19,6 +19,40 @@ option(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN "Build the Gain reference example" OFF)
 option(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH "Build the PolySynth reference example" OFF)
 option(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS "Enable pinned native wrapper integration" OFF)
 
+# The native CLAP artifact remains the canonical implementation/reference. The
+# other formats are thin clap-wrapper projections of that exact implementation.
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP "Build the canonical native CLAP artifact" ON)
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_VST3 "Build VST3 projections with clap-wrapper" OFF)
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2 "Build AUv2 projections on Apple platforms" OFF)
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3 "Build AUv3 extensions and host apps with Xcode" OFF)
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE "Build simple standalone CLAP hosts" OFF)
+option(WEBVIEW_GUI_EXAMPLES_FORMAT_AAX "Build AAX projections when AAX_SDK_ROOT is supplied" OFF)
+
+if((WEBVIEW_GUI_EXAMPLES_BUILD_GAIN OR WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
+   AND NOT WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP)
+    message(FATAL_ERROR
+        "The examples keep native CLAP canonical; WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP must remain ON when Gain or PolySynth is built")
+endif()
+
+set(_webview_gui_wrapper_product_requested OFF)
+foreach(_webview_gui_format IN ITEMS
+        WEBVIEW_GUI_EXAMPLES_FORMAT_VST3
+        WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2
+        WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3
+        WEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE
+        WEBVIEW_GUI_EXAMPLES_FORMAT_AAX)
+    if(${_webview_gui_format})
+        set(_webview_gui_wrapper_product_requested ON)
+    endif()
+endforeach()
+if(_webview_gui_wrapper_product_requested AND NOT WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
+    message(FATAL_ERROR
+        "Non-CLAP example formats require WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON")
+endif()
+if((WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2 OR WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3) AND NOT APPLE)
+    message(FATAL_ERROR "AUv2/AUv3 example formats are available only on Apple platforms")
+endif()
+
 set(WEBVIEW_GUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
     "Path to the webview-gui repository root")
 
@@ -303,10 +337,18 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
 endif()
 
-# #28 only prepares the pinned native wrapper integration point. Concrete VST3,
-# AU and standalone products are owned by #34, and WCLAP remains on the
-# repository-owned #30 packaging path rather than clap-wrapper's WCLAP helper.
+# #28 prepares the pinned native wrapper integration point. #34 projects the
+# existing canonical CLAP targets through these thin wrapper APIs; WCLAP remains
+# on the repository-owned #30 packaging path.
 if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
+    # VST3 note expressions can represent the PolySynth's note-expression input.
+    # Respect an explicit caller override, otherwise ask clap-wrapper to forward
+    # its complete VST3 note-expression set to the underlying CLAP.
+    if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH AND NOT DEFINED CLAP_SUPPORTS_ALL_NOTE_EXPRESSIONS)
+        set(CLAP_SUPPORTS_ALL_NOTE_EXPRESSIONS ON CACHE BOOL
+            "Forward all VST3 note expressions to the PolySynth CLAP")
+    endif()
+
     FetchContent_Declare(webview_gui_example_clap_wrapper
         GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
         GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
@@ -330,7 +372,9 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
     if(NOT COMMAND target_add_vst3_wrapper
        OR NOT COMMAND target_add_auv2_wrapper
        OR NOT COMMAND target_add_auv3_wrapper
-       OR NOT COMMAND target_add_standalone_wrapper)
+       OR NOT COMMAND target_add_auv3_standalone_wrapper
+       OR NOT COMMAND target_add_standalone_wrapper
+       OR NOT COMMAND target_add_aax_wrapper)
         message(FATAL_ERROR
             "Pinned clap-wrapper revision does not expose the expected native wrapper API")
     endif()
@@ -341,4 +385,13 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
             "-DWRAPPER_SOURCE_DIR=${webview_gui_example_clap_wrapper_SOURCE_DIR}"
             "-DCLAP_SOURCE_DIR=${webview_gui_example_clap_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_LIST_DIR}/tests/wrapper_foundation_contract.cmake")
+
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/ExampleFormats.cmake")
+
+    add_test(NAME webview_gui_examples_wrapper_formats_contract
+        COMMAND ${CMAKE_COMMAND}
+            "-DEXAMPLES_CMAKE=${CMAKE_CURRENT_LIST_FILE}"
+            "-DPOLYSYNTH_CMAKE=${CMAKE_CURRENT_LIST_DIR}/polysynth/CMakeLists.txt"
+            "-DFORMATS_CMAKE=${CMAKE_CURRENT_LIST_DIR}/cmake/ExampleFormats.cmake"
+            -P "${CMAKE_CURRENT_LIST_DIR}/tests/wrapper_formats_contract.cmake")
 endif()
