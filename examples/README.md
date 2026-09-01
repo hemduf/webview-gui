@@ -112,15 +112,12 @@ Instead of downloads, local SDK roots can be supplied explicitly when required: 
 
 ### VST3 validator
 
-The aggregate CI does not fetch a second VST3 SDK. It builds Steinberg's `validator` from the exact SDK source tree downloaded by the pinned `clap-wrapper` configuration above, so adapter and validator revisions cannot drift independently:
+The aggregate CI does not fetch a second VST3 SDK. It builds Steinberg's `validator` from the exact SDK source tree downloaded by the pinned `clap-wrapper` configuration above, so adapter and validator revisions cannot drift independently. The repository-owned mini-project adds only `base`, `pluginterfaces`, `sdk_common`, `sdk_hosting`, and Steinberg's validator target; it deliberately avoids the SDK top-level project because that project unconditionally configures unrelated hosting examples such as Linux `editorhost`/`gtkmm`.
 
 ```bash
-cmake -S build-formats/cpm/vst3sdk -B build-vst3-validator \
+cmake -S examples/tests/vst3-validator -B build-vst3-validator \
   -DCMAKE_BUILD_TYPE=Release \
-  -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
-  -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON \
-  -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
-  -DSMTG_RUN_VST_VALIDATOR=OFF
+  -DVST3_SDK_ROOT="$PWD/build-formats/cpm/vst3sdk"
 cmake --build build-vst3-validator --config Release --target validator --parallel
 
 VALIDATOR="$(find build-vst3-validator -type f -name validator -perm -111 -print -quit)"
