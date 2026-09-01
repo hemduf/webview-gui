@@ -53,6 +53,38 @@ class NativeArtifactVerifierTests(unittest.TestCase):
             finally:
                 artifact.run_symbols = original_run_symbols
 
+    def test_windows_symbol_audit_prefers_pe_export_table(self) -> None:
+        requested: list[str] = []
+
+        def fake_which(name: str) -> str | None:
+            requested.append(name)
+            if name == "dumpbin":
+                return "C:/VS/dumpbin.exe"
+            if name == "nm":
+                return "C:/Git/nm.exe"
+            return None
+
+        command = artifact.symbol_audit_command(
+            Path("plugin.vst3"), platform="win32", os_name="nt", which=fake_which
+        )
+        self.assertEqual(
+            command,
+            ["C:/VS/dumpbin.exe", "/EXPORTS", "plugin.vst3"],
+        )
+        self.assertNotIn("nm", requested)
+
+    def test_windows_symbol_audit_falls_back_to_llvm_readobj(self) -> None:
+        def fake_which(name: str) -> str | None:
+            return "C:/LLVM/llvm-readobj.exe" if name == "llvm-readobj" else None
+
+        command = artifact.symbol_audit_command(
+            Path("plugin.vst3"), platform="win32", os_name="nt", which=fake_which
+        )
+        self.assertEqual(
+            command,
+            ["C:/LLVM/llvm-readobj.exe", "--coff-exports", "plugin.vst3"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
