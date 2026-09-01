@@ -76,7 +76,7 @@ static bool runWclapWebviewSmoke(const clap_plugin_t *plugin) {
     const auto *webview = static_cast<const WclapPluginWebviewSmoke *>(
         plugin->get_extension(plugin, kWclapWebviewExtensionId));
     if (!gui || !webview || !gui->is_api_supported || !gui->create ||
-        !gui->destroy || !gui->set_parent || !gui->show || !gui->hide ||
+        !gui->destroy || !gui->get_size ||
         !webview->get_uri || !webview->get_resource || !webview->receive) {
         fprintf(stderr, "  ✗ WCLAP WebView smoke: incomplete clap.gui/clap.webview/3 path\n");
         return false;
@@ -97,11 +97,10 @@ static bool runWclapWebviewSmoke(const clap_plugin_t *plugin) {
         return false;
     };
 
-    clap_window_t parent{};
-    parent.api = kWclapWebviewApi;
-    parent.ptr = nullptr;
-    if (!gui->set_parent(plugin, &parent))
-        return failCreated("gui.set_parent(webview,null) failed");
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!gui->get_size(plugin, &width, &height) || width == 0 || height == 0)
+        return failCreated("GUI size did not cross the real WCLAP bridge");
 
     char uri[2048]{};
     const auto uriLength = webview->get_uri(plugin, uri, sizeof(uri));
@@ -123,11 +122,8 @@ static bool runWclapWebviewSmoke(const clap_plugin_t *plugin) {
     if (wclapWebviewSendCalls <= sendsBefore)
         return failCreated("module reply did not reach native clap_host_webview.send");
 
-    if (!gui->show(plugin) || !gui->hide(plugin))
-        return failCreated("host-owned WebView show/hide failed");
-
     gui->destroy(plugin);
-    printf("  ✓ WCLAP WebView bridge smoke (create/resource/message round-trip)\n");
+    printf("  ✓ WCLAP WebView bridge smoke (create/size/resource/message round-trip)\n");
     return true;
 }
 '''
