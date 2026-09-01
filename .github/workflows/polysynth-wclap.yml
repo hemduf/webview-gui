@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/**'
-      - 'fix/**'
   pull_request:
     paths:
       - 'examples/polysynth/**'
@@ -144,7 +142,7 @@ jobs:
           ./build-clap-trap/clap-trap validate build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
 
       - name: Upload PolySynth WCLAP bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65e75b540449e92b4886f43607fa02 # v4
         with:
           name: webview-gui-polysynth-wclap
           if-no-files-found: error
