@@ -5,6 +5,7 @@ on:
     paths:
       - 'examples/**'
       - 'cmake/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/gain-core.yml'
       - '.github/workflows/polysynth-core.yml'
       - '.github/workflows/gain-wclap.yml'
@@ -17,6 +18,7 @@ on:
     paths:
       - 'examples/**'
       - 'cmake/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/gain-core.yml'
       - '.github/workflows/polysynth-core.yml'
       - '.github/workflows/gain-wclap.yml'
@@ -42,6 +44,7 @@ jobs:
       - name: Verify aggregate qualification ownership and gates
         run: >-
           cmake
+          -DCI_WORKFLOW="${{ github.workspace }}/.github/workflows/ci.yml"
           -DGAIN_CORE_WORKFLOW="${{ github.workspace }}/.github/workflows/gain-core.yml"
           -DPOLYSYNTH_CORE_WORKFLOW="${{ github.workspace }}/.github/workflows/polysynth-core.yml"
           -DGAIN_WCLAP_WORKFLOW="${{ github.workspace }}/.github/workflows/gain-wclap.yml"
