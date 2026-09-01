@@ -8,6 +8,40 @@ set(WEBVIEW_GUI_EXAMPLES_ASSET_OUTPUT_DIRECTORY
     "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH
     "Predictable build-tree directory for wrapped example products")
 
+# clap-wrapper 0.16.0 compiles its Windows support libraries with the static MSVC
+# runtime. The canonical CLAP/core targets are created before FetchContent enters
+# the wrapper directory, so their default would otherwise remain /MD[d] while the
+# wrapper objects use /MT[d], which MSVC rejects at link time. Apply the same
+# runtime to every compiled target already present in the examples subtree and
+# keep the variable set for wrapper/SDK targets created below.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+    function(webview_gui_examples_set_static_msvc_runtime directory)
+        get_property(example_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(example_target IN LISTS example_targets)
+            get_target_property(example_target_imported ${example_target} IMPORTED)
+            get_target_property(example_target_type ${example_target} TYPE)
+            if(NOT example_target_imported AND
+               (example_target_type STREQUAL "EXECUTABLE" OR
+                example_target_type STREQUAL "STATIC_LIBRARY" OR
+                example_target_type STREQUAL "SHARED_LIBRARY" OR
+                example_target_type STREQUAL "MODULE_LIBRARY" OR
+                example_target_type STREQUAL "OBJECT_LIBRARY"))
+                set_property(TARGET ${example_target} PROPERTY
+                    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+            endif()
+        endforeach()
+
+        get_property(example_subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+        foreach(example_subdirectory IN LISTS example_subdirectories)
+            webview_gui_examples_set_static_msvc_runtime("${example_subdirectory}")
+        endforeach()
+    endfunction()
+
+    webview_gui_examples_set_static_msvc_runtime("${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 function(webview_gui_add_example_wrappers)
     set(options SUPPORTS_ALL_NOTE_EXPRESSIONS)
     set(one_value_args
