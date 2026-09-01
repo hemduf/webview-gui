@@ -17,6 +17,7 @@ add_library(webview_gui_example_polysynth MODULE
 )
 target_link_libraries(webview_gui_example_polysynth PRIVATE
     webview_gui_example_polysynth_clap_core
+    webview-gui
 )
 target_compile_features(webview_gui_example_polysynth PRIVATE cxx_std_17)
 set_target_properties(webview_gui_example_polysynth PROPERTIES
@@ -282,6 +283,7 @@ target_include_directories(webview_gui_example_polysynth_voice_info_tests PRIVAT
 )
 target_link_libraries(webview_gui_example_polysynth_voice_info_tests PRIVATE
     webview_gui_example_polysynth_clap_core
+    webview-gui
 )
 target_compile_features(webview_gui_example_polysynth_voice_info_tests PRIVATE cxx_std_17)
 
