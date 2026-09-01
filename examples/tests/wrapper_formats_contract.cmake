@@ -65,4 +65,24 @@ foreach(required_token IN ITEMS
     endif()
 endforeach()
 
+# Regression contracts discovered by the cross-platform #34 smoke matrix:
+# - Linux VST3 links static wrapper/VST SDK archives into a module and therefore
+#   requires those archives to be PIC.
+# - VS 2026 turns clap-wrapper 0.16.0's <experimental/coroutine> deprecation into
+#   a hard error unless the pinned wrapper target opts into the documented shim.
+# - Xcode 26 rejects the pinned AUv3 host's unscoped switch case because its block
+#   capture has a lifetime that crosses the following case label. Keep the patch
+#   explicit and fail-closed in the pinned-wrapper compatibility layer.
+foreach(required_compatibility_token IN ITEMS
+        "${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON"
+        "base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON"
+        "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+        "webview_gui_apply_clap_wrapper_auv3_host_switch_patch")
+    string(FIND "${all_cmake}" "${required_compatibility_token}" compatibility_index)
+    if(compatibility_index EQUAL -1)
+        message(FATAL_ERROR
+            "Missing pinned-wrapper compatibility contract: ${required_compatibility_token}")
+    endif()
+endforeach()
+
 message(STATUS "Example wrapper format contract is present")
