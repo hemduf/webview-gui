@@ -188,6 +188,12 @@ function(webview_gui_add_example_wrappers)
         if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
             message(FATAL_ERROR "AUv3 requires the Xcode generator (-G Xcode)")
         endif()
+        if(NOT COMMAND webview_gui_apply_clap_wrapper_auv3_host_switch_patch)
+            message(FATAL_ERROR
+                "Pinned clap-wrapper AUv3 Xcode compatibility patch is unavailable")
+        endif()
+        webview_gui_apply_clap_wrapper_auv3_host_switch_patch(
+            "${webview_gui_example_clap_wrapper_SOURCE_DIR}/src/detail/standalone/macos/auv3/AUv3HostAppDelegate.mm")
 
         set(target "${FMT_TARGET_PREFIX}_auv3")
         add_executable(${target} ${FMT_ENTRY_SOURCE})
