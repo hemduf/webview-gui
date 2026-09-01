@@ -28,6 +28,13 @@ function(require_contains haystack_var needle label)
     endif()
 endfunction()
 
+function(require_absent haystack_var needle label)
+    string(FIND "${${haystack_var}}" "${needle}" found_at)
+    if(NOT found_at EQUAL -1)
+        message(FATAL_ERROR "Unexpected ${label}: ${needle}")
+    endif()
+endfunction()
+
 # Native CLAP validation remains owned by the plug-in development workflows.
 foreach(workflow_var IN ITEMS gain_core polysynth_core)
     require_contains(${workflow_var}
@@ -72,6 +79,12 @@ require_contains(formats "WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=ON" "AUv2 wrapper bui
 require_contains(formats "WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON" "AUv3 wrapper build")
 
 require_contains(formats "Build Steinberg VST3 validator" "VST3 validator build step")
+require_contains(formats
+    "cmake -S examples/tests/vst3-validator -B build-vst3-validator"
+    "isolated VST3 validator driver")
+require_absent(formats
+    "cmake -S build-formats/cpm/vst3sdk -B build-vst3-validator"
+    "full Steinberg SDK project used for validator-only build")
 require_contains(formats "Validate wrapped VST3 products" "VST3 validation step")
 require_contains(formats "Run auval for AUv2" "AUv2 auval step")
 require_contains(formats "auval -v aufx WvGn WvGu" "Gain AUv2 auval invocation")
