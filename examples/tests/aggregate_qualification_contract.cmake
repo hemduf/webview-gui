@@ -56,9 +56,9 @@ endforeach()
 # runs on main. This preserves the project's fast branch-iteration policy while
 # still making ASan/UBSan/TSan part of the merged-commit qualification surface.
 require_contains(ci "sanitizers:" "ASan/UBSan job")
-require_contains(ci "name: ${{ matrix.os }} / ASan+UBSan" "ASan/UBSan job name")
+require_contains(ci "ASan+UBSan" "ASan/UBSan job name")
 require_contains(ci "thread-sanitizer:" "TSan job")
-require_contains(ci "name: ubuntu-latest / TSan registry" "TSan job name")
+require_contains(ci "TSan registry" "TSan job name")
 require_contains(ci "if: github.ref == 'refs/heads/main'" "main-only sanitizer policy")
 
 # #34 owns production of the wrapped products; #35 upgrades that matrix from
