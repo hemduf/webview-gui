@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from typing import Callable
 
 EXPECTED_PRODUCTS = (
     "WebviewGuiGain.clap",
@@ -19,6 +20,10 @@ EXPECTED_PRODUCTS = (
 FORBIDDEN_SYMBOL_MARKERS = (
     "webview_gui::",
     "choc::",
+)
+WINDOWS_FORBIDDEN_EXPORT_MARKERS = (
+    "webview_gui",
+    "choc",
 )
 
 
@@ -68,25 +73,44 @@ def contains_bytes(path: Path, needle: bytes) -> bool:
             previous = data[-overlap:] if overlap else b""
 
 
-def run_symbols(binary: Path) -> str | None:
-    nm = shutil.which("nm") or shutil.which("llvm-nm")
-    if not nm:
-        print(f"note: no nm/llvm-nm available; symbol audit skipped for {binary}")
+def symbol_audit_command(
+    binary: Path,
+    *,
+    platform: str | None = None,
+    os_name: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> list[str] | None:
+    platform = sys.platform if platform is None else platform
+    os_name = os.name if os_name is None else os_name
+
+    if os_name == "nt":
+        # `nm --defined-only` on PE/COFF reports implementation symbols that are
+        # not actually exported by the DLL. Audit the export table instead so the
+        # Windows gate measures the same ABI boundary as `nm -D` / `nm -gU`.
+        dumpbin = which("dumpbin")
+        if dumpbin:
+            return [dumpbin, "/EXPORTS", str(binary)]
+        llvm_readobj = which("llvm-readobj")
+        if llvm_readobj:
+            return [llvm_readobj, "--coff-exports", str(binary)]
         return None
 
-    if sys.platform == "darwin":
-        command = [nm, "-gU", str(binary)]
-    elif os.name == "nt":
-        command = [nm, "--defined-only", str(binary)]
-    else:
-        command = [nm, "-D", "--defined-only", str(binary)]
+    nm = which("nm") or which("llvm-nm")
+    if not nm:
+        return None
+    if platform == "darwin":
+        return [nm, "-gU", str(binary)]
+    return [nm, "-D", "--defined-only", str(binary)]
+
+
+def run_symbols(binary: Path) -> str | None:
+    command = symbol_audit_command(binary)
+    if command is None:
+        print(f"note: no compatible export-table tool available; symbol audit skipped for {binary}")
+        return None
 
     completed = subprocess.run(command, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
-        # A platform's nm may not understand every bundle binary format. Other
-        # platforms in the aggregate matrix still perform this gate, so report
-        # the limitation instead of converting a tooling mismatch into a false
-        # product failure.
         print(
             f"note: symbol audit tool could not inspect {binary}: "
             f"{completed.stderr.strip() or completed.stdout.strip()}"
@@ -94,13 +118,14 @@ def run_symbols(binary: Path) -> str | None:
         return None
 
     output = completed.stdout
-    cxxfilt = shutil.which("c++filt") or shutil.which("llvm-cxxfilt")
-    if cxxfilt:
-        demangled = subprocess.run(
-            [cxxfilt], input=output, text=True, capture_output=True, check=False
-        )
-        if demangled.returncode == 0:
-            output = demangled.stdout
+    if os.name != "nt":
+        cxxfilt = shutil.which("c++filt") or shutil.which("llvm-cxxfilt")
+        if cxxfilt:
+            demangled = subprocess.run(
+                [cxxfilt], input=output, text=True, capture_output=True, check=False
+            )
+            if demangled.returncode == 0:
+                output = demangled.stdout
     return output
 
 
@@ -117,7 +142,8 @@ def qualify_product(product: Path, workspace: Path) -> None:
 
     symbols = run_symbols(binary)
     if symbols is not None:
-        leaked = [marker for marker in FORBIDDEN_SYMBOL_MARKERS if marker in symbols]
+        markers = WINDOWS_FORBIDDEN_EXPORT_MARKERS if os.name == "nt" else FORBIDDEN_SYMBOL_MARKERS
+        leaked = [marker for marker in markers if marker in symbols]
         if leaked:
             raise RuntimeError(
                 f"unexpected implementation symbols exported by {binary}: {', '.join(leaked)}"
