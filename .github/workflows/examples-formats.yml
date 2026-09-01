@@ -104,9 +104,9 @@ jobs:
         shell: pwsh
         run: |
           $validator = Get-ChildItem build-vst3-validator -Recurse -File -Filter validator.exe | Select-Object -First 1
-          $gain = Get-ChildItem build-formats -Recurse | Where-Object { $_.Name -eq 'WebviewGuiGain.vst3' } | Select-Object -First 1
-          $polysynth = Get-ChildItem build-formats -Recurse | Where-Object { $_.Name -eq 'WebviewGuiPolySynth.vst3' } | Select-Object -First 1
-          if (-not $validator -or -not $gain -or -not $polysynth) { throw 'Missing validator or VST3 product' }
+          $gain = Get-ChildItem build-formats -Recurse -Directory -Filter WebviewGuiGain.vst3 | Select-Object -First 1
+          $polysynth = Get-ChildItem build-formats -Recurse -Directory -Filter WebviewGuiPolySynth.vst3 | Select-Object -First 1
+          if (-not $validator -or -not $gain -or -not $polysynth) { throw 'Missing validator or VST3 bundle' }
           & $validator.FullName --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $validator.FullName $gain.FullName
