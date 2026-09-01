@@ -95,6 +95,7 @@ Stable bundle bases are `com.webview-gui.example.gain` and `com.webview-gui.exam
 
 ```bash
 cmake -S examples -B build-formats \
+  -DCMAKE_BUILD_TYPE=Release \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
@@ -102,29 +103,73 @@ cmake -S examples -B build-formats \
   -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON \
   -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
 
-cmake --build build-formats --parallel --target \
+cmake --build build-formats --config Release --parallel --target \
   webview_gui_example_gain_formats_all \
   webview_gui_example_polysynth_formats_all
 ```
 
 Instead of downloads, local SDK roots can be supplied explicitly when required: `VST3_SDK_ROOT`, `AUDIOUNIT_SDK_ROOT`, `RTAUDIO_SDK_ROOT`, `RTMIDI_SDK_ROOT` and, for Windows standalone builds, `WIL_SDK_ROOT`.
 
+### VST3 validator
+
+The aggregate CI does not fetch a second VST3 SDK. It builds Steinberg's `validator` from the exact SDK source tree downloaded by the pinned `clap-wrapper` configuration above, so adapter and validator revisions cannot drift independently:
+
+```bash
+cmake -S build-formats/cpm/vst3sdk -B build-vst3-validator \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
+  -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON \
+  -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
+  -DSMTG_RUN_VST_VALIDATOR=OFF
+cmake --build build-vst3-validator --config Release --target validator --parallel
+
+VALIDATOR="$(find build-vst3-validator -type f -name validator -perm -111 -print -quit)"
+GAIN_VST3="$(find build-formats -name WebviewGuiGain.vst3 -print -quit)"
+POLYSYNTH_VST3="$(find build-formats -name WebviewGuiPolySynth.vst3 -print -quit)"
+"$VALIDATOR" "$GAIN_VST3"
+"$VALIDATOR" "$POLYSYNTH_VST3"
+```
+
+On Linux, run the final two commands under `xvfb-run -a` because the validator can exercise editor-related VST3 contracts. Windows CI performs the equivalent discovery with PowerShell and `validator.exe`.
+
+### Native artifact hygiene
+
+Release products are qualified for stable CLAP/VST3/standalone names, non-empty loadable product binaries, absence of the absolute source-checkout path, and unexpected exported `webview_gui::` / `choc::` implementation symbols where the platform provides `nm`/`llvm-nm`:
+
+```bash
+python examples/tests/verify_native_artifacts.py \
+  --root build-formats \
+  --workspace "$PWD"
+```
+
+This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators.
+
 ### macOS AUv2
 
 ```bash
 cmake -S examples -B build-auv2 \
+  -DCMAKE_BUILD_TYPE=Release \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
   -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=ON \
   -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
 
-cmake --build build-auv2 --parallel --target \
+cmake --build build-auv2 --config Release --parallel --target \
   webview_gui_example_gain_formats_auv2 \
   webview_gui_example_polysynth_formats_auv2
 ```
 
 For an offline/local-SDK build, omit dependency downloading and provide `-DAUDIOUNIT_SDK_ROOT=/path/to/AudioUnitSDK` together with any other SDK roots required by enabled formats.
+
+To reproduce the blocking AUv2 validation, install or copy the resulting components into `~/Library/Audio/Plug-Ins/Components`, ad-hoc sign local CI builds if needed, restart `AudioComponentRegistrar`, then run:
+
+```bash
+auval -v aufx WvGn WvGu
+auval -v aumu WvPs WvGu
+```
+
+`WvGu` is the stable manufacturer code; `WvGn` is Gain and `WvPs` is PolySynth. A non-zero `auval` result fails the format qualification job.
 
 ### macOS AUv3
 
@@ -137,12 +182,14 @@ cmake -S examples -B build-auv3 -G Xcode \
   -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
   -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON
 
-cmake --build build-auv3 --config Debug --parallel --target \
+cmake --build build-auv3 --config Release --parallel --target \
   webview_gui_example_gain_formats_auv3 \
   webview_gui_example_gain_formats_auv3_standalone \
   webview_gui_example_polysynth_formats_auv3 \
   webview_gui_example_polysynth_formats_auv3_standalone
 ```
+
+Public CI verifies both `.appex` products and both generated AUv3 host apps. It does not claim `auval` coverage for AUv3, because `auval` is the AUv2 registration/validation gate used here; AUv3 remains an Xcode build/product-layout smoke until a reliable host-launch path is available on the runner.
 
 ### Optional AAX
 
