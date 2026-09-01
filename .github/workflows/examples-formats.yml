@@ -68,15 +68,14 @@ jobs:
 
       # #34 already downloads this exact Steinberg SDK through pinned clap-wrapper.
       # Reuse that source tree so the validator cannot silently drift from the SDK
-      # used to compile the VST3 adapters.
+      # used to compile the VST3 adapters. The repository-owned driver intentionally
+      # configures only validator dependencies; Steinberg's SDK top-level project
+      # unconditionally adds unrelated hosting examples such as Linux editorhost.
       - name: Build Steinberg VST3 validator
         run: >-
-          cmake -S build-formats/cpm/vst3sdk -B build-vst3-validator
+          cmake -S examples/tests/vst3-validator -B build-vst3-validator
           -DCMAKE_BUILD_TYPE=Release
-          -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF
-          -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
-          -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF
-          -DSMTG_RUN_VST_VALIDATOR=OFF
+          -DVST3_SDK_ROOT=${{ github.workspace }}/build-formats/cpm/vst3sdk
       - name: Build Steinberg VST3 validator executable
         run: cmake --build build-vst3-validator --config Release --target validator --parallel
 
