@@ -79,7 +79,7 @@ CLAP clap.gui + clap.webview/3
 host-owned WebView / WCLAP bridge
 ```
 
-`CLAP_WINDOW_API_WEBVIEW` is advertised only when a complete host WebView send path is available. Native window APIs are not advertised by the WCLAP profile.
+`CLAP_WINDOW_API_WEBVIEW` is advertised only after initialization, when both the plug-in `clap.webview/3` callbacks and the host WebView send callback form a complete usable path. Native window APIs are not advertised by the WCLAP profile.
 
 The pinned historical `wclap-bridge` probes `clap.webview/3` before `clap_plugin.init()`. The WCLAP factory boundary therefore exposes one deliberately narrow compatibility exception: that pre-init WebView query receives a stable fail-closed table. All real resource/message callbacks remain unavailable until initialization succeeds, and all other pre-init extension queries retain the wrapped plug-in's normal lifecycle checking.
 
