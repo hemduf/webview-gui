@@ -93,6 +93,27 @@ function(webview_gui_add_example_wrappers)
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.vst3"
             BUNDLE_VERSION "0.1.0"
             WINDOWS_FOLDER_VST3 FALSE)
+
+        # Linux VST3 is a shared module assembled from clap-wrapper and Steinberg
+        # static archives. clap-wrapper 0.16.0 does not mark those archives PIC,
+        # which produces R_X86_64_PC32 relocation failures at final link time.
+        # Apply PIC only where ELF shared-module linking requires it; macOS and
+        # Windows use their native wrapper paths unchanged.
+        if(UNIX AND NOT APPLE)
+            if(TARGET ${target}-clap-wrapper-vst3-lib)
+                set_property(TARGET ${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON)
+            else()
+                message(FATAL_ERROR
+                    "Pinned clap-wrapper VST3 helper target changed; revalidate the Linux PIC compatibility rule")
+            endif()
+            if(TARGET base-sdk-vst3)
+                set_property(TARGET base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON)
+            else()
+                message(FATAL_ERROR
+                    "Pinned clap-wrapper VST3 SDK target changed; revalidate the Linux PIC compatibility rule")
+            endif()
+        endif()
+
         # clap-wrapper 0.16.0 has a platform-specific target-name typo in its
         # ASSET_OUTPUT_DIRECTORY branch on macOS/Windows. Keep the wrapper's
         # native VST3 output layout instead of exercising that broken branch.
@@ -112,6 +133,17 @@ function(webview_gui_add_example_wrappers)
             STATICALLY_LINKED_CLAP_ENTRY TRUE
             PLUGIN_ID "${FMT_PLUGIN_ID}"
             RESOURCE_DIRECTORY "")
+
+        # The pinned Windows standalone still includes MSVC's deprecated
+        # <experimental/coroutine>. VS 2026 deliberately turns that deprecation
+        # into STL1011 unless the documented compatibility macro is defined.
+        # Keep this scoped to the wrapper-bearing standalone target so normal
+        # webview-gui consumers do not inherit a global STL suppression.
+        if(MSVC)
+            target_compile_definitions(${target} PRIVATE
+                _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+        endif()
+
         if(APPLE)
             set_target_properties(${target} PROPERTIES
                 MACOSX_BUNDLE_GUI_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.standalone"
