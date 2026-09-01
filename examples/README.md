@@ -48,13 +48,13 @@ This table is the completed #32 CLAP surface. Every interface marked `Implemente
 | `clap.voice-info` | Implemented | Reports the configured active voice count/capacity after activation and advertises overlapping-note support consistently with the fixed-capacity allocator. |
 | `clap.tail` | Implemented | The Release parameter converted to samples at the active sample rate is published through a lock-free tail snapshot. The reported value is the exact bounded maximum of the current default Release and every active voice generation's NOTE_ON Release snapshot, so shortening the default can never under-report an older voice and the tail can still decrease as soon as the last longer generation retires. Active audio-thread changes call `host.tail.changed()` only when the published value changes; inactive/main-thread parameter changes retain the new Release without issuing that audio-thread-only callback. No delay/reverb/feedback source extends the tail. |
 | `clap.remote-controls/2` | Implemented | Four stable non-preset pages are published through both pinned IDs: `Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune; `Output / Performance` maps Master Gain, Pan, and Amp Level; `Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env; and `Amp Envelope / ADSR` maps Attack, Decay, Sustain, and Release. Every unused slot is `CLAP_INVALID_ID`; page IDs and host parameter mappings are stable and fully covered by deterministic contracts. |
-| `clap.gui` | Not advertised (owned by #33) | #33 depends on this completed CLAP instrument surface and owns the PolySynth editor, `ClapWebviewGui` integration, GUI parameter gestures and bounded RT-to-UI telemetry. #32 therefore does not return a placeholder GUI interface. |
+| `clap.gui` + `clap.webview` | Implemented | Native CLAP and WCLAP share the compact bundled WebView editor delivered by #33. GUI edits emit normal CLAP begin/value/end gestures, host/base-value updates synchronize back to the editor, and bounded RT voice/meter/modulation/note-expression telemetry uses latest-wins snapshots. `process()` never calls the WebView. |
 | `clap.render` | Intentionally not advertised | The current DSP has no alternate offline-quality algorithm, so render mode does not influence processing. The pinned CLAP contract explicitly advises not implementing this extension when the information has no effect. |
 | `clap.latency` | Intentionally not advertised | Current processing has zero algorithmic latency, so no latency extension is necessary. If later DSP introduces non-zero latency, the extension must be added with a matching deterministic contract. |
 | `clap.note-name` | Implemented | Publishes deterministic chromatic names for all 128 keys on the single note-input port (`C-1` through `G9`) for every channel. The mapping is static, main-thread-only, allocation-free, and does not affect note processing. |
 | `clap.preset-load/2` | Not advertised (owned by #36/#37) | Preset serialization/storage is owned by #36 and CLAP `preset-load/2` plus Preset Discovery by #37. The plug-in intentionally exposes neither interface until those contracts land. |
 
-The PolySynth consumes CLAP core events sample-accurately. Qualified event handling covers `NOTE_ON`, `NOTE_OFF`, `NOTE_CHOKE`, generated `NOTE_END`, `PARAM_VALUE`, `PARAM_MOD`, and `NOTE_EXPRESSION` mappings for tuning, volume, pan, brightness, expression, and pressure. Transient per-note modulation/expression state is voice-generation-local and is cleared on reuse/reset rather than entering persistent state. `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` belong to the editor path in #33; #32 has no editor-originated parameter gesture source and does not synthesize fake gestures in the processor.
+The PolySynth consumes CLAP core events sample-accurately. Qualified event handling covers `NOTE_ON`, `NOTE_OFF`, `NOTE_CHOKE`, generated `NOTE_END`, `PARAM_VALUE`, `PARAM_MOD`, and `NOTE_EXPRESSION` mappings for tuning, volume, pan, brightness, expression, and pressure. Transient per-note modulation/expression state is voice-generation-local and is cleared on reuse/reset rather than entering persistent state. Editor-originated `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` are emitted by the shared #33 GUI path rather than synthesized by the processor.
 
 The #32 polyphonic contract keeps global base values, channel/key/note-targeted modulation, note expression and voice-local envelope state conceptually separate. Full tuple/wildcard matching is deterministic, including overlapping same-key note IDs, and the bounded voice-state handoff prevents one voice generation from leaking modulation or expression into another.
 
@@ -62,16 +62,107 @@ Fixed stereo synthesis intentionally does not advertise unrelated spatial interf
 
 For WCLAP, this matrix describes the shared CLAP implementation rather than a separate WebAssembly fork. WCLAP-specific factory/export execution, WASI assumptions, WebView-only GUI negotiation, and bundle/resource qualification remain governed by #30 and its completed review follow-ups; adding or documenting a native CLAP extension here must not introduce a native OS/WebView/filesystem dependency into the WASM process path.
 
-## Wrapper foundation
+## Native format projections
 
-`WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS` also defaults to `OFF`. When explicitly enabled, the examples fetch the pinned `clap-wrapper` revision and verify that its native VST3, AUv2, AUv3 and standalone CMake APIs are available while sharing the same pinned CLAP SDK.
+`WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS` defaults to `OFF`. When explicitly enabled, the examples fetch the pinned `clap-wrapper` revision and project the already-qualified Gain and PolySynth implementations into native desktop formats. The canonical `.clap` artifact is not regenerated: every wrapper links the same C++ CLAP implementation, parameter/state model, DSP and embedded WebView resources. No format-specific processor copy and no JUCE dependency are introduced.
 
-This #28 foundation does **not** create format products or download their SDKs. Concrete VST3/AUv2/AUv3/standalone targets and validation belong to #34. WCLAP remains on the repository-owned `WebviewGuiWclap.cmake` / #30 path; the `clap-wrapper` WCLAP packaging helper is intentionally not selected here so its packaging behavior cannot bypass the repository's qualified WCLAP staging contract.
+The format switches are explicit:
 
-Example options reserved for the follow-up tickets are:
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP=ON` — canonical native CLAP; it must remain ON when Gain or PolySynth is built.
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_VST3=OFF` — VST3 projection through `clap-wrapper`.
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=OFF` — macOS AUv2 `.component`.
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=OFF` — macOS AUv3 `.appex` plus host app; requires `-G Xcode`.
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=OFF` — simple standalone CLAP host through `clap-wrapper`.
+- `WEBVIEW_GUI_EXAMPLES_FORMAT_AAX=OFF` — optional only; requires an explicit `AAX_SDK_ROOT` and compatible wrapper toolchain, and is never enabled by public CI.
 
-- `WEBVIEW_GUI_EXAMPLES_BUILD_GAIN`
-- `WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH`
-- `WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS`
+### Format/platform matrix
 
-All default to OFF; enabling wrapper preparation is explicit and does not affect normal library consumers.
+| Format | Linux | macOS | Windows | Notes |
+| --- | --- | --- | --- | --- |
+| CLAP | Yes | Yes | Yes | Canonical source/reference artifact. |
+| VST3 | Yes | Yes | Yes | Thin `clap-wrapper` projection of the same CLAP implementation. |
+| Standalone | Yes | Yes | Yes | Hosts the statically linked CLAP implementation; explicit opt-in. |
+| AUv2 | No | Yes | No | Requires Apple's AudioUnitSDK, either downloaded by the wrapper or supplied with `AUDIOUNIT_SDK_ROOT`. |
+| AUv3 | No | Yes | No | Requires the Xcode generator; builds the `.appex` and host app. |
+| AAX | No | Optional | Optional | Requires `AAX_SDK_ROOT`, remains OFF by default and is excluded from public CI. |
+| WCLAP | WASM/WASI | WASM/WASI | WASM/WASI | Separate repository-owned #30 packaging path, not a native `clap-wrapper` projection. |
+
+Stable bundle bases are `com.webview-gui.example.gain` and `com.webview-gui.example.polysynth`; AU uses manufacturer code `WvGu` with subtypes `WvGn` and `WvPs`. Standalone, AUv2 and AUv3 targets are staged under the configured build-tree `artifacts` directory. VST3 keeps `clap-wrapper` 0.16.0's native output layout because that pinned release has a broken `ASSET_OUTPUT_DIRECTORY` target-name path on macOS/Windows; the product names and bundle identifiers remain stable. The WebView HTML/CSS/JS is compiled into the same CLAP/WebView bridge, so wrapped products do not rely on source-tree resource paths at runtime.
+
+### Desktop CLAP + VST3 + standalone
+
+`clap-wrapper` can download its public SDK dependencies for reproducible developer and CI builds:
+
+```bash
+cmake -S examples -B build-formats \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
+  -DWEBVIEW_GUI_EXAMPLES_FORMAT_VST3=ON \
+  -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON \
+  -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+
+cmake --build build-formats --parallel --target \
+  webview_gui_example_gain_formats_all \
+  webview_gui_example_polysynth_formats_all
+```
+
+Instead of downloads, local SDK roots can be supplied explicitly when required: `VST3_SDK_ROOT`, `AUDIOUNIT_SDK_ROOT`, `RTAUDIO_SDK_ROOT`, `RTMIDI_SDK_ROOT` and, for Windows standalone builds, `WIL_SDK_ROOT`.
+
+### macOS AUv2
+
+```bash
+cmake -S examples -B build-auv2 \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
+  -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV2=ON \
+  -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
+
+cmake --build build-auv2 --parallel --target \
+  webview_gui_example_gain_formats_auv2 \
+  webview_gui_example_polysynth_formats_auv2
+```
+
+For an offline/local-SDK build, omit dependency downloading and provide `-DAUDIOUNIT_SDK_ROOT=/path/to/AudioUnitSDK` together with any other SDK roots required by enabled formats.
+
+### macOS AUv3
+
+AUv3 uses Apple system frameworks and the Xcode product/signing model:
+
+```bash
+cmake -S examples -B build-auv3 -G Xcode \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
+  -DWEBVIEW_GUI_EXAMPLES_FORMAT_AUV3=ON
+
+cmake --build build-auv3 --config Debug --parallel --target \
+  webview_gui_example_gain_formats_auv3 \
+  webview_gui_example_gain_formats_auv3_standalone \
+  webview_gui_example_polysynth_formats_auv3 \
+  webview_gui_example_polysynth_formats_auv3_standalone
+```
+
+### Optional AAX
+
+AAX is never fetched or enabled implicitly. It remains OFF unless both the format switch and an explicit SDK are supplied:
+
+```bash
+cmake -S examples -B build-aax \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=ON \
+  -DWEBVIEW_GUI_EXAMPLES_FORMAT_AAX=ON \
+  -DAAX_SDK_ROOT=/path/to/aax-sdk
+```
+
+AAX licensing, signing and SDK eligibility remain the responsibility of the developer and are intentionally outside public CI.
+
+### Polyphonic semantics through wrappers
+
+Native CLAP remains the canonical demonstration of the full `(note_id, port_index, channel, key)` addressing model and per-note `PARAM_MOD`. The VST3 projection enables `clap-wrapper`'s complete representable note-expression forwarding for PolySynth, but VST3 and AU targets are not described as equivalent to arbitrary CLAP per-note parameter modulation when their protocol or wrapper cannot encode the same addressing tuple.
+
+The standalone target hosts the same CLAP implementation, so DSP, state, parameters and GUI remain identical. Its physical MIDI/input path likewise must not be mistaken for a generator of every CLAP host-side polyphonic modulation event.
+
+WCLAP remains on the repository-owned `WebviewGuiWclap.cmake` / #30 staging path so its qualified WASM/WASI and resource contract is not bypassed by native wrapper packaging.
