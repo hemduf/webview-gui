@@ -10,6 +10,7 @@ on:
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
+      - '.github/scripts/patch_clap_trap_wclap.py'
       - '.github/workflows/gain-wclap.yml'
   workflow_dispatch:
 
@@ -78,7 +79,7 @@ jobs:
           NODE
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
 
-      - name: Build pinned WCLAP lifecycle host
+      - name: Build pinned WCLAP lifecycle and WebView smoke host
         run: |
           git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
           git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
@@ -86,33 +87,16 @@ jobs:
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
 
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('.ci/clap-trap/examples/cli.cpp')
-          text = path.read_text()
-
-          load_needle = 'PluginLoader::load(opts.pluginPath)'
-          load_count = text.count(load_needle)
-          if load_count == 0:
-              raise SystemExit('pinned clap-trap loader pattern changed; revalidate WCLAP host patch')
-          text = text.replace(load_needle, 'PluginLoader::create(opts.pluginPath)')
-
-          entry_needle = 'if (!loader->entry()) {'
-          entry_count = text.count(entry_needle)
-          if entry_count == 0:
-              raise SystemExit('pinned clap-trap entry guard changed; revalidate WCLAP host patch')
-          text = text.replace(entry_needle, 'if (!loader->isWasm() && !loader->entry()) {')
-
-          path.write_text(text)
-          print(f'patched {load_count} loader call(s) and {entry_count} native entry guard(s)')
-          PY
+          python3 .github/scripts/patch_clap_trap_wclap.py \
+            --source .ci/clap-trap/examples/cli.cpp \
+            --sync-magic WVQ1
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_TRAP_BUILD_TESTS=OFF
           cmake --build build-clap-trap --target clap-trap-cli --parallel
 
-      - name: Execute real WCLAP CLAP lifecycle twice
+      - name: Execute real WCLAP lifecycle and WebView smoke twice
         run: |
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
