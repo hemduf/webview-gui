@@ -91,4 +91,22 @@ foreach(required_compatibility_token IN ITEMS
     endif()
 endforeach()
 
+# Standalone wrappers are executables, but they remain distributable release
+# artifacts. Their target-local wrapper sources must not embed the checkout path,
+# and their linked implementation must retain hidden visibility on ELF/Mach-O.
+# Cover both the executable and clap-wrapper's standalone helper library because
+# each compiles sources containing location-aware diagnostics.
+foreach(required_standalone_hygiene_token IN ITEMS
+        "webview_gui_apply_standalone_artifact_hygiene"
+        "standalone_wrapper_lib \"\${target}-clap-wrapper-standalone-lib\""
+        "/pathmap:\${WEBVIEW_GUI_SOURCE_DIR}=."
+        "-ffile-prefix-map=\${WEBVIEW_GUI_SOURCE_DIR}=."
+        "webview_gui_apply_standalone_artifact_hygiene(\${target})")
+    string(FIND "${formats_cmake}" "${required_standalone_hygiene_token}" standalone_hygiene_index)
+    if(standalone_hygiene_index EQUAL -1)
+        message(FATAL_ERROR
+            "Missing standalone artifact hygiene contract: ${required_standalone_hygiene_token}")
+    endif()
+endforeach()
+
 message(STATUS "Example wrapper format contract is present")
