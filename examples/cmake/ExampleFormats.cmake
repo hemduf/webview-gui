@@ -67,8 +67,10 @@ function(webview_gui_apply_standalone_artifact_hygiene target)
         )
 
         if(MSVC)
-            # Restrict /pathmap to C++ so rc.exe does not receive an unsupported option.
+            # MSVC only honors /pathmap with deterministic compilation enabled.
+            # Restrict both switches to C++ so rc.exe does not receive them.
             target_compile_options(${standalone_hygiene_target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:/experimental:deterministic>"
                 "$<$<COMPILE_LANGUAGE:CXX>:/pathmap:${WEBVIEW_GUI_SOURCE_DIR}=.>")
         elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(${standalone_hygiene_target} PRIVATE
