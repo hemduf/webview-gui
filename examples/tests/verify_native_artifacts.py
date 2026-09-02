@@ -116,6 +116,25 @@ def symbol_audit_command(
     return [nm, "-D", "--defined-only", str(binary)]
 
 
+def demangle_symbols(
+    output: str,
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    cxxfilt = which("c++filt") or which("llvm-cxxfilt")
+    if not cxxfilt:
+        raise RuntimeError("no compatible C++ demangler available for symbol audit")
+
+    completed = run([cxxfilt], input=output, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"exit code {completed.returncode}"
+        raise RuntimeError(f"C++ demangler failed during symbol audit: {detail}")
+    return completed.stdout
+
+
 def run_symbols(binary: Path) -> str:
     command = symbol_audit_command(binary)
     if command is None:
@@ -132,13 +151,7 @@ def run_symbols(binary: Path) -> str:
 
     output = completed.stdout
     if os.name != "nt":
-        cxxfilt = shutil.which("c++filt") or shutil.which("llvm-cxxfilt")
-        if cxxfilt:
-            demangled = subprocess.run(
-                [cxxfilt], input=output, text=True, capture_output=True, check=False
-            )
-            if demangled.returncode == 0:
-                output = demangled.stdout
+        output = demangle_symbols(output)
     return output
 
 
