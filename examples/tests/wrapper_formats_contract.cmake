@@ -95,10 +95,13 @@ endforeach()
 # artifacts. Their target-local wrapper sources must not embed the checkout path,
 # and their linked implementation must retain hidden visibility on ELF/Mach-O.
 # Cover both the executable and clap-wrapper's standalone helper library because
-# each compiles sources containing location-aware diagnostics.
+# each compiles sources containing location-aware diagnostics. MSVC only honors
+# /pathmap when deterministic compilation is explicitly enabled, so keep the two
+# switches coupled in this contract to prevent path leakage regressions on Windows.
 foreach(required_standalone_hygiene_token IN ITEMS
         "webview_gui_apply_standalone_artifact_hygiene"
         "standalone_wrapper_lib \"\${target}-clap-wrapper-standalone-lib\""
+        "/experimental:deterministic"
         "/pathmap:\${WEBVIEW_GUI_SOURCE_DIR}=."
         "-ffile-prefix-map=\${WEBVIEW_GUI_SOURCE_DIR}=."
         "webview_gui_apply_standalone_artifact_hygiene(\${target})")
