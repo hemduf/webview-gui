@@ -55,6 +55,10 @@ int main()
     expectFailure("Zm8==");
     expectFailure("Zm8=AAAA");
 
+    // A malformed later quantum must not expose a valid decoded prefix. Bridge
+    // validation is atomic: invalid input leaves the caller's output untouched.
+    expectFailure("Zm9vZm=8");
+
     // The public decoder is intentionally strict: whitespace and non-Base64
     // alphabet characters are rejected rather than ignored.
     expectFailure("Zm 8=");
