@@ -42,6 +42,41 @@ if(MSVC)
     webview_gui_examples_set_static_msvc_runtime("${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+# clap-wrapper's standalone host compiles sources containing location-aware
+# diagnostics into both the executable and a target-local helper archive. Release
+# artifacts must not retain the absolute checkout path, and implementation symbols
+# must remain private even when the standalone host exports its static CLAP entry.
+function(webview_gui_apply_standalone_artifact_hygiene target)
+    if(NOT TARGET ${target})
+        message(FATAL_ERROR "webview-gui formats: missing standalone target ${target}")
+    endif()
+
+    set(standalone_wrapper_lib "${target}-clap-wrapper-standalone-lib")
+    if(NOT TARGET ${standalone_wrapper_lib})
+        message(FATAL_ERROR
+            "Pinned clap-wrapper standalone helper target changed; revalidate artifact hygiene")
+    endif()
+
+    # Normalize examples/.. before using it as a compiler prefix-map source.
+    get_filename_component(WEBVIEW_GUI_SOURCE_DIR "${WEBVIEW_GUI_SOURCE_DIR}" REALPATH)
+
+    foreach(standalone_hygiene_target IN ITEMS ${target} ${standalone_wrapper_lib})
+        set_target_properties(${standalone_hygiene_target} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN YES
+        )
+
+        if(MSVC)
+            # Restrict /pathmap to C++ so rc.exe does not receive an unsupported option.
+            target_compile_options(${standalone_hygiene_target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:/pathmap:${WEBVIEW_GUI_SOURCE_DIR}=.>")
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(${standalone_hygiene_target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX,OBJCXX>:-ffile-prefix-map=${WEBVIEW_GUI_SOURCE_DIR}=.>")
+        endif()
+    endforeach()
+endfunction()
+
 function(webview_gui_add_example_wrappers)
     set(options SUPPORTS_ALL_NOTE_EXPRESSIONS)
     set(one_value_args
@@ -139,6 +174,7 @@ function(webview_gui_add_example_wrappers)
             STATICALLY_LINKED_CLAP_ENTRY TRUE
             PLUGIN_ID "${FMT_PLUGIN_ID}"
             RESOURCE_DIRECTORY "")
+        webview_gui_apply_standalone_artifact_hygiene(${target})
 
         # The pinned Windows standalone still includes MSVC's deprecated
         # <experimental/coroutine>. VS 2026 deliberately turns that deprecation
