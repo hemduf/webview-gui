@@ -192,6 +192,37 @@ public:
         WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
         "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
 
+    set(WEBVIEW_GUI_UNSCOPED_PERMISSION_HANDLER [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) override
+        {
+            COREWEBVIEW2_PERMISSION_KIND permissionKind;
+            args->get_PermissionKind (std::addressof (permissionKind));
+
+            if (permissionKind == COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ)
+                args->put_State (COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+
+            return S_OK;
+        }]=])
+    set(WEBVIEW_GUI_SCOPED_PERMISSION_HANDLER [=[        HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) override
+        {
+            return webview_gui::detail::handleWindowsPluginPermission (
+                args,
+                COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                COREWEBVIEW2_PERMISSION_STATE_DENY);
+        }]=])
+    string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"
+        "${WEBVIEW_GUI_UNSCOPED_PERMISSION_HANDLER}"
+        WEBVIEW_GUI_CHOC_PERMISSION_BODY_OFFSET)
+    if(WEBVIEW_GUI_CHOC_PERMISSION_BODY_OFFSET EQUAL -1)
+        message(FATAL_ERROR
+            "Pinned CHOC permission body changed; refusing to build without revalidating the clipboard-origin policy")
+    endif()
+    string(REPLACE
+        "${WEBVIEW_GUI_UNSCOPED_PERMISSION_HANDLER}"
+        "${WEBVIEW_GUI_SCOPED_PERMISSION_HANDLER}"
+        WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT
+        "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}")
+
     set(WEBVIEW_GUI_UNSAFE_CORS [=[                headers.emplace_back ("Access-Control-Allow-Origin: *");]=])
     set(WEBVIEW_GUI_SAFE_CORS [=[                headers.emplace_back ("Access-Control-Allow-Origin: https://choc.localhost");]=])
     string(FIND "${WEBVIEW_GUI_CHOC_WEBVIEW_CONTENT}"

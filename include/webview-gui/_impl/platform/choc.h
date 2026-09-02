@@ -245,6 +245,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		if (!resourceGetter || !resourceGetter(resourcePath.c_str(), resource)) return chocResource;
 		if (!detail::resourceSizeAllowed(resource.bytes.size())) return chocResource;
 		if (resource.mediaType.empty()) resource.mediaType = helpers::guessMediaType(resourcePath.c_str());
+		if (!detail::resourceMediaTypeAllowed(resource.mediaType)) return chocResource;
 
 		chocResource.emplace();
 		chocResource->data = std::move(resource.bytes);
@@ -255,10 +256,11 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	options.webviewIsReady = [startUri, trustedOrigin, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
-		const auto guardScript = std::string("(()=>{const u=location.href;if(u==='about:blank'||u.toLowerCase().startsWith('")
+		const auto guardScript = std::string("(()=>{const u=location.href.toLowerCase();const o='")
 			+ trustedOrigin
-			+ "'))return;window.stop();location.replace('about:blank');})()";
-		wv.addInitScript(guardScript);
+			+ "';const n=u.charAt(o.length);if(u==='about:blank'||(u.startsWith(o)&&(u.length===o.length||n==='/'||n==='?'||n==='#')))return;window.stop();location.replace('about:blank');})()";
+		if (!wv.addInitScript(guardScript))
+			return;
 
 		wv.bind("_WebviewGui_receive64", [impl](const choc::value::ValueView& args){
 			if (!impl->isOnGuiThread()) return choc::value::Value{false};
@@ -273,7 +275,8 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 				return choc::value::Value{false};
 
 			std::vector<unsigned char> bytes;
-			choc::base64::decodeToContainer(bytes, base64);
+			if (!helpers::decodeBase64(base64, bytes))
+				return choc::value::Value{false};
 			if (!detail::messageSizeAllowed(bytes.size()))
 				return choc::value::Value{false};
 

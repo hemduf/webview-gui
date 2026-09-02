@@ -65,6 +65,51 @@ struct FakeNavigationArgs {
     }
 };
 
+struct FakePermissionArgs {
+    int permissionKind = 7;
+    std::wstring uri = L"https://choc.localhost/index.html";
+    int state = 0;
+    int kindReads = 0;
+    int uriReads = 0;
+    int stateWrites = 0;
+    HRESULT kindResult = S_OK;
+    HRESULT uriResult = S_OK;
+    HRESULT stateResult = S_OK;
+    bool nullUri = false;
+
+    HRESULT get_PermissionKind(int* output)
+    {
+        ++kindReads;
+        if (!output) return E_POINTER;
+        if (FAILED(kindResult)) return kindResult;
+        *output = permissionKind;
+        return S_OK;
+    }
+
+    HRESULT get_Uri(LPWSTR* output)
+    {
+        ++uriReads;
+        if (!output) return E_POINTER;
+        *output = nullptr;
+        if (FAILED(uriResult)) return uriResult;
+        if (nullUri) return S_OK;
+        const auto bytes = (uri.size() + 1) * sizeof(wchar_t);
+        auto* copy = static_cast<LPWSTR>(CoTaskMemAlloc(bytes));
+        if (!copy) return E_OUTOFMEMORY;
+        std::memcpy(copy, uri.c_str(), bytes);
+        *output = copy;
+        return S_OK;
+    }
+
+    HRESULT put_State(int value)
+    {
+        ++stateWrites;
+        if (SUCCEEDED(stateResult))
+            state = value;
+        return stateResult;
+    }
+};
+
 } // namespace
 
 TEST_CASE("Windows navigation policy keeps privileged local pages in-process")
@@ -208,4 +253,86 @@ TEST_CASE("null URI propagates cancellation failure")
     CHECK(args.cancelWrites == 1);
     CHECK_FALSE(args.cancelled);
     CHECK(externalLaunches == 0);
+}
+
+TEST_CASE("Windows clipboard read is granted only to the exact privileged origin")
+{
+    constexpr int clipboardRead = 7;
+    constexpr int allow = 1;
+    constexpr int deny = 2;
+
+    FakePermissionArgs trusted;
+    CHECK(webview_gui::detail::handleWindowsPluginPermission(
+              &trusted, clipboardRead, allow, deny) == S_OK);
+    CHECK(trusted.kindReads == 1);
+    CHECK(trusted.uriReads == 1);
+    CHECK(trusted.stateWrites == 1);
+    CHECK(trusted.state == allow);
+
+    const wchar_t* untrusted[] = {
+        L"about:blank",
+        L"https://example.com/",
+        L"https://choc.localhost.evil/",
+        L"file:///C:/plugin/index.html",
+    };
+
+    for (const auto* uri : untrusted) {
+        FakePermissionArgs args;
+        args.uri = uri;
+        CHECK(webview_gui::detail::handleWindowsPluginPermission(
+                  &args, clipboardRead, allow, deny) == S_OK);
+        CHECK(args.kindReads == 1);
+        CHECK(args.uriReads == 1);
+        CHECK(args.stateWrites == 1);
+        CHECK(args.state == deny);
+    }
+}
+
+TEST_CASE("Windows clipboard permission fails closed when its requesting URI cannot be read")
+{
+    constexpr int clipboardRead = 7;
+    constexpr int allow = 1;
+    constexpr int deny = 2;
+
+    FakePermissionArgs failed;
+    failed.uriResult = E_FAIL;
+    CHECK(webview_gui::detail::handleWindowsPluginPermission(
+              &failed, clipboardRead, allow, deny) == S_OK);
+    CHECK(failed.stateWrites == 1);
+    CHECK(failed.state == deny);
+
+    FakePermissionArgs nullUri;
+    nullUri.nullUri = true;
+    CHECK(webview_gui::detail::handleWindowsPluginPermission(
+              &nullUri, clipboardRead, allow, deny) == S_OK);
+    CHECK(nullUri.stateWrites == 1);
+    CHECK(nullUri.state == deny);
+}
+
+TEST_CASE("Windows permission policy leaves unrelated permission kinds at WebView2 defaults")
+{
+    constexpr int clipboardRead = 7;
+    constexpr int allow = 1;
+    constexpr int deny = 2;
+
+    FakePermissionArgs args;
+    args.permissionKind = 3;
+    CHECK(webview_gui::detail::handleWindowsPluginPermission(
+              &args, clipboardRead, allow, deny) == S_OK);
+    CHECK(args.kindReads == 1);
+    CHECK(args.uriReads == 0);
+    CHECK(args.stateWrites == 0);
+}
+
+TEST_CASE("Windows clipboard permission propagates state write failure")
+{
+    constexpr int clipboardRead = 7;
+    constexpr int allow = 1;
+    constexpr int deny = 2;
+
+    FakePermissionArgs args;
+    args.stateResult = E_ACCESSDENIED;
+    CHECK(webview_gui::detail::handleWindowsPluginPermission(
+              &args, clipboardRead, allow, deny) == E_ACCESSDENIED);
+    CHECK(args.stateWrites == 1);
 }

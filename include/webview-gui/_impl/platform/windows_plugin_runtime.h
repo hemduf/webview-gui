@@ -136,6 +136,35 @@ HRESULT dispatchTrustedWindowsWebMessage(EventArgs* args, Dispatch&& dispatch)
     return S_OK;
 }
 
+// Clipboard read is the only permission CHOC currently elevates automatically.
+// Scope that elevation to the exact privileged local origin. about:blank,
+// remote/lookalike origins and URI read failures are explicitly denied, while
+// unrelated permission kinds retain WebView2's default handling.
+template <typename EventArgs, typename PermissionKind, typename PermissionState>
+HRESULT handleWindowsPluginPermission(EventArgs* args,
+                                      PermissionKind clipboardRead,
+                                      PermissionState allowState,
+                                      PermissionState denyState)
+{
+    if (!args)
+        return E_POINTER;
+
+    PermissionKind kind{};
+    if (FAILED(args->get_PermissionKind(&kind)))
+        return S_OK;
+    if (kind != clipboardRead)
+        return S_OK;
+
+    LPWSTR uri = nullptr;
+    const auto uriResult = args->get_Uri(&uri);
+    const bool trusted = SUCCEEDED(uriResult) && isTrustedWindowsBridgeSource(uri);
+    if (uri)
+        CoTaskMemFree(uri);
+
+    const auto stateResult = args->put_State(trusted ? allowState : denyState);
+    return SUCCEEDED(stateResult) ? S_OK : stateResult;
+}
+
 // Keep the privileged WebView on its exact local origin, while allowing only
 // WebView2's inert about:blank bootstrap document. Every other top-level
 // navigation is cancelled before commit. The bootstrap page is deliberately

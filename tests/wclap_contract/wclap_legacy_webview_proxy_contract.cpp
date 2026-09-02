@@ -272,15 +272,28 @@ int main() {
                 "real WebView callbacks did not preserve the inner plug-in pointer identity"))
         return 15;
 
+    const unsigned char payload = 0x42;
+    if (!expect(!postInitWebview->receive(plugin, nullptr, 1) &&
+                    !postInitWebview->receive(
+                        plugin,
+                        &payload,
+                        static_cast<std::uint32_t>(webview_gui::detail::maxMessageBytes + 1u)) &&
+                    state.receiveCalls == 1,
+                "legacy WCLAP WebView accepted an invalid or oversized bridge message"))
+        return 16;
+    if (!expect(postInitWebview->receive(plugin, &payload, 1) && state.receiveCalls == 2,
+                "legacy WCLAP WebView rejected a valid bounded bridge message"))
+        return 17;
+
     if (!expect(plugin->get_extension(plugin, "clap.test") == &state &&
                     state.pointerIdentityFailures == 0,
                 "post-init non-WebView extension delegation changed plug-in pointer identity"))
-        return 16;
+        return 18;
 
     plugin->destroy(plugin);
     if (!expect(state.destroyed && state.pointerIdentityFailures == 0,
                 "wrapped destroy did not preserve the inner plug-in pointer identity"))
-        return 17;
+        return 19;
 
     // The compatibility layer must not synthesize core capabilities which the
     // inner table did not expose. Preserving nullness makes validator/host
@@ -299,11 +312,11 @@ int main() {
                     !sparsePlugin->reset && !sparsePlugin->process &&
                     !sparsePlugin->on_main_thread,
                 "legacy WCLAP proxy synthesized missing CLAP core callbacks"))
-        return 18;
+        return 20;
     sparsePlugin->destroy(sparsePlugin);
     if (!expect(sparseState.destroyed && sparseState.pointerIdentityFailures == 0,
                 "sparse wrapped destroy did not preserve inner plug-in pointer identity"))
-        return 19;
+        return 21;
 
     return 0;
 }
