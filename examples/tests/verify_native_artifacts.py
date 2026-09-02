@@ -31,12 +31,22 @@ def find_named(root: Path, name: str) -> Path:
     matches = sorted(root.rglob(name), key=lambda path: (len(path.parts), str(path)))
     if not matches:
         raise RuntimeError(f"missing expected native artifact {name!r} under {root}")
-    if len(matches) > 1:
-        candidates = ", ".join(str(path) for path in matches)
+
+    # A Windows VST3 bundle can legitimately contain its PE binary under the same
+    # filename as the outer bundle, e.g. Foo.vst3/Contents/x86_64-win/Foo.vst3.
+    # Treat nested same-name matches as implementation details of the outer product,
+    # while still failing closed if multiple independent product roots exist.
+    product_roots = [
+        candidate
+        for candidate in matches
+        if not any(other != candidate and other in candidate.parents for other in matches)
+    ]
+    if len(product_roots) > 1:
+        candidates = ", ".join(str(path) for path in product_roots)
         raise RuntimeError(
             f"multiple expected native artifact candidates for {name!r} under {root}: {candidates}"
         )
-    return matches[0]
+    return product_roots[0]
 
 
 def product_binary(product: Path) -> Path:
