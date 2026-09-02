@@ -32,7 +32,10 @@ def find_named(root: Path, name: str) -> Path:
     if not matches:
         raise RuntimeError(f"missing expected native artifact {name!r} under {root}")
     if len(matches) > 1:
-        print(f"note: multiple {name} candidates; qualifying {matches[0]}")
+        candidates = ", ".join(str(path) for path in matches)
+        raise RuntimeError(
+            f"multiple expected native artifact candidates for {name!r} under {root}: {candidates}"
+        )
     return matches[0]
 
 
@@ -103,19 +106,19 @@ def symbol_audit_command(
     return [nm, "-D", "--defined-only", str(binary)]
 
 
-def run_symbols(binary: Path) -> str | None:
+def run_symbols(binary: Path) -> str:
     command = symbol_audit_command(binary)
     if command is None:
-        print(f"note: no compatible export-table tool available; symbol audit skipped for {binary}")
-        return None
+        raise RuntimeError(
+            f"no compatible export-table tool available for symbol audit of {binary}"
+        )
 
     completed = subprocess.run(command, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
-        print(
-            f"note: symbol audit tool could not inspect {binary}: "
-            f"{completed.stderr.strip() or completed.stdout.strip()}"
-        )
-        return None
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"exit code {completed.returncode}"
+        raise RuntimeError(f"symbol audit tool could not inspect {binary}: {detail}")
 
     output = completed.stdout
     if os.name != "nt":
@@ -141,13 +144,12 @@ def qualify_product(product: Path, workspace: Path) -> None:
         )
 
     symbols = run_symbols(binary)
-    if symbols is not None:
-        markers = WINDOWS_FORBIDDEN_EXPORT_MARKERS if os.name == "nt" else FORBIDDEN_SYMBOL_MARKERS
-        leaked = [marker for marker in markers if marker in symbols]
-        if leaked:
-            raise RuntimeError(
-                f"unexpected implementation symbols exported by {binary}: {', '.join(leaked)}"
-            )
+    markers = WINDOWS_FORBIDDEN_EXPORT_MARKERS if os.name == "nt" else FORBIDDEN_SYMBOL_MARKERS
+    leaked = [marker for marker in markers if marker in symbols]
+    if leaked:
+        raise RuntimeError(
+            f"unexpected implementation symbols exported by {binary}: {', '.join(leaked)}"
+        )
 
     print(f"qualified {product.name}: {binary}")
 
