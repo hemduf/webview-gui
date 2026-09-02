@@ -36,6 +36,24 @@ function(require_workflow_check_name workflow_file expected_job_name)
     endif()
 endfunction()
 
+function(require_pinned_checkout workflow_file)
+    set(workflow_path "${CMAKE_CURRENT_LIST_DIR}/../.github/workflows/${workflow_file}")
+    file(READ "${workflow_path}" workflow_content)
+    set(checkout_pin "actions/checkout@11d5960a326750d5838078e36cf38b85af677262")
+    string(REGEX MATCHALL "actions/checkout@[^ \t\r\n]+" checkout_uses "${workflow_content}")
+    if(NOT checkout_uses)
+        message(FATAL_ERROR
+            "Policy workflow '${workflow_file}' must use ${checkout_pin}")
+    endif()
+
+    foreach(checkout_use IN LISTS checkout_uses)
+        if(NOT checkout_use STREQUAL checkout_pin)
+            message(FATAL_ERROR
+                "Policy workflow '${workflow_file}' has non-reproducible checkout reference '${checkout_use}'; expected '${checkout_pin}'")
+        endif()
+    endforeach()
+endfunction()
+
 require_workflow_contract("ci.yml" "CI")
 require_workflow_check_name("ci.yml" "\${{ matrix.os }} / Debug")
 require_workflow_check_name("ci.yml" "\${{ matrix.os }} / ASan+UBSan")
@@ -49,6 +67,8 @@ require_workflow_check_name("macos-diagnostics.yml" "macOS Zombies lifecycle")
 
 require_workflow_contract("header-only-contract.yml" "Header-only contract")
 require_workflow_check_name("header-only-contract.yml" "\${{ matrix.os }} standalone header-only diagnostic")
+require_pinned_checkout("header-only-contract.yml")
 
 require_workflow_contract("repository-policy.yml" "Repository policy")
 require_workflow_check_name("repository-policy.yml" "required main qualification contract")
+require_pinned_checkout("repository-policy.yml")
