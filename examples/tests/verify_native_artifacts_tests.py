@@ -126,12 +126,12 @@ class NativeArtifactVerifierTests(unittest.TestCase):
                 artifact.run_symbols(Path("plugin.vst3"))
 
     def test_demangle_symbols_fails_closed_without_demangler(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "no compatible C\+\+ demangler available"):
+        with self.assertRaisesRegex(RuntimeError, r"no compatible C\+\+ demangler available"):
             artifact.demangle_symbols("_ZN11webview_gui6detailEv\n", which=lambda _name: None)
 
     def test_demangle_symbols_fails_closed_when_demangler_fails(self) -> None:
         completed = mock.Mock(returncode=1, stdout="", stderr="demangler failed")
-        with self.assertRaisesRegex(RuntimeError, "C\+\+ demangler failed"):
+        with self.assertRaisesRegex(RuntimeError, r"C\+\+ demangler failed"):
             artifact.demangle_symbols(
                 "_ZN11webview_gui6detailEv\n",
                 which=lambda name: "/usr/bin/c++filt" if name == "c++filt" else None,
