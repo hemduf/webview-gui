@@ -176,6 +176,9 @@ struct LegacyWclapWebviewPluginProxy {
     static bool CLAP_ABI proxyReceive(const clap_plugin_t *plugin,
                                       const void *buffer,
                                       uint32_t size) {
+        if ((!buffer && size != 0) || !messageSizeAllowed(size))
+            return false;
+
         auto *self = from(plugin);
         return self && self->initialized && self->innerPlugin && self->realWebview &&
                self->realWebview->receive &&
