@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("verify_native_artifacts.py")
 SPEC = importlib.util.spec_from_file_location("verify_native_artifacts", MODULE_PATH)
@@ -37,6 +38,17 @@ class NativeArtifactVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(RuntimeError, "missing expected native artifact"):
                 artifact.find_named(Path(temporary), "WebviewGuiGain.vst3")
+
+    def test_find_named_fails_closed_when_product_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first" / "WebviewGuiGain.vst3"
+            second = root / "second" / "WebviewGuiGain.vst3"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+
+            with self.assertRaisesRegex(RuntimeError, "multiple expected native artifact candidates"):
+                artifact.find_named(root, "WebviewGuiGain.vst3")
 
     def test_qualify_product_rejects_absolute_workspace_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -84,6 +96,24 @@ class NativeArtifactVerifierTests(unittest.TestCase):
             command,
             ["C:/LLVM/llvm-readobj.exe", "--coff-exports", "plugin.vst3"],
         )
+
+    def test_run_symbols_fails_closed_without_export_table_tool(self) -> None:
+        with mock.patch.object(artifact, "symbol_audit_command", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "no compatible export-table tool available"):
+                artifact.run_symbols(Path("plugin.vst3"))
+
+    def test_run_symbols_fails_closed_when_export_table_tool_fails(self) -> None:
+        completed = mock.Mock(returncode=1, stdout="", stderr="inspection failed")
+        with (
+            mock.patch.object(
+                artifact,
+                "symbol_audit_command",
+                return_value=["fake-symbol-tool", "plugin.vst3"],
+            ),
+            mock.patch.object(artifact.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "symbol audit tool could not inspect"):
+                artifact.run_symbols(Path("plugin.vst3"))
 
 
 if __name__ == "__main__":
