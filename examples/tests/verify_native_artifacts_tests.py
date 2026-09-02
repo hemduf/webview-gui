@@ -50,6 +50,16 @@ class NativeArtifactVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "multiple expected native artifact candidates"):
                 artifact.find_named(root, "WebviewGuiGain.vst3")
 
+    def test_find_named_accepts_nested_same_name_bundle_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "WebviewGuiGain.vst3"
+            nested_binary = bundle / "Contents" / "x86_64-win" / "WebviewGuiGain.vst3"
+            nested_binary.parent.mkdir(parents=True)
+            nested_binary.write_bytes(b"binary")
+
+            self.assertEqual(artifact.find_named(root, "WebviewGuiGain.vst3"), bundle)
+
     def test_qualify_product_rejects_absolute_workspace_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"
