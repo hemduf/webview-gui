@@ -25,6 +25,18 @@ WINDOWS_FORBIDDEN_EXPORT_MARKERS = (
     "webview_gui",
     "choc",
 )
+PRODUCT_MARKERS = {
+    "WebviewGuiGain": (
+        b"com.webview-gui.example.gain",
+        b"<title>webview-gui Gain</title>",
+        b"/gain.js",
+    ),
+    "WebviewGuiPolySynth": (
+        b"com.webview-gui.example.polysynth",
+        b"<title>webview-gui PolySynth</title>",
+        b"/polysynth.js",
+    ),
+}
 
 
 def find_named(root: Path, name: str) -> Path:
@@ -84,6 +96,13 @@ def contains_bytes(path: Path, needle: bytes) -> bool:
             if needle in data:
                 return True
             previous = data[-overlap:] if overlap else b""
+
+
+def required_product_markers(product: Path) -> tuple[bytes, ...]:
+    for prefix, markers in PRODUCT_MARKERS.items():
+        if product.name.startswith(prefix):
+            return markers
+    raise RuntimeError(f"no embedded resource contract is defined for {product.name}")
 
 
 def symbol_audit_command(
@@ -165,6 +184,13 @@ def qualify_product(product: Path, workspace: Path) -> None:
         raise RuntimeError(
             f"release artifact leaks absolute source checkout path {workspace} in {binary}"
         )
+
+    for marker in required_product_markers(product):
+        if not contains_bytes(binary, marker):
+            printable = marker.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"missing embedded product marker {printable!r} in {binary}"
+            )
 
     symbols = run_symbols(binary)
     markers = WINDOWS_FORBIDDEN_EXPORT_MARKERS if os.name == "nt" else FORBIDDEN_SYMBOL_MARKERS
