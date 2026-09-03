@@ -26,9 +26,12 @@ enum class NativePresetStorageError : std::uint8_t {
     InvalidBaseRoot,
     InvalidTargetPluginId,
     InvalidIdentity,
+    InvalidName,
+    OutsideRoot,
     CreateDirectoryFailed,
     EnumerateFailed,
     NotFound,
+    AlreadyExists,
     OpenFailed,
     ReadFailed,
     SerializeFailed,
@@ -37,6 +40,7 @@ enum class NativePresetStorageError : std::uint8_t {
     WriteFailed,
     FlushFailed,
     ReplaceFailed,
+    DeleteFailed,
     Collision,
     CleanupFailed,
 };
@@ -57,6 +61,9 @@ struct NativePresetPathResult {
     std::filesystem::path path;
 
     [[nodiscard]] bool ok() const noexcept { return status.ok(); }
+    [[nodiscard]] bool hasNativeRoot() const noexcept {
+        return ok() && !path.empty();
+    }
 };
 
 struct NativePresetEnvironment {
@@ -73,6 +80,9 @@ struct NativePresetEnvironment {
 
 [[nodiscard]] NativePresetPathResult nativePresetScopedRoot(
     const std::filesystem::path &baseRoot,
+    std::string_view targetPluginId) noexcept;
+
+[[nodiscard]] NativePresetPathResult resolveCurrentNativePresetScopedRoot(
     std::string_view targetPluginId) noexcept;
 
 enum class NativePresetWriteStage : std::uint8_t {
@@ -144,14 +154,30 @@ public:
     [[nodiscard]] NativePresetStorageStatus ensureReady() const noexcept;
     [[nodiscard]] NativePresetListResult list() const noexcept;
     [[nodiscard]] NativePresetLoadResult load(std::string_view identity) const noexcept;
+
+    // saveNew() derives a deterministic safe basename from display metadata and
+    // chooses the first unused identity. Storage identity remains independent
+    // from the mutable preset display name after the file is created.
     [[nodiscard]] NativePresetSaveResult saveNew(
         const PresetDocument &document) noexcept;
+
+    // saveAs() is the explicit #103 Save As seam. With overwrite=false an
+    // existing destination returns AlreadyExists and is never modified.
+    [[nodiscard]] NativePresetSaveResult saveAs(
+        std::string_view identity,
+        const PresetDocument &document,
+        bool overwrite = false) noexcept;
+
     [[nodiscard]] NativePresetSaveResult replace(
         std::string_view identity,
         const PresetDocument &document) noexcept;
 
+    [[nodiscard]] NativePresetStorageStatus remove(
+        std::string_view identity) noexcept;
+
 private:
     [[nodiscard]] NativePresetStorageStatus ensureReadyUnlocked() const noexcept;
+    [[nodiscard]] NativePresetStorageStatus validateRootContainmentUnlocked() const noexcept;
     [[nodiscard]] NativePresetStorageStatus validateDocumentForStorage(
         const PresetDocument &document,
         PresetSerializeResult &serialized) const noexcept;
@@ -159,6 +185,11 @@ private:
         const std::filesystem::path &destination,
         std::string_view bytes,
         bool replaceExisting) const noexcept;
+    [[nodiscard]] NativePresetSaveResult saveAsUnlocked(
+        std::string_view identity,
+        const PresetDocument &document,
+        bool overwrite,
+        NativePresetStorageError invalidNameError) noexcept;
 
     [[nodiscard]] bool shouldFail(NativePresetWriteStage stage) const noexcept;
 
