@@ -54,6 +54,18 @@ function(webview_gui_package_native_clap_preset_resources target output_name)
     webview_gui_copy_preset_resources(${target} "${destination}")
 endfunction()
 
+# clap-wrapper 0.16.0 accepts RESOURCE_DIRECTORY for standalone but only warns
+# that it is unsupported. Copy the canonical bank ourselves so standalone builds
+# are not silently missing presets.
+function(webview_gui_package_standalone_preset_resources target output_name)
+    if(APPLE)
+        set(destination "$<TARGET_FILE_DIR:${target}>/../Resources/presets")
+    else()
+        set(destination "$<TARGET_FILE_DIR:${target}>/${output_name}.resources/presets")
+    endif()
+    webview_gui_copy_preset_resources(${target} "${destination}")
+endfunction()
+
 # clap-wrapper 0.16.0 only copies VST3 RESOURCE_DIRECTORY on macOS and contains
 # stale TCLP_RESOURCE_DIRECTORY checks on Windows/Linux. Use one repository-owned
 # post-build path for all three desktop platforms.
