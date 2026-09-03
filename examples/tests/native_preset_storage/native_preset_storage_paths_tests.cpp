@@ -16,6 +16,7 @@ int main() {
         const auto base = presets::resolveNativePresetBaseRoot(
             presets::NativePresetPlatform::MacOS, env);
         assert(base.ok());
+        assert(base.hasNativeRoot());
         assert(base.path.generic_string() ==
                "/Users/alice/Library/Application Support");
 
@@ -58,6 +59,35 @@ int main() {
         assert(base.path.generic_string() == "/home/alice/.config");
     }
 
+    // Environment-derived native roots are never allowed to become CWD-relative.
+    {
+        presets::NativePresetEnvironment env;
+        env.home = "relative/home";
+        const auto mac = presets::resolveNativePresetBaseRoot(
+            presets::NativePresetPlatform::MacOS, env);
+        assert(!mac.ok());
+        assert(mac.status.error == presets::NativePresetStorageError::InvalidBaseRoot);
+    }
+
+    {
+        presets::NativePresetEnvironment env;
+        env.appData = "relative\\AppData";
+        const auto windows = presets::resolveNativePresetBaseRoot(
+            presets::NativePresetPlatform::Windows, env);
+        assert(!windows.ok());
+        assert(windows.status.error == presets::NativePresetStorageError::InvalidBaseRoot);
+    }
+
+    {
+        presets::NativePresetEnvironment env;
+        env.home = "/home/alice";
+        env.xdgConfigHome = "relative-xdg";
+        const auto linux = presets::resolveNativePresetBaseRoot(
+            presets::NativePresetPlatform::Linux, env);
+        assert(!linux.ok());
+        assert(linux.status.error == presets::NativePresetStorageError::InvalidBaseRoot);
+    }
+
     {
         presets::NativePresetEnvironment env;
         const auto mac = presets::resolveNativePresetBaseRoot(
@@ -82,6 +112,14 @@ int main() {
     {
         const auto invalid = presets::nativePresetScopedRoot(
             std::filesystem::path{"/tmp/config"}, "../escape");
+        assert(!invalid.ok());
+        assert(invalid.status.error ==
+               presets::NativePresetStorageError::InvalidTargetPluginId);
+    }
+
+    {
+        const auto invalid = presets::nativePresetScopedRoot(
+            std::filesystem::path{"/tmp/config"}, "com.example..escape");
         assert(!invalid.ok());
         assert(invalid.status.error ==
                presets::NativePresetStorageError::InvalidTargetPluginId);
