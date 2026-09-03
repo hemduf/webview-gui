@@ -17,19 +17,7 @@ file(GLOB_RECURSE WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_FILES
     LIST_DIRECTORIES FALSE
     "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}/*")
 
-# Make resource-only edits rebuild the target that owns the packaged copy.
-function(webview_gui_track_preset_resources target)
-    if(NOT TARGET ${target})
-        message(FATAL_ERROR "preset resources: missing target ${target}")
-    endif()
-    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
-        ${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_FILES})
-endfunction()
-
-# Copy the clean resource root into a format-specific artifact location. The
-# source tree itself is never copied, only examples/common/presets/bundled.
-function(webview_gui_copy_preset_resources target destination)
-    webview_gui_track_preset_resources(${target})
+function(webview_gui_add_preset_copy_command target destination)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${destination}/factory"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${destination}"
@@ -39,6 +27,41 @@ function(webview_gui_copy_preset_resources target destination)
         VERBATIM)
 endfunction()
 
+# Make resource-only edits rebuild the target that owns the packaged copy. The
+# pinned clap-wrapper accepts RESOURCE_DIRECTORY for standalone but does not copy
+# it, so the existing standalone tracking call also closes that wrapper gap.
+function(webview_gui_track_preset_resources target)
+    if(NOT TARGET ${target})
+        message(FATAL_ERROR "preset resources: missing target ${target}")
+    endif()
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+        ${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_FILES})
+
+    if("${target}" MATCHES "_standalone$")
+        get_target_property(standalone_packaged ${target} WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED)
+        if(NOT standalone_packaged)
+            set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED TRUE)
+            get_target_property(output_name ${target} OUTPUT_NAME)
+            if(NOT output_name OR output_name STREQUAL "output_name-NOTFOUND")
+                set(output_name "${target}")
+            endif()
+            if(APPLE)
+                set(destination "$<TARGET_FILE_DIR:${target}>/../Resources/presets")
+            else()
+                set(destination "$<TARGET_FILE_DIR:${target}>/${output_name}.resources/presets")
+            endif()
+            webview_gui_add_preset_copy_command(${target} "${destination}")
+        endif()
+    endif()
+endfunction()
+
+# Copy the clean resource root into a format-specific artifact location. The
+# source tree itself is never copied, only examples/common/presets/bundled.
+function(webview_gui_copy_preset_resources target destination)
+    webview_gui_track_preset_resources(${target})
+    webview_gui_add_preset_copy_command(${target} "${destination}")
+endfunction()
+
 function(webview_gui_package_native_clap_preset_resources target output_name)
     get_target_property(already_packaged ${target} WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED)
     if(already_packaged)
@@ -46,18 +69,6 @@ function(webview_gui_package_native_clap_preset_resources target output_name)
     endif()
     set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED TRUE)
 
-    if(APPLE)
-        set(destination "$<TARGET_FILE_DIR:${target}>/../Resources/presets")
-    else()
-        set(destination "$<TARGET_FILE_DIR:${target}>/${output_name}.resources/presets")
-    endif()
-    webview_gui_copy_preset_resources(${target} "${destination}")
-endfunction()
-
-# clap-wrapper 0.16.0 accepts RESOURCE_DIRECTORY for standalone but only warns
-# that it is unsupported. Copy the canonical bank ourselves so standalone builds
-# are not silently missing presets.
-function(webview_gui_package_standalone_preset_resources target output_name)
     if(APPLE)
         set(destination "$<TARGET_FILE_DIR:${target}>/../Resources/presets")
     else()
