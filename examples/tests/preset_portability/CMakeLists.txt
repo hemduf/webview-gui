@@ -10,6 +10,18 @@ set(WEBVIEW_GUI_PRESET_INCLUDE_DIR "${WEBVIEW_GUI_ROOT}/examples/common/presets"
 set(WEBVIEW_GUI_CHOC_INCLUDE_DIR "${WEBVIEW_GUI_ROOT}/include/webview-gui/_impl/platform/choc")
 set(WEBVIEW_GUI_BUNDLED_PRESET_ROOT "${WEBVIEW_GUI_PRESET_INCLUDE_DIR}/bundled")
 
+# Regression for #104 review corrections: production calls may package a target
+# created by an examples subdirectory (PolySynth). CMake rejects a parent-level
+# add_custom_command(TARGET ... POST_BUILD) for such a target, so configure a
+# minimal child target through the real PresetResources helper here. Configure
+# itself is the contract; this failed deterministically before the correction.
+set(WEBVIEW_GUI_SOURCE_DIR "${WEBVIEW_GUI_ROOT}")
+include("${WEBVIEW_GUI_ROOT}/examples/cmake/PresetResources.cmake")
+add_subdirectory(cmake_cross_directory)
+webview_gui_package_native_clap_preset_resources(
+    webview_gui_preset_cross_directory_dummy
+    PresetCrossDirectoryDummy)
+
 add_executable(webview_gui_preset_portability_contract
     preset_storage_contract_tests.cpp
 )
