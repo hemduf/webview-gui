@@ -20,6 +20,10 @@ target_include_directories(webview_gui_native_preset_storage PUBLIC
 )
 target_compile_features(webview_gui_native_preset_storage PUBLIC cxx_std_17)
 if(WIN32)
+    target_compile_definitions(webview_gui_native_preset_storage PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
     target_link_libraries(webview_gui_native_preset_storage PRIVATE shell32 ole32)
 endif()
 
