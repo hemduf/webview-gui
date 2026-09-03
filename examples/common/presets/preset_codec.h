@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -22,6 +23,7 @@ enum class PresetCodecError : std::uint8_t {
     MalformedInput,
     TruncatedInput,
     InputTooLarge,
+    NestingTooDeep,
     UnsupportedSchemaVersion,
     WrongTargetPlugin,
     InvalidDocument,
@@ -70,6 +72,7 @@ inline constexpr std::size_t kMaxParameters = 4096u;
 inline constexpr std::size_t kMaxSettings = 1024u;
 inline constexpr std::size_t kMaxExtensions = 1024u;
 inline constexpr std::size_t kMaxStringListEntries = 1024u;
+inline constexpr std::size_t kMaxJsonNesting = 64u;
 
 struct PresetFrame {
     std::string_view metadataJson;
@@ -112,6 +115,87 @@ struct PresetFrame {
     frame.metadataJson = bytes.substr(metadataStart, metadataEnd - metadataStart);
     frame.payloadJson = bytes.substr(payloadStart, payloadEnd - payloadStart);
     return PresetCodecError::None;
+}
+
+[[nodiscard]] inline bool jsonNestingWithinLimit(std::string_view json) noexcept {
+    std::size_t depth = 0u;
+    bool inString = false;
+    bool escaped = false;
+
+    for (const char c : json) {
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"')
+                inString = false;
+            continue;
+        }
+
+        if (c == '"') {
+            inString = true;
+            continue;
+        }
+
+        if (c == '{' || c == '[') {
+            ++depth;
+            if (depth > kMaxJsonNesting)
+                return false;
+            continue;
+        }
+
+        if ((c == '}' || c == ']') && depth != 0u)
+            --depth;
+    }
+
+    return true;
+}
+
+[[nodiscard]] inline bool scalarStringWithinLimit(
+    const PresetScalarValue &value) noexcept {
+    if (const auto *text = std::get_if<std::string>(&value))
+        return text->size() <= kMaxStringBytes;
+    return true;
+}
+
+[[nodiscard]] inline bool documentStringsWithinLimit(
+    const PresetDocument &document) noexcept {
+    const auto bounded = [](const std::string &text) {
+        return text.size() <= kMaxStringBytes;
+    };
+
+    if (!bounded(document.metadata.targetPluginId) ||
+        !bounded(document.metadata.name) ||
+        !bounded(document.metadata.creator) ||
+        !bounded(document.metadata.description))
+        return false;
+
+    if (document.metadata.factoryLoadKey &&
+        !bounded(*document.metadata.factoryLoadKey))
+        return false;
+
+    for (const auto &tag : document.metadata.tags) {
+        if (!bounded(tag))
+            return false;
+    }
+    for (const auto &feature : document.metadata.features) {
+        if (!bounded(feature))
+            return false;
+    }
+    for (const auto &extension : document.metadata.extensions) {
+        if (!bounded(extension.key) || !scalarStringWithinLimit(extension.value))
+            return false;
+    }
+    for (const auto &setting : document.settings) {
+        if (!bounded(setting.key) || !scalarStringWithinLimit(setting.value))
+            return false;
+    }
+    return true;
 }
 
 [[nodiscard]] inline PresetCodecError mapValidationError(PresetValidationError error) noexcept {
@@ -620,7 +704,8 @@ inline std::string serializePayload(const PresetDocument &document) {
         document.settings.size() > detail::kMaxSettings ||
         document.metadata.extensions.size() > detail::kMaxExtensions ||
         document.metadata.tags.size() > detail::kMaxStringListEntries ||
-        document.metadata.features.size() > detail::kMaxStringListEntries)
+        document.metadata.features.size() > detail::kMaxStringListEntries ||
+        !detail::documentStringsWithinLimit(document))
         return {PresetCodecError::InputTooLarge, {}};
 
     const auto metadata = detail::serializeMetadata(document);
@@ -647,6 +732,9 @@ inline std::string serializePayload(const PresetDocument &document) {
     const auto frameError = detail::splitFrame(bytes, frame);
     if (frameError != PresetCodecError::None)
         return {frameError, 0u, {}};
+
+    if (!detail::jsonNestingWithinLimit(frame.metadataJson))
+        return {PresetCodecError::NestingTooDeep, 0u, {}};
 
     try {
         const auto rootHolder = choc::json::parse(frame.metadataJson);
@@ -700,6 +788,10 @@ inline std::string serializePayload(const PresetDocument &document) {
     const auto frameError = detail::splitFrame(bytes, frame);
     if (frameError != PresetCodecError::None)
         return {frameError, std::nullopt};
+
+    if (!detail::jsonNestingWithinLimit(frame.metadataJson) ||
+        !detail::jsonNestingWithinLimit(frame.payloadJson))
+        return {PresetCodecError::NestingTooDeep, std::nullopt};
 
     try {
         const auto metadataRootHolder = choc::json::parse(frame.metadataJson);
