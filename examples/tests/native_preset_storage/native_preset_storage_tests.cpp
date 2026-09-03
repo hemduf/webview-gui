@@ -285,6 +285,51 @@ int main() {
                presets::NativePresetStorageError::InvalidIdentity);
     }
 
+    // A preset symlink/reparse-point is never followed outside the scoped root.
+    TempTree outsideTree;
+    const auto outsidePreset = outsideTree.path / "outside.wvpreset";
+    {
+        std::ofstream outside(outsidePreset, std::ios::binary);
+        outside << canonicalOriginal.bytes;
+    }
+    const auto linkedPreset = gainStorage.root() / "linked.wvpreset";
+    std::error_code symlinkError;
+    fs::create_symlink(outsidePreset, linkedPreset, symlinkError);
+    if (!symlinkError) {
+        const auto linkedLoad = gainStorage.load("linked.wvpreset");
+        assert(!linkedLoad.ok());
+        assert(linkedLoad.status.error ==
+               presets::NativePresetStorageError::OutsideRoot);
+
+        const auto listedWithSymlink = gainStorage.list();
+        assert(listedWithSymlink.ok());
+        assert(hasDiagnostic(listedWithSymlink,
+                             presets::NativePresetStorageError::OutsideRoot,
+                             linkedPreset));
+
+        const auto linkedRemove = gainStorage.remove("linked.wvpreset");
+        assert(!linkedRemove.ok());
+        assert(linkedRemove.error == presets::NativePresetStorageError::OutsideRoot);
+        std::error_code ignored;
+        fs::remove(linkedPreset, ignored);
+    }
+
+    // An intermediate symlink may not redirect the plug-in root outside base.
+    TempTree redirectedBase;
+    TempTree redirectedTarget;
+    std::error_code directorySymlinkError;
+    fs::create_directory_symlink(redirectedTarget.path,
+                                 redirectedBase.path / "webview-gui",
+                                 directorySymlinkError);
+    if (!directorySymlinkError) {
+        presets::NativePresetStorage redirectedStorage{
+            redirectedBase.path, ids::kGainPluginId};
+        const auto redirectedReady = redirectedStorage.ensureReady();
+        assert(!redirectedReady.ok());
+        assert(redirectedReady.error ==
+               presets::NativePresetStorageError::OutsideRoot);
+    }
+
     // Malformed real .wvpreset files return the production codec error context.
     const auto malformedPath = gainStorage.root() / "broken.wvpreset";
     {
