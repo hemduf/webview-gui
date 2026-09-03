@@ -5,8 +5,25 @@ if(NOT DEFINED POLYSYNTH_PLUGIN_FILE)
     message(FATAL_ERROR "POLYSYNTH_PLUGIN_FILE is required")
 endif()
 
-function(assert_process_has_no_storage file label)
+function(assert_plugin_tu_has_no_native_storage file label)
     file(READ "${file}" source)
+
+    # #103 only provides the native persistence backend. Until the later CLAP/UI
+    # integration stage, neither plug-in TU may acquire any dependency on it.
+    # This is stronger than a direct process() scan and prevents a helper called
+    # by process() from smuggling blocking filesystem work into the audio path.
+    foreach(forbidden
+        "native_preset_storage.h"
+        "NativePresetStorage"
+        "resolveCurrentNativePresetBaseRoot"
+        "resolveCurrentNativePresetScopedRoot")
+        string(FIND "${source}" "${forbidden}" position)
+        if(NOT position EQUAL -1)
+            message(FATAL_ERROR
+                "${label}: native preset filesystem storage must remain outside the plug-in/audio TU in #103; found '${forbidden}'")
+        endif()
+    endforeach()
+
     string(FIND "${source}" "clap_process_status process(" process_start)
     if(process_start EQUAL -1)
         message(FATAL_ERROR "${label}: process() marker not found")
@@ -20,10 +37,7 @@ function(assert_process_has_no_storage file label)
     string(SUBSTRING "${tail}" 0 ${process_end} process_source)
 
     foreach(forbidden
-        "NativePresetStorage"
-        "native_preset_storage"
         "std::filesystem"
-        "resolveCurrentNativePreset"
         "saveNew("
         "saveAs("
         "replace("
@@ -36,5 +50,7 @@ function(assert_process_has_no_storage file label)
     endforeach()
 endfunction()
 
-assert_process_has_no_storage("${GAIN_PLUGIN_FILE}" "GainPlugin")
-assert_process_has_no_storage("${POLYSYNTH_PLUGIN_FILE}" "PolySynthPlugin")
+assert_plugin_tu_has_no_native_storage("${GAIN_PLUGIN_FILE}" "GainPlugin")
+assert_plugin_tu_has_no_native_storage("${POLYSYNTH_PLUGIN_FILE}" "PolySynthPlugin")
+
+message(STATUS "Native preset filesystem storage is isolated from Gain/PolySynth audio translation units")
