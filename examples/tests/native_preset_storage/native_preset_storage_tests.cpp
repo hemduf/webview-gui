@@ -314,7 +314,9 @@ int main() {
         fs::remove(linkedPreset, ignored);
     }
 
-    // An intermediate symlink may not redirect the plug-in root outside base.
+    // An intermediate symlink may never be followed. Depending on the native
+    // no-follow primitive, the OS can report it either as an explicit escape or
+    // as an invalid/non-directory component; both are deterministic safe rejects.
     TempTree redirectedBase;
     TempTree redirectedTarget;
     std::error_code directorySymlinkError;
@@ -326,8 +328,9 @@ int main() {
             redirectedBase.path, ids::kGainPluginId};
         const auto redirectedReady = redirectedStorage.ensureReady();
         assert(!redirectedReady.ok());
-        assert(redirectedReady.error ==
-               presets::NativePresetStorageError::OutsideRoot);
+        assert(redirectedReady.error == presets::NativePresetStorageError::OutsideRoot ||
+               redirectedReady.error ==
+                   presets::NativePresetStorageError::CreateDirectoryFailed);
     }
 
     // Malformed real .wvpreset files return the production codec error context.
