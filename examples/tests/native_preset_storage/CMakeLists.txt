@@ -44,3 +44,8 @@ add_test(NAME webview_gui_examples_native_preset_storage_paths
     COMMAND webview_gui_native_preset_storage_paths_tests)
 add_test(NAME webview_gui_examples_native_preset_storage
     COMMAND webview_gui_native_preset_storage_tests)
+add_test(NAME webview_gui_examples_native_preset_storage_rt_isolation
+    COMMAND ${CMAKE_COMMAND}
+        -DGAIN_PLUGIN_FILE=${WEBVIEW_GUI_EXAMPLES_DIR}/gain/gain_plugin.cpp
+        -DPOLYSYNTH_PLUGIN_FILE=${WEBVIEW_GUI_EXAMPLES_DIR}/polysynth/polysynth_plugin.cpp
+        -P ${CMAKE_CURRENT_LIST_DIR}/native_preset_storage_rt_contract.cmake)
