@@ -675,7 +675,10 @@ using RtlNtStatusToDosErrorFn = ULONG(NTAPI *)(NTSTATUS);
     auto *renameInfo = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
     std::memset(renameInfo, 0, allocationSize);
     renameInfo->ReplaceIfExists = replaceExisting ? TRUE : FALSE;
-    renameInfo->RootDirectory = root.get();
+    // The temporary handle already names a file inside the pinned root. A simple
+    // destination basename with a null RootDirectory is therefore a same-directory
+    // rename and cannot re-resolve any intermediate path component.
+    renameInfo->RootDirectory = nullptr;
     renameInfo->FileNameLength = static_cast<DWORD>(fileNameBytes);
     if (fileNameBytes != 0u)
         std::memcpy(renameInfo->FileName, destination.data(), fileNameBytes);
