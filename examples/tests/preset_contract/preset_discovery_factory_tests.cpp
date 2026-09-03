@@ -143,19 +143,22 @@ int main() {
     assert(std::strcmp(polyFactory->get_descriptor(polyFactory, 0u)->id,
                        "com.webview-gui.example.polysynth.presets") == 0);
 
-    // The CLAP factory methods are thread-safe. Exercise concurrent create/init/
-    // destroy without any shared mutable registry or processor construction.
+    // Factory methods are thread-safe, but a provider/indexer instance is not a
+    // shared concurrent surface. Give every thread its own indexer so this test
+    // remains valid when #90 starts declaring filetypes/locations during init().
     std::atomic<bool> concurrentOk{true};
     std::vector<std::thread> threads;
     for (unsigned t = 0; t < 8u; ++t) {
         threads.emplace_back([&] {
+            FakeIndexerState threadIndexerState;
+            auto threadIndexer = makeIndexer(threadIndexerState);
             for (unsigned i = 0; i < 128u; ++i) {
                 const auto *descriptor = factory->get_descriptor(factory, 0u);
                 if (!descriptor || factory->count(factory) != 1u) {
                     concurrentOk = false;
                     return;
                 }
-                const auto *provider = factory->create(factory, &indexer, descriptor->id);
+                const auto *provider = factory->create(factory, &threadIndexer, descriptor->id);
                 if (!provider || !provider->init(provider)) {
                     concurrentOk = false;
                     if (provider)
