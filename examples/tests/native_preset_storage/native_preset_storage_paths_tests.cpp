@@ -125,5 +125,21 @@ int main() {
                presets::NativePresetStorageError::InvalidTargetPluginId);
     }
 
+    // The real runner must expose an absolute native root that downstream preset
+    // browser/discovery code can query without touching processor state.
+    {
+        const auto currentBase = presets::resolveCurrentNativePresetBaseRoot();
+        assert(currentBase.ok());
+        assert(currentBase.hasNativeRoot());
+        assert(currentBase.path.is_absolute());
+
+        const auto currentScoped =
+            presets::resolveCurrentNativePresetScopedRoot(ids::kGainPluginId);
+        assert(currentScoped.ok());
+        assert(currentScoped.hasNativeRoot());
+        assert(currentScoped.path.is_absolute());
+        assert(currentScoped.path.filename() == ids::kGainPluginId);
+    }
+
     return 0;
 }
