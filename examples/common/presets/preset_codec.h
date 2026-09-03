@@ -156,46 +156,69 @@ struct PresetFrame {
     return true;
 }
 
-[[nodiscard]] inline bool scalarStringWithinLimit(
-    const PresetScalarValue &value) noexcept {
-    if (const auto *text = std::get_if<std::string>(&value))
-        return text->size() <= kMaxStringBytes;
-    return true;
+[[nodiscard]] inline PresetCodecError textCodecError(
+    std::string_view text) noexcept {
+    if (text.size() > kMaxStringBytes)
+        return PresetCodecError::InputTooLarge;
+    if (text.find('\0') != std::string_view::npos)
+        return PresetCodecError::InvalidDocument;
+    return PresetCodecError::None;
 }
 
-[[nodiscard]] inline bool documentStringsWithinLimit(
+[[nodiscard]] inline PresetCodecError scalarTextCodecError(
+    const PresetScalarValue &value) noexcept {
+    if (const auto *text = std::get_if<std::string>(&value))
+        return textCodecError(*text);
+    return PresetCodecError::None;
+}
+
+[[nodiscard]] inline PresetCodecError documentTextCodecError(
     const PresetDocument &document) noexcept {
-    const auto bounded = [](const std::string &text) {
-        return text.size() <= kMaxStringBytes;
+    const std::string_view metadataStrings[] = {
+        document.metadata.targetPluginId,
+        document.metadata.name,
+        document.metadata.creator,
+        document.metadata.description,
     };
+    for (const auto text : metadataStrings) {
+        const auto error = textCodecError(text);
+        if (error != PresetCodecError::None)
+            return error;
+    }
 
-    if (!bounded(document.metadata.targetPluginId) ||
-        !bounded(document.metadata.name) ||
-        !bounded(document.metadata.creator) ||
-        !bounded(document.metadata.description))
-        return false;
-
-    if (document.metadata.factoryLoadKey &&
-        !bounded(*document.metadata.factoryLoadKey))
-        return false;
+    if (document.metadata.factoryLoadKey) {
+        const auto error = textCodecError(*document.metadata.factoryLoadKey);
+        if (error != PresetCodecError::None)
+            return error;
+    }
 
     for (const auto &tag : document.metadata.tags) {
-        if (!bounded(tag))
-            return false;
+        const auto error = textCodecError(tag);
+        if (error != PresetCodecError::None)
+            return error;
     }
     for (const auto &feature : document.metadata.features) {
-        if (!bounded(feature))
-            return false;
+        const auto error = textCodecError(feature);
+        if (error != PresetCodecError::None)
+            return error;
     }
     for (const auto &extension : document.metadata.extensions) {
-        if (!bounded(extension.key) || !scalarStringWithinLimit(extension.value))
-            return false;
+        if (const auto error = textCodecError(extension.key);
+            error != PresetCodecError::None)
+            return error;
+        if (const auto error = scalarTextCodecError(extension.value);
+            error != PresetCodecError::None)
+            return error;
     }
     for (const auto &setting : document.settings) {
-        if (!bounded(setting.key) || !scalarStringWithinLimit(setting.value))
-            return false;
+        if (const auto error = textCodecError(setting.key);
+            error != PresetCodecError::None)
+            return error;
+        if (const auto error = scalarTextCodecError(setting.value);
+            error != PresetCodecError::None)
+            return error;
     }
-    return true;
+    return PresetCodecError::None;
 }
 
 [[nodiscard]] inline PresetCodecError mapValidationError(PresetValidationError error) noexcept {
@@ -704,9 +727,12 @@ inline std::string serializePayload(const PresetDocument &document) {
         document.settings.size() > detail::kMaxSettings ||
         document.metadata.extensions.size() > detail::kMaxExtensions ||
         document.metadata.tags.size() > detail::kMaxStringListEntries ||
-        document.metadata.features.size() > detail::kMaxStringListEntries ||
-        !detail::documentStringsWithinLimit(document))
+        document.metadata.features.size() > detail::kMaxStringListEntries)
         return {PresetCodecError::InputTooLarge, {}};
+
+    if (const auto textError = detail::documentTextCodecError(document);
+        textError != PresetCodecError::None)
+        return {textError, {}};
 
     const auto metadata = detail::serializeMetadata(document);
     const auto payload = detail::serializePayload(document);
