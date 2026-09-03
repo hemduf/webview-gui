@@ -1,0 +1,3 @@
+WVPRESET
+{"schemaVersion":1,"targetPluginId":"com.webview-gui.example.polysynth","name":"Pluck","creator":"webview-gui","description":"Fast bright pluck demonstrating filter-envelope movement.","tags":["factory","pluck"],"features":["instrument","synthesizer"],"factoryLoadKey":"polysynth:pluck","extensions":[]}
+{"parameters":[{"id":1000,"value":-4},{"id":1001,"value":1},{"id":1002,"value":0},{"id":1003,"value":0},{"id":1004,"value":1800},{"id":1005,"value":0.2},{"id":1006,"value":0.001},{"id":1007,"value":0.25},{"id":1008,"value":0.05},{"id":1009,"value":0.3},{"id":1010,"value":0.7},{"id":1011,"value":0},{"id":1012,"value":1}],"settings":[]}
