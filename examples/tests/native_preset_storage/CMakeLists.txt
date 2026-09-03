@@ -39,11 +39,21 @@ target_link_libraries(webview_gui_native_preset_storage_tests PRIVATE
 )
 target_compile_features(webview_gui_native_preset_storage_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_native_preset_storage_race_tests
+    native_preset_storage_race_tests.cpp
+)
+target_link_libraries(webview_gui_native_preset_storage_race_tests PRIVATE
+    webview_gui_native_preset_storage
+)
+target_compile_features(webview_gui_native_preset_storage_race_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_examples_native_preset_storage_paths
     COMMAND webview_gui_native_preset_storage_paths_tests)
 add_test(NAME webview_gui_examples_native_preset_storage
     COMMAND webview_gui_native_preset_storage_tests)
+add_test(NAME webview_gui_examples_native_preset_storage_races
+    COMMAND webview_gui_native_preset_storage_race_tests)
 add_test(NAME webview_gui_examples_native_preset_storage_rt_isolation
     COMMAND ${CMAKE_COMMAND}
         -DGAIN_PLUGIN_FILE=${WEBVIEW_GUI_EXAMPLES_DIR}/gain/gain_plugin.cpp
