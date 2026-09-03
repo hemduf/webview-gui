@@ -1,7 +1,6 @@
 #include "preset_document.h"
 
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -43,8 +42,11 @@ presets::PresetDocument makeGainPreset() {
     document.metadata.name = "Unity";
     document.metadata.creator = "webview-gui";
     document.metadata.description = "Reference unity-gain preset";
+    document.metadata.tags = {"reference"};
     document.metadata.features = {"utility", "factory"};
     document.metadata.factoryLoadKey = "gain:unity";
+    document.metadata.creationTimestamp = 100;
+    document.metadata.modificationTimestamp = 200;
     document.parameters = {
         {0x1000u, 0.0},
         {0x1001u, 0.0},
@@ -84,7 +86,7 @@ int main() {
                   "telemetry must not have a public preset slot");
 
     auto gain = makeGainPreset();
-    auto gainValidation = presets::validatePresetDocument(gain);
+    const auto gainValidation = presets::validatePresetDocument(gain);
     assert(gainValidation.ok());
     assert(gainValidation.error == presets::PresetValidationError::None);
 
@@ -94,6 +96,12 @@ int main() {
     assert(gainMetadata.name == "Unity");
     assert(gainMetadata.creator == "webview-gui");
     assert(gainMetadata.factoryLoadKey == "gain:unity");
+    assert(gainMetadata.tags.size() == 1u);
+    assert(gainMetadata.tags[0] == "reference");
+    assert(gainMetadata.features.size() == 2u);
+    assert(gainMetadata.features[0] == "utility");
+    assert(gainMetadata.creationTimestamp == 100);
+    assert(gainMetadata.modificationTimestamp == 200);
 
     auto poly = makePolySynthPreset();
     const auto polyValidation = presets::validatePresetDocument(poly);
@@ -111,6 +119,16 @@ int main() {
     emptyTarget.metadata.targetPluginId.clear();
     assert(presets::validatePresetDocument(emptyTarget).error ==
            presets::PresetValidationError::MissingTargetPluginId);
+
+    auto emptyName = gain;
+    emptyName.metadata.name.clear();
+    assert(presets::validatePresetDocument(emptyName).error ==
+           presets::PresetValidationError::MissingPresetName);
+
+    auto emptyFactoryKey = gain;
+    emptyFactoryKey.metadata.factoryLoadKey = std::string{};
+    assert(presets::validatePresetDocument(emptyFactoryKey).error ==
+           presets::PresetValidationError::EmptyFactoryLoadKey);
 
     auto zeroSchema = gain;
     zeroSchema.schemaVersion = 0u;
@@ -136,6 +154,17 @@ int main() {
     duplicateSetting.settings.push_back({"reference", true});
     assert(presets::validatePresetDocument(duplicateSetting).error ==
            presets::PresetValidationError::DuplicateSettingKey);
+
+    auto missingSettingKey = gain;
+    missingSettingKey.settings.push_back({"", false});
+    assert(presets::validatePresetDocument(missingSettingKey).error ==
+           presets::PresetValidationError::MissingSettingKey);
+
+    auto nonFiniteSetting = gain;
+    nonFiniteSetting.settings.push_back(
+        {"bad", std::numeric_limits<double>::quiet_NaN()});
+    assert(presets::validatePresetDocument(nonFiniteSetting).error ==
+           presets::PresetValidationError::NonFiniteSettingValue);
 
     return 0;
 }
