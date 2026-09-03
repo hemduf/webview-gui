@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace presets = webview_gui::examples::presets;
 
@@ -61,22 +63,39 @@ bool sameDocument(const presets::PresetDocument &a,
         a.metadata.extensions.size() != b.metadata.extensions.size())
         return false;
 
-    for (std::size_t i = 0; i < a.parameters.size(); ++i) {
-        if (a.parameters[i].stableParameterId != b.parameters[i].stableParameterId ||
-            a.parameters[i].value != b.parameters[i].value)
+    auto aParameters = a.parameters;
+    auto bParameters = b.parameters;
+    const auto parameterLess = [](const auto &lhs, const auto &rhs) {
+        return lhs.stableParameterId < rhs.stableParameterId;
+    };
+    std::sort(aParameters.begin(), aParameters.end(), parameterLess);
+    std::sort(bParameters.begin(), bParameters.end(), parameterLess);
+    for (std::size_t i = 0; i < aParameters.size(); ++i) {
+        if (aParameters[i].stableParameterId != bParameters[i].stableParameterId ||
+            aParameters[i].value != bParameters[i].value)
             return false;
     }
 
-    for (std::size_t i = 0; i < a.settings.size(); ++i) {
-        if (a.settings[i].key != b.settings[i].key ||
-            !sameScalar(a.settings[i].value, b.settings[i].value))
+    auto aSettings = a.settings;
+    auto bSettings = b.settings;
+    const auto keyLess = [](const auto &lhs, const auto &rhs) {
+        return lhs.key < rhs.key;
+    };
+    std::sort(aSettings.begin(), aSettings.end(), keyLess);
+    std::sort(bSettings.begin(), bSettings.end(), keyLess);
+    for (std::size_t i = 0; i < aSettings.size(); ++i) {
+        if (aSettings[i].key != bSettings[i].key ||
+            !sameScalar(aSettings[i].value, bSettings[i].value))
             return false;
     }
 
-    for (std::size_t i = 0; i < a.metadata.extensions.size(); ++i) {
-        if (a.metadata.extensions[i].key != b.metadata.extensions[i].key ||
-            !sameScalar(a.metadata.extensions[i].value,
-                        b.metadata.extensions[i].value))
+    auto aExtensions = a.metadata.extensions;
+    auto bExtensions = b.metadata.extensions;
+    std::sort(aExtensions.begin(), aExtensions.end(), keyLess);
+    std::sort(bExtensions.begin(), bExtensions.end(), keyLess);
+    for (std::size_t i = 0; i < aExtensions.size(); ++i) {
+        if (aExtensions[i].key != bExtensions[i].key ||
+            !sameScalar(aExtensions[i].value, bExtensions[i].value))
             return false;
     }
 
