@@ -31,17 +31,55 @@ constexpr ClapPresetSurface classifyPresetClapId(std::string_view id) noexcept {
     return ClapPresetSurface::None;
 }
 
+enum class PresetResultStatus : std::uint8_t {
+    Success,
+    Cancelled,
+    NotFound,
+    Unsupported,
+    Error,
+};
+
+// Non-owning result used at the #37 adaptation boundary. `message` only needs to
+// remain valid for the duration of the call which consumes the result; #37 may
+// forward it immediately to a host error callback. Cancellation is deliberately
+// distinct from errors because Preset Discovery receiver cancellation is normal.
+struct PresetResult {
+    PresetResultStatus status = PresetResultStatus::Success;
+    std::int32_t osError = 0;
+    std::string_view message{};
+
+    constexpr bool succeeded() const noexcept {
+        return status == PresetResultStatus::Success;
+    }
+
+    static constexpr PresetResult success() noexcept { return {}; }
+    static constexpr PresetResult cancelled() noexcept {
+        return {PresetResultStatus::Cancelled, 0, {}};
+    }
+    static constexpr PresetResult notFound(std::string_view message = {}) noexcept {
+        return {PresetResultStatus::NotFound, 0, message};
+    }
+    static constexpr PresetResult unsupported(std::string_view message = {}) noexcept {
+        return {PresetResultStatus::Unsupported, 0, message};
+    }
+    static constexpr PresetResult error(std::string_view message,
+                                        std::int32_t osError = 0) noexcept {
+        return {PresetResultStatus::Error, osError, message};
+    }
+};
+
 // Non-owning metadata receiver used by the CLAP adapter. #36 owns parsing,
-// migration, storage and the canonical metadata representation; an adapter from
-// #36 feeds this sink. All string_views are valid only for the duration of the
-// callback that receives them unless the caller explicitly copies them.
+// migration, storage and its canonical metadata representation. #37 owns an
+// adapter from that format-neutral API into this CLAP-facing sink, so #36 does
+// not need to depend on CLAP types. All string_views are callback-lifetime only
+// unless the receiver explicitly copies them.
 class PresetMetadataSink {
 public:
     virtual ~PresetMetadataSink() = default;
 
     // A catalog/container may report multiple presets. Returning false asks the
-    // producer to stop immediately without treating receiver cancellation as a
-    // malformed preset.
+    // producer to stop immediately; the catalog must report Cancelled rather
+    // than converting receiver cancellation into an error.
     virtual bool beginPreset(std::string_view name, std::string_view loadKey) noexcept = 0;
     virtual void setTargetPlugin(std::string_view pluginId) noexcept = 0;
     virtual void addCreator(std::string_view creator) noexcept = 0;
@@ -51,23 +89,23 @@ public:
                                clap_timestamp modification) noexcept = 0;
 };
 
-// A preset loader never mutates live processor state directly. #36 parses and
-// validates its document, then describes one complete persistent candidate to
-// this sink. The plug-in-specific #37 adapter owns the final atomic/coherent
-// commit after endCandidate() succeeds.
+// A preset loader never mutates live processor state directly. The #37 adapter
+// asks #36 to parse/validate its canonical document and describes one complete
+// persistent candidate to this sink. The plug-in-specific #37 code owns the
+// final atomic/coherent commit after endCandidate() succeeds.
 class PresetStateSink {
 public:
     virtual ~PresetStateSink() = default;
 
     virtual bool beginCandidate(std::string_view targetPluginId) noexcept = 0;
     virtual bool setParameter(std::uint32_t stableParameterId, double value) noexcept = 0;
-    virtual bool setSetting(std::string_view key, std::string_view value) noexcept = 0;
     virtual bool endCandidate() noexcept = 0;
 };
 
-// Narrow #36 -> #37 integration seam. It intentionally contains no filesystem,
-// JSON/CBOR, WebView or audio-processor type. Production implementations are
-// supplied by #36; #37 tests can provide deterministic fakes.
+// Narrow CLAP-side port that #37 implements over the format-neutral #36 preset
+// subsystem. It intentionally contains no filesystem implementation, JSON/CBOR,
+// WebView or audio-processor type. #37 tests can provide deterministic fakes;
+// production code will adapt the API delivered by #36 rather than reimplement it.
 class PresetCatalog {
 public:
     virtual ~PresetCatalog() = default;
@@ -82,19 +120,19 @@ public:
 
     // Bundled factory content is exposed as a PLUGIN container and may emit
     // multiple presets with stable load keys.
-    virtual bool enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept = 0;
+    virtual PresetResult enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept = 0;
 
-    // Native user FILE metadata path. Implementations return false for storage
-    // backends which cannot expose a native file location.
-    virtual bool metadataForFile(std::string_view path,
-                                 PresetMetadataSink &sink) const noexcept = 0;
+    // Native user FILE metadata path. Implementations return Unsupported for
+    // storage backends which cannot expose a native file location.
+    virtual PresetResult metadataForFile(std::string_view path,
+                                         PresetMetadataSink &sink) const noexcept = 0;
 
     // Resolve/parse one factory or native user preset into a persistent candidate
     // only. These methods must not commit processor state themselves.
-    virtual bool loadFactory(std::string_view loadKey,
-                             PresetStateSink &sink) const noexcept = 0;
-    virtual bool loadFile(std::string_view path,
-                          PresetStateSink &sink) const noexcept = 0;
+    virtual PresetResult loadFactory(std::string_view loadKey,
+                                     PresetStateSink &sink) const noexcept = 0;
+    virtual PresetResult loadFile(std::string_view path,
+                                  PresetStateSink &sink) const noexcept = 0;
 };
 
 } // namespace webview_gui::examples::presets
