@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -78,6 +79,17 @@ bool failWriteStage(presets::NativePresetWriteStage stage, void *userData) noexc
     return failure != nullptr && stage == failure->stage;
 }
 
+bool hasDiagnostic(const presets::NativePresetListResult &listed,
+                   presets::NativePresetStorageError error,
+                   const fs::path &path) {
+    return std::any_of(
+        listed.diagnostics.begin(), listed.diagnostics.end(),
+        [&](const auto &diagnostic) {
+            return diagnostic.status.error == error &&
+                   diagnostic.status.path == path;
+        });
+}
+
 } // namespace
 
 int main() {
@@ -113,6 +125,48 @@ int main() {
     assert(secondSave.path != firstSave.path);
     assert(fs::is_regular_file(secondSave.path));
 
+    // Explicit Save As is no-clobber unless overwrite is requested.
+    const auto explicitSave = gainStorage.saveAs("explicit.wvpreset", original);
+    assert(explicitSave.ok());
+    assert(explicitSave.identity == "explicit.wvpreset");
+    const auto explicitOriginalBytes = readFile(explicitSave.path);
+
+    auto explicitReplacement = makeGainPreset("Explicit Replacement", 4.0);
+    const auto refusedOverwrite =
+        gainStorage.saveAs("explicit.wvpreset", explicitReplacement, false);
+    assert(!refusedOverwrite.ok());
+    assert(refusedOverwrite.status.error ==
+           presets::NativePresetStorageError::AlreadyExists);
+    assert(readFile(explicitSave.path) == explicitOriginalBytes);
+
+    const auto allowedOverwrite =
+        gainStorage.saveAs("explicit.wvpreset", explicitReplacement, true);
+    assert(allowedOverwrite.ok());
+    assert(allowedOverwrite.identity == "explicit.wvpreset");
+    const auto explicitReplacementBytes =
+        presets::serializePresetDocument(explicitReplacement);
+    assert(explicitReplacementBytes.ok());
+    assert(readFile(explicitSave.path) == explicitReplacementBytes.bytes);
+
+    // Save As names are filenames, never paths. Traversal-like, encoded and
+    // platform-specific separator/device tricks fail before filesystem access.
+    const std::string_view invalidSaveNames[] = {
+        "../escape.wvpreset",
+        "..\\escape.wvpreset",
+        "/tmp/escape.wvpreset",
+        "C:\\temp\\escape.wvpreset",
+        "%2e%2e%2fescape.wvpreset",
+        "folder%5cescape.wvpreset",
+        "NUL.wvpreset",
+        "notes.txt",
+    };
+    for (const auto invalidName : invalidSaveNames) {
+        const auto invalidSave = gainStorage.saveAs(invalidName, original);
+        assert(!invalidSave.ok());
+        assert(invalidSave.status.error ==
+               presets::NativePresetStorageError::InvalidName);
+    }
+
     // Enumeration is deterministic and only includes real .wvpreset regular files.
     {
         std::ofstream(gainStorage.root() / "notes.txt") << "ignored";
@@ -122,14 +176,13 @@ int main() {
 
     const auto listed = gainStorage.list();
     assert(listed.ok());
-    assert(listed.entries.size() == 2u);
+    assert(listed.entries.size() == 3u);
     assert(std::is_sorted(
         listed.entries.begin(), listed.entries.end(),
         [](const auto &a, const auto &b) { return a.identity < b.identity; }));
     for (const auto &entry : listed.entries) {
         assert(entry.path.extension() == ".wvpreset");
         assert(entry.metadata.targetPluginId == ids::kGainPluginId);
-        assert(entry.metadata.name == "Same Display Name");
     }
 
     // Full load uses the production parser and expected target scope.
@@ -172,6 +225,27 @@ int main() {
     assert(readFile(firstSave.path) == bytesBeforeFailure);
     assert(!containsTemporaryFile(gainStorage.root()));
 
+    // Failure after a fully written/closed temp but before rename is also atomic.
+    failure.stage = presets::NativePresetWriteStage::BeforeReplace;
+    const auto failedBeforeReplace =
+        faultingStorage.replace(firstSave.identity, failedReplacement);
+    assert(!failedBeforeReplace.ok());
+    assert(failedBeforeReplace.status.error ==
+           presets::NativePresetStorageError::ReplaceFailed);
+    assert(readFile(firstSave.path) == bytesBeforeFailure);
+    assert(!containsTemporaryFile(gainStorage.root()));
+
+    // Serialization failure never touches the previous destination.
+    auto invalidDocument = failedReplacement;
+    invalidDocument.parameters[0].value =
+        std::numeric_limits<double>::infinity();
+    const auto failedSerialize =
+        gainStorage.saveAs(firstSave.identity, invalidDocument, true);
+    assert(!failedSerialize.ok());
+    assert(failedSerialize.status.error ==
+           presets::NativePresetStorageError::SerializeFailed);
+    assert(readFile(firstSave.path) == bytesBeforeFailure);
+
     // A non-creatable scoped root reports context rather than throwing.
     TempTree blockedTree;
     fs::create_directories(blockedTree.path / "webview-gui");
@@ -196,15 +270,20 @@ int main() {
     assert(wrongSave.status.error ==
            presets::NativePresetStorageError::WrongTargetPlugin);
 
-    const auto traversal = gainStorage.load("../escape.wvpreset");
-    assert(!traversal.ok());
-    assert(traversal.status.error ==
-           presets::NativePresetStorageError::InvalidIdentity);
-
-    const auto wrongExtension = gainStorage.load("notes.txt");
-    assert(!wrongExtension.ok());
-    assert(wrongExtension.status.error ==
-           presets::NativePresetStorageError::InvalidIdentity);
+    const std::string_view invalidLoadIdentities[] = {
+        "../escape.wvpreset",
+        "..\\escape.wvpreset",
+        "/tmp/escape.wvpreset",
+        "C:\\temp\\escape.wvpreset",
+        "%2e%2e%2fescape.wvpreset",
+        "notes.txt",
+    };
+    for (const auto invalidIdentity : invalidLoadIdentities) {
+        const auto traversal = gainStorage.load(invalidIdentity);
+        assert(!traversal.ok());
+        assert(traversal.status.error ==
+               presets::NativePresetStorageError::InvalidIdentity);
+    }
 
     // Malformed real .wvpreset files return the production codec error context.
     const auto malformedPath = gainStorage.root() / "broken.wvpreset";
@@ -218,6 +297,41 @@ int main() {
            presets::NativePresetStorageError::ParseFailed);
     assert(malformedLoad.status.codecError != presets::PresetCodecError::None);
     assert(malformedLoad.status.path == malformedPath);
+
+    // Oversized files are rejected before allocation/read and surfaced as list diagnostics.
+    const auto oversizedPath = gainStorage.root() / "oversized.wvpreset";
+    {
+        std::ofstream oversized(oversizedPath, std::ios::binary);
+        std::string chunk(4096u, 'x');
+        std::size_t remaining = presets::kMaxNativePresetFileBytes + 1u;
+        while (remaining != 0u) {
+            const auto count = std::min<std::size_t>(remaining, chunk.size());
+            oversized.write(chunk.data(), static_cast<std::streamsize>(count));
+            remaining -= count;
+        }
+    }
+    const auto oversizedLoad = gainStorage.load("oversized.wvpreset");
+    assert(!oversizedLoad.ok());
+    assert(oversizedLoad.status.error ==
+           presets::NativePresetStorageError::InputTooLarge);
+    assert(oversizedLoad.status.path == oversizedPath);
+
+    const auto listedWithInvalidFiles = gainStorage.list();
+    assert(listedWithInvalidFiles.ok());
+    assert(hasDiagnostic(listedWithInvalidFiles,
+                         presets::NativePresetStorageError::ParseFailed,
+                         malformedPath));
+    assert(hasDiagnostic(listedWithInvalidFiles,
+                         presets::NativePresetStorageError::InputTooLarge,
+                         oversizedPath));
+
+    // Delete supports downstream browser semantics and is deterministic.
+    const auto removed = gainStorage.remove(explicitSave.identity);
+    assert(removed.ok());
+    assert(!fs::exists(explicitSave.path));
+    const auto removeAgain = gainStorage.remove(explicitSave.identity);
+    assert(!removeAgain.ok());
+    assert(removeAgain.error == presets::NativePresetStorageError::NotFound);
 
     return 0;
 }
