@@ -40,6 +40,12 @@ function(webview_gui_copy_preset_resources target destination)
 endfunction()
 
 function(webview_gui_package_native_clap_preset_resources target output_name)
+    get_target_property(already_packaged ${target} WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED)
+    if(already_packaged)
+        return()
+    endif()
+    set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED TRUE)
+
     if(APPLE)
         set(destination "$<TARGET_FILE_DIR:${target}>/../Resources/presets")
     else()
