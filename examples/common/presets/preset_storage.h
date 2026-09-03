@@ -26,15 +26,25 @@ enum class PresetStorageError : std::uint8_t {
     NotFound,
     AlreadyExists,
     InvalidIdentity,
+    InvalidConfiguration,
+    OutsideRoot,
+    InputTooLarge,
     WrongTargetPlugin,
     SerializeFailed,
     ParseFailed,
     IoFailure,
 };
 
+// Portable status plus optional backend diagnostics. Native adapters preserve
+// the exact #103 enum value, system error and diagnostic path without forcing
+// std::filesystem into WCLAP/WASI/browser consumers. Host backends may leave
+// these fields at their defaults.
 struct PresetStorageStatus {
     PresetStorageError error = PresetStorageError::None;
     PresetCodecError codecError = PresetCodecError::None;
+    std::uint32_t backendErrorCode = 0u;
+    int systemErrorCode = 0;
+    std::string diagnosticPath;
 
     [[nodiscard]] bool ok() const noexcept {
         return error == PresetStorageError::None;
@@ -49,6 +59,7 @@ struct PresetStorageEntry {
 struct PresetStorageListResult {
     PresetStorageStatus status;
     std::vector<PresetStorageEntry> entries;
+    std::vector<PresetStorageStatus> diagnostics;
 
     [[nodiscard]] bool ok() const noexcept { return status.ok(); }
 };
@@ -109,7 +120,7 @@ public:
     }
 
     [[nodiscard]] PresetStorageListResult list() const override {
-        return {{PresetStorageError::Unavailable}, {}};
+        return {{PresetStorageError::Unavailable}, {}, {}};
     }
 
     [[nodiscard]] PresetStorageLoadResult load(std::string_view) const override {
