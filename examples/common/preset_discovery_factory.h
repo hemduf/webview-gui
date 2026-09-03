@@ -76,10 +76,12 @@ class PresetDiscoveryFactoryImpl {
     }
 
     static const void *CLAP_ABI providerGetExtension(
-        const clap_preset_discovery_provider_t *provider,
+        const clap_preset_discovery_provider_t *,
         const char *) noexcept {
-        auto *state = stateFrom(provider);
-        return state && state->initialized ? nullptr : nullptr;
+        // #89 exposes no provider extension. Returning null is valid both for a
+        // normal post-init query and as a defensive response to an invalid early
+        // query, even though CLAP forbids hosts from calling this before init().
+        return nullptr;
     }
 
     static std::uint32_t CLAP_ABI factoryCount(
