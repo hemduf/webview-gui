@@ -11,6 +11,7 @@ on:
       - '.github/workflows/gain-wclap.yml'
       - '.github/workflows/polysynth-wclap.yml'
       - '.github/workflows/examples-formats.yml'
+      - '.github/workflows/examples-sanitizers.yml'
       - '.github/workflows/examples-qualification.yml'
   push:
     branches:
@@ -24,6 +25,7 @@ on:
       - '.github/workflows/gain-wclap.yml'
       - '.github/workflows/polysynth-wclap.yml'
       - '.github/workflows/examples-formats.yml'
+      - '.github/workflows/examples-sanitizers.yml'
       - '.github/workflows/examples-qualification.yml'
   workflow_dispatch:
 
@@ -44,6 +46,9 @@ jobs:
       - name: Test native artifact verifier
         run: python examples/tests/verify_native_artifacts_tests.py
 
+      - name: Test embedded artifact resource verifier
+        run: python examples/tests/verify_native_artifact_resource_tests.py
+
       - name: Verify aggregate qualification ownership and gates
         run: >-
           cmake
@@ -53,5 +58,6 @@ jobs:
           -DGAIN_WCLAP_WORKFLOW="${{ github.workspace }}/.github/workflows/gain-wclap.yml"
           -DPOLYSYNTH_WCLAP_WORKFLOW="${{ github.workspace }}/.github/workflows/polysynth-wclap.yml"
           -DFORMATS_WORKFLOW="${{ github.workspace }}/.github/workflows/examples-formats.yml"
+          -DSANITIZER_WORKFLOW="${{ github.workspace }}/.github/workflows/examples-sanitizers.yml"
           -DREADME_FILE="${{ github.workspace }}/examples/README.md"
           -P "${{ github.workspace }}/examples/tests/aggregate_qualification_contract.cmake"
