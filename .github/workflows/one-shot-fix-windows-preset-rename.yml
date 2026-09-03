@@ -1,0 +1,37 @@
+name: One-shot fix Windows preset rename
+
+on:
+  push:
+    branches:
+      - feat/36-preset-subsystem
+    paths:
+      - '.github/workflows/one-shot-fix-windows-preset-rename.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: feat/36-preset-subsystem
+      - name: Patch same-directory Windows rename
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('examples/common/presets/native_preset_storage.cpp')
+          s = p.read_text()
+          old = '    renameInfo->RootDirectory = root.get();\n'
+          new = '    // The temporary handle already names a file inside the pinned root. A simple\\n    // destination basename with a null RootDirectory is therefore a same-directory\\n    // rename and cannot re-resolve any intermediate path component.\\n    renameInfo->RootDirectory = nullptr;\n'.replace('\\n', '\n')
+          if old not in s:
+              raise SystemExit('expected rename RootDirectory assignment not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git config user.name 'chatgpt-codex-connector'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/common/presets/native_preset_storage.cpp
+          git commit -m 'fix(presets): use same-directory Windows rename'
+          git push origin HEAD:feat/36-preset-subsystem
