@@ -10,6 +10,10 @@ namespace presets = webview_gui::examples::presets;
 namespace ids = webview_gui::examples::plugin_ids;
 
 int main() {
+#if !defined(_WIN32)
+    // POSIX path syntax is shared by the macOS/Linux policy fixtures. Windows
+    // runners validate the Windows policy below and the real current-root seam;
+    // they must not reinterpret synthetic POSIX paths with host semantics.
     {
         presets::NativePresetEnvironment env;
         env.home = "/Users/alice";
@@ -25,6 +29,7 @@ int main() {
         assert(scoped.path.generic_string() ==
                "/Users/alice/Library/Application Support/webview-gui/presets/com.webview-gui.example.gain");
     }
+#endif
 
     {
         presets::NativePresetEnvironment env;
@@ -40,6 +45,7 @@ int main() {
                "C:/Users/alice/AppData/Roaming/webview-gui/presets/com.webview-gui.example.polysynth");
     }
 
+#if !defined(_WIN32)
     {
         presets::NativePresetEnvironment env;
         env.home = "/home/alice";
@@ -58,6 +64,7 @@ int main() {
         assert(base.ok());
         assert(base.path.generic_string() == "/home/alice/.config");
     }
+#endif
 
     // Environment-derived native roots are never allowed to become CWD-relative.
     {
