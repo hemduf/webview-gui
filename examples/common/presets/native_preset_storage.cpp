@@ -30,6 +30,9 @@ constexpr std::size_t kMaxSaveIdentityAttempts = 10000u;
 constexpr std::size_t kMaxTemporaryAttempts = 128u;
 constexpr std::size_t kMaxIdentityBytes = 192u;
 
+static_assert(kMaxNativePresetFileBytes == detail::kMaxPresetBytes,
+              "native storage and codec must share the same maximum preset size");
+
 std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
 
 [[nodiscard]] NativePresetStorageStatus makeStatus(
@@ -59,6 +62,29 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
     return true;
 }
 
+[[nodiscard]] bool windowsReservedStem(std::string_view stem) noexcept {
+    if (stem.empty())
+        return false;
+
+    char normalized[5]{};
+    if (stem.size() >= sizeof(normalized))
+        return false;
+    for (std::size_t i = 0u; i < stem.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(stem[i]);
+        normalized[i] = (c >= 'a' && c <= 'z')
+                            ? static_cast<char>(c - 'a' + 'A')
+                            : static_cast<char>(c);
+    }
+    const std::string_view upper{normalized, stem.size()};
+    if (upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL")
+        return true;
+    if (upper.size() == 4u &&
+        (upper.substr(0u, 3u) == "COM" || upper.substr(0u, 3u) == "LPT") &&
+        upper[3] >= '1' && upper[3] <= '9')
+        return true;
+    return false;
+}
+
 [[nodiscard]] bool validIdentity(std::string_view identity) noexcept {
     if (identity.empty() || identity.size() > kMaxIdentityBytes ||
         identity == "." || identity == ".." ||
@@ -75,7 +101,7 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
         return false;
 
     const auto stem = path.stem().string();
-    if (stem.empty() || stem.front() == '.')
+    if (stem.empty() || stem.front() == '.' || windowsReservedStem(stem))
         return false;
     for (const unsigned char c : stem) {
         const bool asciiAlpha = (c >= 'a' && c <= 'z') ||
@@ -152,7 +178,7 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
             break;
     }
 
-    if (slug.empty())
+    if (slug.empty() || windowsReservedStem(slug))
         slug = "preset";
     return slug;
 }
@@ -262,9 +288,9 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
             path,
             std::error_code(static_cast<int>(error), std::system_category()));
     }
-    if (static_cast<std::uint64_t>(size.QuadPart) > detail::kMaxPresetBytes) {
+    if (static_cast<std::uint64_t>(size.QuadPart) > kMaxNativePresetFileBytes) {
         ::CloseHandle(file);
-        return makeStatus(NativePresetStorageError::ParseFailed,
+        return makeStatus(NativePresetStorageError::InputTooLarge,
                           path,
                           {},
                           PresetCodecError::InputTooLarge);
@@ -330,9 +356,9 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
         return makeStatus(NativePresetStorageError::OutsideRoot, path);
     }
     if (statBuffer.st_size < 0 ||
-        static_cast<std::uint64_t>(statBuffer.st_size) > detail::kMaxPresetBytes) {
+        static_cast<std::uint64_t>(statBuffer.st_size) > kMaxNativePresetFileBytes) {
         ::close(fd);
-        return makeStatus(NativePresetStorageError::ParseFailed,
+        return makeStatus(NativePresetStorageError::InputTooLarge,
                           path,
                           {},
                           PresetCodecError::InputTooLarge);
