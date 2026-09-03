@@ -46,13 +46,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Install Ninja on macOS
-        if: runner.os == 'macOS'
-        run: brew install ninja || true
-
       - name: Configure example sanitizers
         run: >-
-          cmake -S examples -B build-examples-sanitize -G Ninja
+          cmake -S examples -B build-examples-sanitize
           -DCMAKE_BUILD_TYPE=Debug
           -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
           -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
