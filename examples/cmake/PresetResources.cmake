@@ -1,4 +1,4 @@
-include_guard(GLOBAL)
+include_guard(DIRECTORY)
 
 if(NOT DEFINED WEBVIEW_GUI_SOURCE_DIR OR "${WEBVIEW_GUI_SOURCE_DIR}" STREQUAL "")
     message(FATAL_ERROR "PresetResources.cmake requires WEBVIEW_GUI_SOURCE_DIR")
