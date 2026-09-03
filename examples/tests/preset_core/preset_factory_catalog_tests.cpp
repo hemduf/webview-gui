@@ -61,7 +61,9 @@ template <std::size_t N>
 void verifyCatalog(const presets::FactoryPresetCatalog &catalog,
                    const std::array<std::string_view, N> &expectedKeys,
                    const std::array<std::string_view, N> &expectedNames,
-                   std::string_view expectedTargetPluginId) {
+                   std::string_view expectedTargetPluginId,
+                   presets::StableParameterId firstStableParameterId,
+                   std::size_t expectedParameterCount) {
     assert(catalog.size() == N);
 
     for (std::size_t i = 0u; i < N; ++i) {
@@ -97,6 +99,14 @@ void verifyCatalog(const presets::FactoryPresetCatalog &catalog,
         assert(full.ok());
         assert(full.document.has_value());
         assert(full.document->schemaVersion == presets::kCurrentPresetSchemaVersion);
+        assert(full.document->parameters.size() == expectedParameterCount);
+        for (std::size_t parameterIndex = 0u;
+             parameterIndex < expectedParameterCount;
+             ++parameterIndex) {
+            assert(full.document->parameters[parameterIndex].stableParameterId ==
+                   firstStableParameterId +
+                       static_cast<presets::StableParameterId>(parameterIndex));
+        }
 
         const auto canonical = presets::serializePresetDocument(*full.document);
         assert(canonical.ok());
@@ -121,13 +131,17 @@ int main() {
     verifyCatalog(gain,
                   kExpectedGainKeys,
                   kExpectedGainNames,
-                  presets::kGainFactoryTargetPluginId);
+                  presets::kGainFactoryTargetPluginId,
+                  0x1000u,
+                  2u);
 
     const auto &poly = presets::polySynthFactoryPresetCatalog();
     verifyCatalog(poly,
                   kExpectedPolyKeys,
                   kExpectedPolyNames,
-                  presets::kPolySynthFactoryTargetPluginId);
+                  presets::kPolySynthFactoryTargetPluginId,
+                  1000u,
+                  13u);
 
     // A matched resource with a codec failure must not be presented as a
     // successful factory hit.
