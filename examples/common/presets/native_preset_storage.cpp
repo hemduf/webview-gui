@@ -50,7 +50,8 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
 
 [[nodiscard]] bool validTargetPluginId(std::string_view id) noexcept {
     if (id.empty() || id.size() > kMaxIdentityBytes ||
-        id == "." || id == ".." || id.find("..") != std::string_view::npos)
+        id == "." || id == ".." || id.front() == '.' || id.back() == '.' ||
+        id.find("..") != std::string_view::npos)
         return false;
     for (const unsigned char c : id) {
         const bool asciiAlpha = (c >= 'a' && c <= 'z') ||
@@ -237,8 +238,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
     if (fd >= 0) {
         while (::fsync(fd) != 0 && errno == EINTR) {
         }
-        while (::close(fd) != 0 && errno == EINTR) {
-        }
+        (void)::close(fd);
     }
 #else
     (void)path;
@@ -346,18 +346,18 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
     struct stat statBuffer {};
     if (::fstat(fd, &statBuffer) != 0) {
         const int statError = errno;
-        ::close(fd);
+        (void)::close(fd);
         return makeStatus(NativePresetStorageError::ReadFailed,
                           path,
                           std::error_code(statError, std::generic_category()));
     }
     if (!S_ISREG(statBuffer.st_mode)) {
-        ::close(fd);
+        (void)::close(fd);
         return makeStatus(NativePresetStorageError::OutsideRoot, path);
     }
     if (statBuffer.st_size < 0 ||
         static_cast<std::uint64_t>(statBuffer.st_size) > kMaxNativePresetFileBytes) {
-        ::close(fd);
+        (void)::close(fd);
         return makeStatus(NativePresetStorageError::InputTooLarge,
                           path,
                           {},
@@ -367,7 +367,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
     try {
         bytes.resize(static_cast<std::size_t>(statBuffer.st_size));
     } catch (...) {
-        ::close(fd);
+        (void)::close(fd);
         return makeStatus(NativePresetStorageError::ReadFailed, path);
     }
 
@@ -378,7 +378,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
             continue;
         if (read <= 0) {
             const int readError = read < 0 ? errno : EIO;
-            ::close(fd);
+            (void)::close(fd);
             bytes.clear();
             return makeStatus(NativePresetStorageError::ReadFailed,
                               path,
@@ -386,8 +386,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
         }
         offset += static_cast<std::size_t>(read);
     }
-    while (::close(fd) != 0 && errno == EINTR) {
-    }
+    (void)::close(fd);
     return {};
 #endif
 }
@@ -581,8 +580,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
     }
 
     const auto cleanup = [fd, &temporary]() noexcept {
-        while (::close(fd) != 0 && errno == EINTR) {
-        }
+        (void)::close(fd);
         bestEffortRemove(temporary);
     };
 
@@ -634,9 +632,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
                           temporary,
                           std::error_code(flushError, std::generic_category()));
     }
-    while (::close(fd) != 0) {
-        if (errno == EINTR)
-            continue;
+    if (::close(fd) != 0) {
         const int closeError = errno;
         bestEffortRemove(temporary);
         return makeStatus(NativePresetStorageError::FlushFailed,
@@ -784,8 +780,15 @@ NativePresetStorageStatus NativePresetStorage::validateRootContainmentUnlocked()
                               baseRoot_,
                               error);
         const auto canonicalRoot = fs::weakly_canonical(root_, error);
-        if (error)
-            return makeStatus(NativePresetStorageError::OutsideRoot, root_, error);
+        if (error) {
+            if (error == std::errc::too_many_symbolic_link_levels)
+                return makeStatus(NativePresetStorageError::OutsideRoot,
+                                  root_,
+                                  error);
+            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
+                              root_,
+                              error);
+        }
         if (!pathContainedBy(canonicalRoot, canonicalBase))
             return makeStatus(NativePresetStorageError::OutsideRoot, root_);
 
