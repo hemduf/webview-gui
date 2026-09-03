@@ -1,0 +1,3 @@
+WVPRESET
+{"schemaVersion":1,"targetPluginId":"com.webview-gui.example.gain","name":"Unity","creator":"webview-gui","description":"Neutral unity-gain starting point.","tags":["factory","gain"],"features":["audio-effect","utility"],"factoryLoadKey":"gain:unity","extensions":[]}
+{"parameters":[{"id":4096,"value":0},{"id":4097,"value":0}],"settings":[]}
