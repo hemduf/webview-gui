@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -14,6 +15,19 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load artifact verifier from {MODULE_PATH}")
 artifact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(artifact)
+
+REPOSITORY_ROOT = MODULE_PATH.parents[2]
+CANONICAL_FACTORY_BANK = (
+    REPOSITORY_ROOT / "examples" / "common" / "presets" / "bundled" / "factory"
+)
+
+
+def stage_factory_bank(workspace: Path, product: Path) -> None:
+    workspace_factory = (
+        workspace / "examples" / "common" / "presets" / "bundled" / "factory"
+    )
+    shutil.copytree(CANONICAL_FACTORY_BANK, workspace_factory)
+    shutil.copytree(CANONICAL_FACTORY_BANK, artifact.product_factory_dir(product))
 
 
 class NativeArtifactResourceTests(unittest.TestCase):
@@ -43,6 +57,7 @@ class NativeArtifactResourceTests(unittest.TestCase):
                 b"<title>webview-gui PolySynth</title>\0"
                 b"/polysynth.js\0suffix"
             )
+            stage_factory_bank(workspace, product)
 
             with mock.patch.object(artifact, "run_symbols", return_value=""):
                 artifact.qualify_product(product, workspace)
