@@ -34,6 +34,32 @@ ctest --test-dir build-examples --output-on-failure -R '^webview_gui_examples_'
 
 The skeleton is intentionally DSP-free. It exists only to qualify CLAP factory/lifetime glue, `clap-helpers` integration, plugin-safe private linkage to `webview-gui`, dependency isolation and cross-platform CLAP packaging before Gain and PolySynth are layered on top.
 
+## Native CLAP validator reproduction
+
+Gain and PolySynth keep native CLAP validation in their owner workflows. The validator is pinned to `free-audio/clap-validator` 0.4.1 commit `152b9823e992d782c5c1fd33bca0295478b919aa`; the CI Rust toolchain is 1.95.0. From a clean repository checkout:
+
+```bash
+git clone https://github.com/free-audio/clap-validator.git .ci/clap-validator
+git -C .ci/clap-validator checkout 152b9823e992d782c5c1fd33bca0295478b919aa
+rustup toolchain install 1.95.0 --profile minimal
+cargo +1.95.0 build --release --locked \
+  --manifest-path .ci/clap-validator/Cargo.toml
+
+cmake -S examples -B build-clap-validator \
+  -DWEBVIEW_GUI_SOURCE_DIR="$PWD" \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF \
+  -DWEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT="$PWD/.ci/clap-validator"
+
+cmake --build build-clap-validator --config Debug --parallel \
+  --target webview_gui_example_gain_validate
+cmake --build build-clap-validator --config Debug --parallel \
+  --target webview_gui_example_polysynth_validate
+```
+
+On Linux, install the same WebView build dependencies used by CI (`ninja-build`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`) before configuring. Each validation target prints the pinned validator commit and exact `.clap` path before running the blocking `validate --only-failed` command.
+
 ## PolySynth CLAP extension matrix
 
 This table is the completed #32 CLAP surface. Every interface marked `Implemented` is returned by the plug-in and covered by deterministic repository contracts. Interfaces owned by dependent tickets are explicitly not advertised here rather than being left as partial capabilities or placeholder extension pointers.
@@ -61,6 +87,66 @@ The #32 polyphonic contract keeps global base values, channel/key/note-targeted 
 Fixed stereo synthesis intentionally does not advertise unrelated spatial interfaces such as surround/ambisonics. Other optional CLAP interfaces remain absent unless they have meaningful semantics and deterministic tests; documentation must not use extension discovery as a feature wishlist.
 
 For WCLAP, this matrix describes the shared CLAP implementation rather than a separate WebAssembly fork. WCLAP-specific factory/export execution, WASI assumptions, WebView-only GUI negotiation, and bundle/resource qualification remain governed by #30 and its completed review follow-ups; adding or documenting a native CLAP extension here must not introduce a native OS/WebView/filesystem dependency into the WASM process path.
+
+## WCLAP / WASI reproduction
+
+Public CI pins WASI SDK 33.0 with SHA-256 `0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce`, `dfl/clap-trap` commit `c75d353dc57140cfceebf96dcbea9c491bef4f10`, and `WebCLAP/wclap-bridge` commit `cd11d22afbe2af350f24cd56e6e0536e5ca86452`. On Linux, the WCLAP bundles can be reproduced from a clean checkout with:
+
+```bash
+curl --fail --location --retry 3 \
+  -o wasi-sdk-33.0-x86_64-linux.tar.gz \
+  https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
+echo '0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce  wasi-sdk-33.0-x86_64-linux.tar.gz' \
+  | sha256sum --check --strict
+tar xzf wasi-sdk-33.0-x86_64-linux.tar.gz
+export WASI_SDK_PATH="$PWD/wasi-sdk-33.0-x86_64-linux"
+
+cmake -S examples/gain/wclap -B build-gain-wclap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK_PATH/share/cmake/wasi-sdk-pthread.cmake"
+cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
+
+cmake -S examples/polysynth/wclap -B build-polysynth-wclap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK_PATH/share/cmake/wasi-sdk-pthread.cmake"
+cmake --build build-polysynth-wclap --target webview_gui_example_polysynth_wclap --parallel
+
+test -f build-gain-wclap/WebviewGuiGain.wclap/module.wasm
+test -f build-gain-wclap/WebviewGuiGain.wclap.tar.gz
+test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap/module.wasm
+test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz
+```
+
+The same pinned lifecycle/WebView host used by CI can then validate both bundles:
+
+```bash
+git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
+git -C .ci/clap-trap checkout c75d353dc57140cfceebf96dcbea9c491bef4f10
+git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git \
+  .ci/clap-trap/wclap-bridge
+git -C .ci/clap-trap/wclap-bridge checkout cd11d22afbe2af350f24cd56e6e0536e5ca86452
+git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+
+python3 .github/scripts/patch_clap_trap_wclap.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --sync-magic WVQ1
+cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCLAP_TRAP_BUILD_TESTS=OFF
+cmake --build build-clap-trap --target clap-trap-cli --parallel
+./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
+
+# Rebuild the same pinned host with the PolySynth instrument smoke contract.
+git -C .ci/clap-trap checkout -- examples/cli.cpp
+python3 .github/scripts/patch_clap_trap_wclap.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --sync-magic WVS1 \
+  --instrument
+cmake --build build-clap-trap --target clap-trap-cli --parallel
+./build-clap-trap/clap-trap validate \
+  build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
+```
+
+The WCLAP workflows additionally inspect the WASM import/export table to require `clap_entry`, reject native GUI imports and verify the distributable `.wclap.tar.gz` layout.
 
 ## Native format projections
 
@@ -131,7 +217,7 @@ On Linux, run the final two commands under `xvfb-run -a` because the validator c
 
 ### Native artifact hygiene
 
-Release products are qualified for stable CLAP/VST3/standalone names, non-empty loadable product binaries, absence of the absolute source-checkout path, and unexpected exported `webview_gui::` / `choc::` implementation symbols where the platform provides `nm`/`llvm-nm`:
+Release products are qualified for stable CLAP/VST3/standalone names, stable embedded plug-in IDs, non-empty loadable product binaries, the expected embedded WebView HTML/script resources, absence of the absolute source-checkout path, and unexpected exported `webview_gui::` / `choc::` implementation symbols where the platform provides `nm`/`llvm-nm`:
 
 ```bash
 python examples/tests/verify_native_artifacts.py \
@@ -139,7 +225,7 @@ python examples/tests/verify_native_artifacts.py \
   --workspace "$PWD"
 ```
 
-This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators.
+This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators. Preset files are not yet part of the artifact gate because #37 (Preset Discovery / `preset-load/2`) is still open; once that ticket lands, its bundled preset resources become required here as well.
 
 ### macOS AUv2
 
