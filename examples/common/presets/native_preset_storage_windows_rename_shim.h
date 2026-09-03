@@ -53,9 +53,16 @@ using RtlNtStatusToDosErrorFn = ULONG(NTAPI *)(NTSTATUS);
         return FALSE;
     }
 
+    constexpr auto sourceHeaderBytes = offsetof(FILE_RENAME_INFO, FileName);
+    if (informationSize < sourceHeaderBytes) {
+        ::SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
     const auto *source = static_cast<const FILE_RENAME_INFO *>(information);
     if ((source->FileNameLength % sizeof(wchar_t)) != 0u ||
-        source->FileNameLength > informationSize) {
+        static_cast<std::size_t>(source->FileNameLength) >
+            static_cast<std::size_t>(informationSize) - sourceHeaderBytes) {
         ::SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
