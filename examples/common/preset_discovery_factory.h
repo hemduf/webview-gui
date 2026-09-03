@@ -13,49 +13,37 @@ namespace webview_gui::examples::presets {
 
 namespace detail {
 
-// Test-only fallback used by #90 fakes while #36 is not available yet. Production
-// integration should expose functions so the per-user root can be resolved at
-// provider init time instead of being compiled into the plug-in.
+// #90 owns only the CLAP declaration seam. #36 remains authoritative for
+// storage/root resolution. When #36 provides a genuine native filesystem root,
+// a production Tag can expose these two runtime functions. #90 test fakes use
+// the same seam; there is deliberately no compiled-in per-user-root fallback.
 template <typename Tag, typename = void>
-struct NativeUserPresetLocationMembers {
+struct NativeUserPresetLocation {
     static bool available() noexcept { return false; }
     static const char *root() noexcept { return nullptr; }
 };
-
-template <typename Tag>
-struct NativeUserPresetLocationMembers<
-    Tag,
-    std::void_t<decltype(Tag::nativeUserPresetFilesAvailable),
-                decltype(Tag::nativeUserPresetRoot)>> {
-    static bool available() noexcept {
-#if defined(__wasi__)
-        return false;
-#else
-        return Tag::nativeUserPresetFilesAvailable;
-#endif
-    }
-
-    static const char *root() noexcept { return Tag::nativeUserPresetRoot; }
-};
-
-// #90 owns only the CLAP declaration seam. #36 remains authoritative for
-// storage/root resolution. When #36 provides a genuine native filesystem root,
-// a production Tag can expose these two functions.
-template <typename Tag, typename = void>
-struct NativeUserPresetLocation : NativeUserPresetLocationMembers<Tag> {};
 
 template <typename Tag>
 struct NativeUserPresetLocation<
     Tag,
     std::void_t<decltype(Tag::nativeUserPresetFilesAvailable()),
                 decltype(Tag::nativeUserPresetRoot())>> {
+    static_assert(noexcept(Tag::nativeUserPresetFilesAvailable()),
+                  "#36 native user availability seam must be noexcept");
+    static_assert(noexcept(Tag::nativeUserPresetRoot()),
+                  "#36 native user root seam must be noexcept");
+    static_assert(std::is_convertible_v<decltype(Tag::nativeUserPresetFilesAvailable()), bool>,
+                  "#36 native user availability seam must return a bool-compatible value");
+    static_assert(std::is_convertible_v<decltype(Tag::nativeUserPresetRoot()), const char *>,
+                  "#36 native user root seam must return a C string path");
+
     static bool available() noexcept {
 #if defined(__wasi__)
         // WCLAP/WASI browser storage must never be represented as a native OS
         // FILE location. Factory content remains available via PLUGIN.
         return false;
 #else
-        return Tag::nativeUserPresetFilesAvailable();
+        return static_cast<bool>(Tag::nativeUserPresetFilesAvailable());
 #endif
     }
 
