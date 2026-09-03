@@ -45,4 +45,15 @@ Scalar settings/extensions are tagged (`bool`, `i64`, `f64`, `string`) so a roun
 
 ## Bounds
 
-The codec must reject oversized metadata/file input and malformed/truncated framing before unbounded work. No filesystem, CLAP, WebView or processor dependency belongs in this layer.
+The current codec applies the same safety contract to serialization and parsing:
+
+- maximum preset file: 1 MiB;
+- maximum metadata record: 64 KiB;
+- maximum individual string: 64 KiB;
+- maximum JSON nesting: 64 object/array levels before CHOC parsing;
+- maximum parameters: 4096;
+- maximum persistent settings: 1024;
+- maximum metadata extensions: 1024;
+- maximum tags/features per list: 1024.
+
+Malformed/truncated framing, excessive nesting and oversized input are rejected before live plug-in state exists. Metadata-only parsing applies the depth guard only to the metadata record and deliberately does not decode the payload. No filesystem, CLAP, WebView or processor dependency belongs in this layer.
