@@ -1,18 +1,23 @@
 #include "native_preset_storage.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shlobj.h>
+#include <winternl.h>
 #else
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -29,9 +34,6 @@ constexpr std::string_view kPresetSuffix = ".wvpreset";
 constexpr std::size_t kMaxSaveIdentityAttempts = 10000u;
 constexpr std::size_t kMaxTemporaryAttempts = 128u;
 constexpr std::size_t kMaxIdentityBytes = 192u;
-
-static_assert(kMaxNativePresetFileBytes == detail::kMaxPresetBytes,
-              "native storage and codec must share the same maximum preset size");
 
 std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
 
@@ -140,22 +142,6 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
     }
 }
 
-[[nodiscard]] bool pathContainedBy(const fs::path &candidate,
-                                   const fs::path &base) noexcept {
-    try {
-        const auto relative = candidate.lexically_relative(base);
-        if (relative.empty())
-            return candidate == base;
-        for (const auto &component : relative) {
-            if (component == "..")
-                return false;
-        }
-        return !relative.is_absolute();
-    } catch (...) {
-        return false;
-    }
-}
-
 [[nodiscard]] std::string slugForDisplayName(std::string_view displayName) {
     std::string slug;
     slug.reserve(std::min<std::size_t>(displayName.size(), 80u));
@@ -203,12 +189,12 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
 #endif
 }
 
-[[nodiscard]] fs::path temporaryPathFor(const fs::path &destination,
-                                        std::size_t attempt) {
+[[nodiscard]] std::string temporaryNameFor(std::string_view destination,
+                                           std::size_t attempt) {
     const auto tick = static_cast<std::uint64_t>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
     const auto counter = gTemporaryFileCounter.fetch_add(1u, std::memory_order_relaxed);
-    std::string name = destination.filename().string();
+    std::string name{destination};
     name += ".tmp-";
     name += std::to_string(processId());
     name.push_back('-');
@@ -217,307 +203,436 @@ std::atomic<std::uint64_t> gTemporaryFileCounter{0u};
     name += std::to_string(counter);
     name.push_back('-');
     name += std::to_string(attempt);
-    return destination.parent_path() / name;
+    return name;
 }
 
-void bestEffortRemove(const fs::path &path) noexcept {
-    std::error_code ignored;
-    fs::remove(path, ignored);
-}
+enum class RelativeEntryKind : std::uint8_t {
+    Missing,
+    Regular,
+    Directory,
+    SymlinkOrReparse,
+    Other,
+};
 
-void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
-#if !defined(_WIN32)
-    int flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-#ifdef O_DIRECTORY
-    flags |= O_DIRECTORY;
-#endif
-    const int fd = ::open(path.c_str(), flags);
-    if (fd >= 0) {
-        while (::fsync(fd) != 0 && errno == EINTR) {
-        }
-        (void)::close(fd);
-    }
-#else
-    (void)path;
-#endif
-}
-
-[[nodiscard]] NativePresetStorageStatus readFileBytes(const fs::path &path,
-                                                       std::string &bytes) noexcept {
-    bytes.clear();
+class PinnedRoot {
+public:
 #if defined(_WIN32)
-    const HANDLE file = ::CreateFileW(path.c_str(),
-                                      GENERIC_READ,
-                                      FILE_SHARE_READ,
-                                      nullptr,
-                                      OPEN_EXISTING,
-                                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                                      nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        const auto error = ::GetLastError();
-        return makeStatus(
-            NativePresetStorageError::OpenFailed,
-            path,
-            std::error_code(static_cast<int>(error), std::system_category()));
+    using Handle = HANDLE;
+    static constexpr Handle kInvalid = INVALID_HANDLE_VALUE;
+#else
+    using Handle = int;
+    static constexpr Handle kInvalid = -1;
+#endif
+
+    PinnedRoot() noexcept = default;
+    explicit PinnedRoot(Handle handle) noexcept : handle_(handle) {}
+    ~PinnedRoot() { reset(); }
+
+    PinnedRoot(const PinnedRoot &) = delete;
+    PinnedRoot &operator=(const PinnedRoot &) = delete;
+
+    PinnedRoot(PinnedRoot &&other) noexcept : handle_(other.release()) {}
+    PinnedRoot &operator=(PinnedRoot &&other) noexcept {
+        if (this != &other) {
+            reset();
+            handle_ = other.release();
+        }
+        return *this;
     }
 
-    BY_HANDLE_FILE_INFORMATION information{};
-    if (::GetFileInformationByHandle(file, &information) == 0) {
-        const auto error = ::GetLastError();
-        ::CloseHandle(file);
+    [[nodiscard]] Handle get() const noexcept { return handle_; }
+    [[nodiscard]] bool valid() const noexcept { return handle_ != kInvalid; }
+
+    [[nodiscard]] Handle release() noexcept {
+        const auto value = handle_;
+        handle_ = kInvalid;
+        return value;
+    }
+
+    void reset(Handle replacement = kInvalid) noexcept {
+        if (valid()) {
+#if defined(_WIN32)
+            (void)::CloseHandle(handle_);
+#else
+            (void)::close(handle_);
+#endif
+        }
+        handle_ = replacement;
+    }
+
+private:
+    Handle handle_ = kInvalid;
+};
+
+#if defined(_WIN32)
+
+constexpr ULONG kNtFileOpen = 1u;
+constexpr ULONG kNtFileCreate = 2u;
+constexpr ULONG kNtFileOpenIf = 3u;
+constexpr ULONG kNtFileDirectoryFile = 0x00000001u;
+constexpr ULONG kNtFileWriteThrough = 0x00000002u;
+constexpr ULONG kNtFileSynchronousIoNonAlert = 0x00000020u;
+constexpr ULONG kNtFileNonDirectoryFile = 0x00000040u;
+constexpr ULONG kNtFileOpenReparsePoint = 0x00200000u;
+constexpr ULONG kObjCaseInsensitive = 0x00000040u;
+constexpr ACCESS_MASK kDirectoryAccess =
+    0x0001u | // FILE_LIST_DIRECTORY
+    0x0002u | // FILE_ADD_FILE
+    0x0004u | // FILE_ADD_SUBDIRECTORY
+    0x0020u | // FILE_TRAVERSE
+    0x0040u | // FILE_DELETE_CHILD
+    0x0080u | // FILE_READ_ATTRIBUTES
+    SYNCHRONIZE;
+
+using NtCreateFileFn = NTSTATUS(NTAPI *)(PHANDLE,
+                                         ACCESS_MASK,
+                                         POBJECT_ATTRIBUTES,
+                                         PIO_STATUS_BLOCK,
+                                         PLARGE_INTEGER,
+                                         ULONG,
+                                         ULONG,
+                                         ULONG,
+                                         ULONG,
+                                         PVOID,
+                                         ULONG);
+using RtlNtStatusToDosErrorFn = ULONG(NTAPI *)(NTSTATUS);
+
+[[nodiscard]] NtCreateFileFn ntCreateFileFunction() noexcept {
+    static const auto function = reinterpret_cast<NtCreateFileFn>(
+        ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    return function;
+}
+
+[[nodiscard]] RtlNtStatusToDosErrorFn rtlNtStatusToDosErrorFunction() noexcept {
+    static const auto function = reinterpret_cast<RtlNtStatusToDosErrorFn>(
+        ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+    return function;
+}
+
+[[nodiscard]] std::error_code ntStatusError(NTSTATUS status) noexcept {
+    if (const auto converter = rtlNtStatusToDosErrorFunction()) {
+        const auto error = converter(status);
+        return std::error_code(static_cast<int>(error), std::system_category());
+    }
+    return std::error_code(ERROR_GEN_FAILURE, std::system_category());
+}
+
+[[nodiscard]] bool ntSuccess(NTSTATUS status) noexcept {
+    return status >= 0;
+}
+
+[[nodiscard]] bool handleIsReparsePoint(HANDLE handle,
+                                        std::error_code &error) noexcept {
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (::GetFileInformationByHandleEx(handle,
+                                       FileAttributeTagInfo,
+                                       &tag,
+                                       sizeof(tag)) == 0) {
+        error = std::error_code(static_cast<int>(::GetLastError()),
+                                std::system_category());
+        return false;
+    }
+    error.clear();
+    return (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
+}
+
+[[nodiscard]] HANDLE ntOpenRelative(HANDLE root,
+                                    std::wstring_view name,
+                                    ACCESS_MASK access,
+                                    ULONG createDisposition,
+                                    ULONG createOptions,
+                                    ULONG attributes,
+                                    std::error_code &error) noexcept {
+    const auto ntCreateFile = ntCreateFileFunction();
+    if (!ntCreateFile || name.empty() ||
+        name.size() > (std::numeric_limits<USHORT>::max() / sizeof(wchar_t))) {
+        error = std::error_code(ERROR_NOT_SUPPORTED, std::system_category());
+        return INVALID_HANDLE_VALUE;
+    }
+
+    UNICODE_STRING unicodeName{};
+    unicodeName.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicodeName.MaximumLength = unicodeName.Length;
+    unicodeName.Buffer = const_cast<PWSTR>(name.data());
+
+    OBJECT_ATTRIBUTES objectAttributes{};
+    objectAttributes.Length = sizeof(objectAttributes);
+    objectAttributes.RootDirectory = root;
+    objectAttributes.ObjectName = &unicodeName;
+    objectAttributes.Attributes = kObjCaseInsensitive;
+
+    IO_STATUS_BLOCK ioStatus{};
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    const auto status = ntCreateFile(&handle,
+                                     access | SYNCHRONIZE,
+                                     &objectAttributes,
+                                     &ioStatus,
+                                     nullptr,
+                                     attributes,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     createDisposition,
+                                     createOptions |
+                                         kNtFileOpenReparsePoint |
+                                         kNtFileSynchronousIoNonAlert,
+                                     nullptr,
+                                     0u);
+    if (!ntSuccess(status)) {
+        error = ntStatusError(status);
+        return INVALID_HANDLE_VALUE;
+    }
+    error.clear();
+    return handle;
+}
+
+[[nodiscard]] std::wstring widenAscii(std::string_view text) {
+    std::wstring result;
+    result.reserve(text.size());
+    for (const unsigned char c : text)
+        result.push_back(static_cast<wchar_t>(c));
+    return result;
+}
+
+[[nodiscard]] NativePresetStorageStatus openPinnedRoot(
+    const fs::path &baseRoot,
+    std::string_view targetPluginId,
+    PinnedRoot &root) noexcept {
+    root.reset();
+    if (!baseRoot.is_absolute())
+        return makeStatus(NativePresetStorageError::InvalidBaseRoot, baseRoot);
+
+    const HANDLE base = ::CreateFileW(
+        baseRoot.c_str(),
+        kDirectoryAccess,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr);
+    if (base == INVALID_HANDLE_VALUE)
         return makeStatus(
-            NativePresetStorageError::ReadFailed,
-            path,
-            std::error_code(static_cast<int>(error), std::system_category()));
+            NativePresetStorageError::InvalidBaseRoot,
+            baseRoot,
+            std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+
+    PinnedRoot parent{base};
+    std::error_code reparseError;
+    if (handleIsReparsePoint(parent.get(), reparseError) || reparseError)
+        return makeStatus(NativePresetStorageError::OutsideRoot,
+                          baseRoot,
+                          reparseError);
+
+    const std::array<std::string_view, 3> components{{
+        kStorageNamespace,
+        kPresetDirectoryName,
+        targetPluginId,
+    }};
+
+    fs::path displayPath = baseRoot;
+    for (const auto component : components) {
+        displayPath /= std::string{component};
+        std::error_code openError;
+        const auto childName = widenAscii(component);
+        HANDLE child = ntOpenRelative(parent.get(),
+                                      childName,
+                                      kDirectoryAccess,
+                                      kNtFileOpenIf,
+                                      kNtFileDirectoryFile,
+                                      FILE_ATTRIBUTE_DIRECTORY,
+                                      openError);
+        if (child == INVALID_HANDLE_VALUE)
+            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
+                              displayPath,
+                              openError);
+        PinnedRoot childRoot{child};
+        std::error_code childReparseError;
+        if (handleIsReparsePoint(childRoot.get(), childReparseError) ||
+            childReparseError)
+            return makeStatus(NativePresetStorageError::OutsideRoot,
+                              displayPath,
+                              childReparseError);
+        parent = std::move(childRoot);
     }
-    if ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u ||
-        (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) {
-        ::CloseHandle(file);
-        return makeStatus(NativePresetStorageError::OutsideRoot, path);
+
+    root = std::move(parent);
+    return {};
+}
+
+[[nodiscard]] RelativeEntryKind inspectRelativeEntry(
+    const PinnedRoot &root,
+    std::string_view identity,
+    std::error_code &error) noexcept {
+    const auto name = widenAscii(identity);
+    HANDLE handle = ntOpenRelative(root.get(),
+                                   name,
+                                   0x0080u, // FILE_READ_ATTRIBUTES
+                                   kNtFileOpen,
+                                   0u,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   error);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (error.value() == ERROR_FILE_NOT_FOUND ||
+            error.value() == ERROR_PATH_NOT_FOUND) {
+            error.clear();
+            return RelativeEntryKind::Missing;
+        }
+        return RelativeEntryKind::Other;
     }
+    PinnedRoot entry{handle};
+
+    std::error_code reparseError;
+    if (handleIsReparsePoint(entry.get(), reparseError)) {
+        error.clear();
+        return RelativeEntryKind::SymlinkOrReparse;
+    }
+    if (reparseError) {
+        error = reparseError;
+        return RelativeEntryKind::Other;
+    }
+
+    FILE_STANDARD_INFO standard{};
+    if (::GetFileInformationByHandleEx(entry.get(),
+                                       FileStandardInfo,
+                                       &standard,
+                                       sizeof(standard)) == 0) {
+        error = std::error_code(static_cast<int>(::GetLastError()),
+                                std::system_category());
+        return RelativeEntryKind::Other;
+    }
+    error.clear();
+    return standard.Directory ? RelativeEntryKind::Directory
+                              : RelativeEntryKind::Regular;
+}
+
+[[nodiscard]] NativePresetStorageStatus readRelativeFile(
+    const PinnedRoot &root,
+    std::string_view identity,
+    const fs::path &displayPath,
+    std::string &bytes) noexcept {
+    bytes.clear();
+    std::error_code openError;
+    const auto name = widenAscii(identity);
+    HANDLE handle = ntOpenRelative(root.get(),
+                                   name,
+                                   GENERIC_READ,
+                                   kNtFileOpen,
+                                   kNtFileNonDirectoryFile,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   openError);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (openError.value() == ERROR_FILE_NOT_FOUND ||
+            openError.value() == ERROR_PATH_NOT_FOUND)
+            return makeStatus(NativePresetStorageError::NotFound,
+                              displayPath,
+                              openError);
+        return makeStatus(NativePresetStorageError::OpenFailed,
+                          displayPath,
+                          openError);
+    }
+    PinnedRoot file{handle};
+
+    std::error_code reparseError;
+    if (handleIsReparsePoint(file.get(), reparseError))
+        return makeStatus(NativePresetStorageError::OutsideRoot, displayPath);
+    if (reparseError)
+        return makeStatus(NativePresetStorageError::ReadFailed,
+                          displayPath,
+                          reparseError);
 
     LARGE_INTEGER size{};
-    if (::GetFileSizeEx(file, &size) == 0 || size.QuadPart < 0) {
-        const auto error = ::GetLastError();
-        ::CloseHandle(file);
+    if (::GetFileSizeEx(file.get(), &size) == 0 || size.QuadPart < 0)
         return makeStatus(
             NativePresetStorageError::ReadFailed,
-            path,
-            std::error_code(static_cast<int>(error), std::system_category()));
-    }
-    if (static_cast<std::uint64_t>(size.QuadPart) > kMaxNativePresetFileBytes) {
-        ::CloseHandle(file);
+            displayPath,
+            std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+    if (static_cast<std::uint64_t>(size.QuadPart) > kMaxNativePresetFileBytes)
         return makeStatus(NativePresetStorageError::InputTooLarge,
-                          path,
+                          displayPath,
                           {},
                           PresetCodecError::InputTooLarge);
-    }
 
     try {
         bytes.resize(static_cast<std::size_t>(size.QuadPart));
     } catch (...) {
-        ::CloseHandle(file);
-        return makeStatus(NativePresetStorageError::ReadFailed, path);
+        return makeStatus(NativePresetStorageError::ReadFailed, displayPath);
     }
 
     std::size_t offset = 0u;
     while (offset < bytes.size()) {
+        const auto remainingSize = bytes.size() - offset;
+        const DWORD remaining = remainingSize > std::numeric_limits<DWORD>::max()
+                                    ? std::numeric_limits<DWORD>::max()
+                                    : static_cast<DWORD>(remainingSize);
         DWORD read = 0u;
-        const auto remaining = static_cast<DWORD>(bytes.size() - offset);
-        if (::ReadFile(file, bytes.data() + offset, remaining, &read, nullptr) == 0 ||
+        if (::ReadFile(file.get(), bytes.data() + offset, remaining, &read, nullptr) == 0 ||
             read == 0u) {
-            const auto error = ::GetLastError();
-            ::CloseHandle(file);
-            bytes.clear();
-            return makeStatus(
-                NativePresetStorageError::ReadFailed,
-                path,
-                std::error_code(static_cast<int>(error), std::system_category()));
-        }
-        offset += static_cast<std::size_t>(read);
-    }
-    ::CloseHandle(file);
-    return {};
-#else
-    int flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    const int fd = ::open(path.c_str(), flags);
-    if (fd < 0) {
-        const int openError = errno;
-#ifdef ELOOP
-        if (openError == ELOOP)
-            return makeStatus(NativePresetStorageError::OutsideRoot,
-                              path,
-                              std::error_code(openError, std::generic_category()));
-#endif
-        return makeStatus(NativePresetStorageError::OpenFailed,
-                          path,
-                          std::error_code(openError, std::generic_category()));
-    }
-
-    struct stat statBuffer {};
-    if (::fstat(fd, &statBuffer) != 0) {
-        const int statError = errno;
-        (void)::close(fd);
-        return makeStatus(NativePresetStorageError::ReadFailed,
-                          path,
-                          std::error_code(statError, std::generic_category()));
-    }
-    if (!S_ISREG(statBuffer.st_mode)) {
-        (void)::close(fd);
-        return makeStatus(NativePresetStorageError::OutsideRoot, path);
-    }
-    if (statBuffer.st_size < 0 ||
-        static_cast<std::uint64_t>(statBuffer.st_size) > kMaxNativePresetFileBytes) {
-        (void)::close(fd);
-        return makeStatus(NativePresetStorageError::InputTooLarge,
-                          path,
-                          {},
-                          PresetCodecError::InputTooLarge);
-    }
-
-    try {
-        bytes.resize(static_cast<std::size_t>(statBuffer.st_size));
-    } catch (...) {
-        (void)::close(fd);
-        return makeStatus(NativePresetStorageError::ReadFailed, path);
-    }
-
-    std::size_t offset = 0u;
-    while (offset < bytes.size()) {
-        const auto read = ::read(fd, bytes.data() + offset, bytes.size() - offset);
-        if (read < 0 && errno == EINTR)
-            continue;
-        if (read <= 0) {
-            const int readError = read < 0 ? errno : EIO;
-            (void)::close(fd);
+            const auto error = std::error_code(static_cast<int>(::GetLastError()),
+                                               std::system_category());
             bytes.clear();
             return makeStatus(NativePresetStorageError::ReadFailed,
-                              path,
-                              std::error_code(readError, std::generic_category()));
+                              displayPath,
+                              error);
         }
         offset += static_cast<std::size_t>(read);
     }
-    (void)::close(fd);
     return {};
-#endif
 }
 
-[[nodiscard]] NativePresetStorageStatus commitTemporaryFile(
-    const fs::path &temporary,
-    const fs::path &destination,
-    bool replaceExisting) noexcept {
-#if defined(_WIN32)
-    if (replaceExisting) {
-        if (::ReplaceFileW(destination.c_str(),
-                           temporary.c_str(),
-                           nullptr,
-                           REPLACEFILE_WRITE_THROUGH,
-                           nullptr,
-                           nullptr) != 0)
-            return {};
-
-        const auto windowsError = ::GetLastError();
-        if (windowsError == ERROR_FILE_NOT_FOUND ||
-            windowsError == ERROR_PATH_NOT_FOUND)
-            return makeStatus(
-                NativePresetStorageError::NotFound,
-                destination,
-                std::error_code(static_cast<int>(windowsError), std::system_category()));
-        return makeStatus(
-            NativePresetStorageError::ReplaceFailed,
-            destination,
-            std::error_code(static_cast<int>(windowsError), std::system_category()));
-    }
-
-    if (::MoveFileExW(temporary.c_str(),
-                      destination.c_str(),
-                      MOVEFILE_WRITE_THROUGH) != 0)
-        return {};
-
-    const auto windowsError = ::GetLastError();
-    if (windowsError == ERROR_ALREADY_EXISTS || windowsError == ERROR_FILE_EXISTS)
-        return makeStatus(
-            NativePresetStorageError::AlreadyExists,
-            destination,
-            std::error_code(static_cast<int>(windowsError), std::system_category()));
-    return makeStatus(
-        NativePresetStorageError::ReplaceFailed,
-        destination,
-        std::error_code(static_cast<int>(windowsError), std::system_category()));
-#else
-    if (replaceExisting) {
-        if (::rename(temporary.c_str(), destination.c_str()) == 0) {
-            syncParentDirectoryBestEffort(destination.parent_path());
-            return {};
-        }
-        return makeStatus(NativePresetStorageError::ReplaceFailed,
-                          destination,
-                          std::error_code(errno, std::generic_category()));
-    }
-
-    if (::link(temporary.c_str(), destination.c_str()) != 0) {
-        const int linkError = errno;
-        if (linkError == EEXIST)
-            return makeStatus(NativePresetStorageError::AlreadyExists,
-                              destination,
-                              std::error_code(linkError, std::generic_category()));
-        return makeStatus(NativePresetStorageError::ReplaceFailed,
-                          destination,
-                          std::error_code(linkError, std::generic_category()));
-    }
-
-    if (::unlink(temporary.c_str()) != 0) {
-        const int cleanupError = errno;
-        (void)::unlink(destination.c_str());
-        syncParentDirectoryBestEffort(destination.parent_path());
-        return makeStatus(NativePresetStorageError::CleanupFailed,
-                          temporary,
-                          std::error_code(cleanupError, std::generic_category()));
-    }
-    syncParentDirectoryBestEffort(destination.parent_path());
-    return {};
-#endif
-}
-
-[[nodiscard]] NativePresetStorageStatus writeTemporaryFileExclusive(
-    const fs::path &temporary,
+[[nodiscard]] NativePresetStorageStatus createAndWriteTemporary(
+    const PinnedRoot &root,
+    std::string_view temporaryIdentity,
+    const fs::path &displayPath,
     std::string_view bytes,
-    const NativePresetStorageOptions &options) noexcept {
+    const NativePresetStorageOptions &options,
+    HANDLE &temporaryHandle) noexcept {
+    temporaryHandle = INVALID_HANDLE_VALUE;
     const auto shouldFail = [&options](NativePresetWriteStage stage) noexcept {
         return options.shouldFailWrite != nullptr &&
                options.shouldFailWrite(stage, options.faultUserData);
     };
 
-#if defined(_WIN32)
-    const HANDLE file = ::CreateFileW(temporary.c_str(),
-                                      GENERIC_WRITE,
-                                      0,
-                                      nullptr,
-                                      CREATE_NEW,
-                                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                                      nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        const auto error = ::GetLastError();
-        if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)
-            return makeStatus(
-                NativePresetStorageError::AlreadyExists,
-                temporary,
-                std::error_code(static_cast<int>(error), std::system_category()));
-        return makeStatus(
-            NativePresetStorageError::OpenFailed,
-            temporary,
-            std::error_code(static_cast<int>(error), std::system_category()));
+    std::error_code openError;
+    const auto name = widenAscii(temporaryIdentity);
+    HANDLE handle = ntOpenRelative(root.get(),
+                                   name,
+                                   GENERIC_WRITE | DELETE,
+                                   kNtFileCreate,
+                                   kNtFileNonDirectoryFile | kNtFileWriteThrough,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   openError);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (openError.value() == ERROR_ALREADY_EXISTS ||
+            openError.value() == ERROR_FILE_EXISTS)
+            return makeStatus(NativePresetStorageError::AlreadyExists,
+                              displayPath,
+                              openError);
+        return makeStatus(NativePresetStorageError::OpenFailed,
+                          displayPath,
+                          openError);
     }
+    temporaryHandle = handle;
 
-    if (shouldFail(NativePresetWriteStage::AfterTemporaryOpen)) {
-        ::CloseHandle(file);
-        bestEffortRemove(temporary);
-        return makeStatus(NativePresetStorageError::WriteFailed, temporary);
-    }
+    if (shouldFail(NativePresetWriteStage::AfterTemporaryOpen))
+        return makeStatus(NativePresetStorageError::WriteFailed, displayPath);
 
-    const auto writeRange = [file, &temporary](const char *data,
-                                               std::size_t size) noexcept {
+    const auto writeRange = [handle, &displayPath](const char *data,
+                                                   std::size_t size) noexcept {
         std::size_t offset = 0u;
         while (offset < size) {
+            const auto remainingSize = size - offset;
+            const DWORD remaining = remainingSize > std::numeric_limits<DWORD>::max()
+                                        ? std::numeric_limits<DWORD>::max()
+                                        : static_cast<DWORD>(remainingSize);
             DWORD written = 0u;
-            const DWORD remaining = static_cast<DWORD>(size - offset);
-            if (::WriteFile(file, data + offset, remaining, &written, nullptr) == 0 ||
-                written == 0u) {
-                const auto error = ::GetLastError();
+            if (::WriteFile(handle,
+                            data + offset,
+                            remaining,
+                            &written,
+                            nullptr) == 0 || written == 0u)
                 return makeStatus(
                     NativePresetStorageError::WriteFailed,
-                    temporary,
-                    std::error_code(static_cast<int>(error), std::system_category()));
-            }
+                    displayPath,
+                    std::error_code(static_cast<int>(::GetLastError()),
+                                    std::system_category()));
             offset += static_cast<std::size_t>(written);
         }
         return NativePresetStorageStatus{};
@@ -525,41 +640,346 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
 
     const auto firstSize = bytes.size() / 2u;
     auto status = writeRange(bytes.data(), firstSize);
-    if (!status.ok()) {
-        ::CloseHandle(file);
-        bestEffortRemove(temporary);
+    if (!status.ok())
         return status;
-    }
-    if (shouldFail(NativePresetWriteStage::AfterPartialWrite)) {
-        ::CloseHandle(file);
-        bestEffortRemove(temporary);
-        return makeStatus(NativePresetStorageError::WriteFailed, temporary);
-    }
+    if (shouldFail(NativePresetWriteStage::AfterPartialWrite))
+        return makeStatus(NativePresetStorageError::WriteFailed, displayPath);
     status = writeRange(bytes.data() + firstSize, bytes.size() - firstSize);
-    if (!status.ok()) {
-        ::CloseHandle(file);
-        bestEffortRemove(temporary);
+    if (!status.ok())
         return status;
-    }
-    if (::FlushFileBuffers(file) == 0) {
-        const auto error = ::GetLastError();
-        ::CloseHandle(file);
-        bestEffortRemove(temporary);
+
+    if (::FlushFileBuffers(handle) == 0)
         return makeStatus(
             NativePresetStorageError::FlushFailed,
-            temporary,
-            std::error_code(static_cast<int>(error), std::system_category()));
+            displayPath,
+            std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+    return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus renameTemporaryRelative(
+    HANDLE temporaryHandle,
+    const PinnedRoot &root,
+    std::string_view destinationIdentity,
+    const fs::path &displayPath,
+    bool replaceExisting) noexcept {
+    const auto destination = widenAscii(destinationIdentity);
+    const auto fileNameBytes = destination.size() * sizeof(wchar_t);
+    const auto allocationSize = offsetof(FILE_RENAME_INFO, FileName) + fileNameBytes;
+    std::vector<std::byte> storage;
+    try {
+        storage.resize(allocationSize);
+    } catch (...) {
+        return makeStatus(NativePresetStorageError::ReplaceFailed, displayPath);
     }
-    if (::CloseHandle(file) == 0) {
-        const auto error = ::GetLastError();
-        bestEffortRemove(temporary);
+
+    auto *renameInfo = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+    std::memset(renameInfo, 0, allocationSize);
+    renameInfo->ReplaceIfExists = replaceExisting ? TRUE : FALSE;
+    renameInfo->RootDirectory = root.get();
+    renameInfo->FileNameLength = static_cast<DWORD>(fileNameBytes);
+    if (fileNameBytes != 0u)
+        std::memcpy(renameInfo->FileName, destination.data(), fileNameBytes);
+
+    if (::SetFileInformationByHandle(temporaryHandle,
+                                     FileRenameInfo,
+                                     renameInfo,
+                                     static_cast<DWORD>(allocationSize)) != 0)
+        return {};
+
+    const auto error = std::error_code(static_cast<int>(::GetLastError()),
+                                       std::system_category());
+    if (!replaceExisting) {
+        std::error_code inspectError;
+        const auto kind = inspectRelativeEntry(root, destinationIdentity, inspectError);
+        if (kind != RelativeEntryKind::Missing)
+            return makeStatus(NativePresetStorageError::AlreadyExists,
+                              displayPath,
+                              error);
+    }
+    return makeStatus(NativePresetStorageError::ReplaceFailed,
+                      displayPath,
+                      error);
+}
+
+[[nodiscard]] NativePresetStorageStatus deleteRelativeEntry(
+    const PinnedRoot &root,
+    std::string_view identity,
+    const fs::path &displayPath) noexcept {
+    std::error_code openError;
+    const auto name = widenAscii(identity);
+    HANDLE handle = ntOpenRelative(root.get(),
+                                   name,
+                                   DELETE | 0x0080u,
+                                   kNtFileOpen,
+                                   kNtFileNonDirectoryFile,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   openError);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (openError.value() == ERROR_FILE_NOT_FOUND ||
+            openError.value() == ERROR_PATH_NOT_FOUND)
+            return makeStatus(NativePresetStorageError::NotFound,
+                              displayPath,
+                              openError);
+        return makeStatus(NativePresetStorageError::DeleteFailed,
+                          displayPath,
+                          openError);
+    }
+    PinnedRoot file{handle};
+
+    std::error_code reparseError;
+    if (handleIsReparsePoint(file.get(), reparseError))
+        return makeStatus(NativePresetStorageError::OutsideRoot, displayPath);
+    if (reparseError)
+        return makeStatus(NativePresetStorageError::DeleteFailed,
+                          displayPath,
+                          reparseError);
+
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    if (::SetFileInformationByHandle(file.get(),
+                                     FileDispositionInfo,
+                                     &disposition,
+                                     sizeof(disposition)) == 0)
         return makeStatus(
-            NativePresetStorageError::FlushFailed,
-            temporary,
-            std::error_code(static_cast<int>(error), std::system_category()));
+            NativePresetStorageError::DeleteFailed,
+            displayPath,
+            std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+    return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus listRelativeIdentities(
+    const PinnedRoot &root,
+    std::vector<std::string> &identities,
+    const fs::path &displayRoot) noexcept {
+    identities.clear();
+    std::array<std::byte, 64u * 1024u> buffer{};
+    bool restart = true;
+
+    for (;;) {
+        const auto infoClass = restart ? FileIdBothDirectoryRestartInfo
+                                       : FileIdBothDirectoryInfo;
+        if (::GetFileInformationByHandleEx(root.get(),
+                                           infoClass,
+                                           buffer.data(),
+                                           static_cast<DWORD>(buffer.size())) == 0) {
+            const auto lastError = ::GetLastError();
+            if (lastError == ERROR_NO_MORE_FILES)
+                break;
+            return makeStatus(
+                NativePresetStorageError::EnumerateFailed,
+                displayRoot,
+                std::error_code(static_cast<int>(lastError), std::system_category()));
+        }
+        restart = false;
+
+        auto *entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO *>(buffer.data());
+        for (;;) {
+            const std::wstring_view wideName{
+                entry->FileName,
+                entry->FileNameLength / sizeof(wchar_t)};
+            if (wideName != L"." && wideName != L"..") {
+                try {
+                    const auto identity = fs::path{std::wstring{wideName}}.string();
+                    identities.push_back(identity);
+                } catch (...) {
+                    // An unrepresentable native filename cannot be a valid ASCII
+                    // storage identity; omit it from the preset namespace.
+                }
+            }
+            if (entry->NextEntryOffset == 0u)
+                break;
+            entry = reinterpret_cast<FILE_ID_BOTH_DIR_INFO *>(
+                reinterpret_cast<std::byte *>(entry) + entry->NextEntryOffset);
+        }
     }
     return {};
+}
+
 #else
+
+[[nodiscard]] int directoryOpenFlags() noexcept {
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_DIRECTORY
+    flags |= O_DIRECTORY;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    return flags;
+}
+
+[[nodiscard]] NativePresetStorageStatus openPinnedRoot(
+    const fs::path &baseRoot,
+    std::string_view targetPluginId,
+    PinnedRoot &root) noexcept {
+    root.reset();
+    if (!baseRoot.is_absolute())
+        return makeStatus(NativePresetStorageError::InvalidBaseRoot, baseRoot);
+
+    const int baseFd = ::open(baseRoot.c_str(), directoryOpenFlags());
+    if (baseFd < 0)
+        return makeStatus(NativePresetStorageError::InvalidBaseRoot,
+                          baseRoot,
+                          std::error_code(errno, std::generic_category()));
+    PinnedRoot parent{baseFd};
+
+    const std::array<std::string_view, 3> components{{
+        kStorageNamespace,
+        kPresetDirectoryName,
+        targetPluginId,
+    }};
+    fs::path displayPath = baseRoot;
+
+    for (const auto component : components) {
+        displayPath /= std::string{component};
+        const std::string name{component};
+        if (::mkdirat(parent.get(), name.c_str(), 0700) != 0 && errno != EEXIST)
+            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
+                              displayPath,
+                              std::error_code(errno, std::generic_category()));
+
+        const int childFd = ::openat(parent.get(),
+                                     name.c_str(),
+                                     directoryOpenFlags());
+        if (childFd < 0) {
+            const int openError = errno;
+            const auto storageError =
+#ifdef ELOOP
+                openError == ELOOP ? NativePresetStorageError::OutsideRoot :
+#endif
+                NativePresetStorageError::CreateDirectoryFailed;
+            return makeStatus(storageError,
+                              displayPath,
+                              std::error_code(openError, std::generic_category()));
+        }
+        PinnedRoot child{childFd};
+        struct stat status {};
+        if (::fstat(child.get(), &status) != 0 || !S_ISDIR(status.st_mode))
+            return makeStatus(NativePresetStorageError::OutsideRoot,
+                              displayPath,
+                              std::error_code(errno, std::generic_category()));
+        parent = std::move(child);
+    }
+
+    root = std::move(parent);
+    return {};
+}
+
+[[nodiscard]] RelativeEntryKind inspectRelativeEntry(
+    const PinnedRoot &root,
+    std::string_view identity,
+    std::error_code &error) noexcept {
+    const std::string name{identity};
+    struct stat status {};
+    if (::fstatat(root.get(),
+                  name.c_str(),
+                  &status,
+                  AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT) {
+            error.clear();
+            return RelativeEntryKind::Missing;
+        }
+        error = std::error_code(errno, std::generic_category());
+        return RelativeEntryKind::Other;
+    }
+    error.clear();
+    if (S_ISLNK(status.st_mode))
+        return RelativeEntryKind::SymlinkOrReparse;
+    if (S_ISREG(status.st_mode))
+        return RelativeEntryKind::Regular;
+    if (S_ISDIR(status.st_mode))
+        return RelativeEntryKind::Directory;
+    return RelativeEntryKind::Other;
+}
+
+[[nodiscard]] NativePresetStorageStatus readRelativeFile(
+    const PinnedRoot &root,
+    std::string_view identity,
+    const fs::path &displayPath,
+    std::string &bytes) noexcept {
+    bytes.clear();
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    const std::string name{identity};
+    const int fd = ::openat(root.get(), name.c_str(), flags);
+    if (fd < 0) {
+        const int openError = errno;
+#ifdef ELOOP
+        if (openError == ELOOP)
+            return makeStatus(NativePresetStorageError::OutsideRoot,
+                              displayPath,
+                              std::error_code(openError, std::generic_category()));
+#endif
+        if (openError == ENOENT)
+            return makeStatus(NativePresetStorageError::NotFound,
+                              displayPath,
+                              std::error_code(openError, std::generic_category()));
+        return makeStatus(NativePresetStorageError::OpenFailed,
+                          displayPath,
+                          std::error_code(openError, std::generic_category()));
+    }
+    PinnedRoot file{fd};
+
+    struct stat status {};
+    if (::fstat(file.get(), &status) != 0)
+        return makeStatus(NativePresetStorageError::ReadFailed,
+                          displayPath,
+                          std::error_code(errno, std::generic_category()));
+    if (!S_ISREG(status.st_mode))
+        return makeStatus(NativePresetStorageError::OutsideRoot, displayPath);
+    if (status.st_size < 0 ||
+        static_cast<std::uint64_t>(status.st_size) > kMaxNativePresetFileBytes)
+        return makeStatus(NativePresetStorageError::InputTooLarge,
+                          displayPath,
+                          {},
+                          PresetCodecError::InputTooLarge);
+
+    try {
+        bytes.resize(static_cast<std::size_t>(status.st_size));
+    } catch (...) {
+        return makeStatus(NativePresetStorageError::ReadFailed, displayPath);
+    }
+
+    std::size_t offset = 0u;
+    while (offset < bytes.size()) {
+        const auto read = ::read(file.get(),
+                                 bytes.data() + offset,
+                                 bytes.size() - offset);
+        if (read < 0 && errno == EINTR)
+            continue;
+        if (read <= 0) {
+            const int readError = read < 0 ? errno : EIO;
+            bytes.clear();
+            return makeStatus(NativePresetStorageError::ReadFailed,
+                              displayPath,
+                              std::error_code(readError, std::generic_category()));
+        }
+        offset += static_cast<std::size_t>(read);
+    }
+    return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus createAndWriteTemporary(
+    const PinnedRoot &root,
+    std::string_view temporaryIdentity,
+    const fs::path &displayPath,
+    std::string_view bytes,
+    const NativePresetStorageOptions &options,
+    int &temporaryFd) noexcept {
+    temporaryFd = -1;
+    const auto shouldFail = [&options](NativePresetWriteStage stage) noexcept {
+        return options.shouldFailWrite != nullptr &&
+               options.shouldFailWrite(stage, options.faultUserData);
+    };
+
     int flags = O_WRONLY | O_CREAT | O_EXCL;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
@@ -567,30 +987,25 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif
-    const int fd = ::open(temporary.c_str(), flags, 0600);
+    const std::string temporaryName{temporaryIdentity};
+    const int fd = ::openat(root.get(), temporaryName.c_str(), flags, 0600);
     if (fd < 0) {
         const int openError = errno;
         if (openError == EEXIST)
             return makeStatus(NativePresetStorageError::AlreadyExists,
-                              temporary,
+                              displayPath,
                               std::error_code(openError, std::generic_category()));
         return makeStatus(NativePresetStorageError::OpenFailed,
-                          temporary,
+                          displayPath,
                           std::error_code(openError, std::generic_category()));
     }
+    temporaryFd = fd;
 
-    const auto cleanup = [fd, &temporary]() noexcept {
-        (void)::close(fd);
-        bestEffortRemove(temporary);
-    };
+    if (shouldFail(NativePresetWriteStage::AfterTemporaryOpen))
+        return makeStatus(NativePresetStorageError::WriteFailed, displayPath);
 
-    if (shouldFail(NativePresetWriteStage::AfterTemporaryOpen)) {
-        cleanup();
-        return makeStatus(NativePresetStorageError::WriteFailed, temporary);
-    }
-
-    const auto writeRange = [fd, &temporary](const char *data,
-                                             std::size_t size) noexcept {
+    const auto writeRange = [fd, &displayPath](const char *data,
+                                               std::size_t size) noexcept {
         std::size_t offset = 0u;
         while (offset < size) {
             const auto written = ::write(fd, data + offset, size - offset);
@@ -599,7 +1014,7 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
             if (written <= 0) {
                 const int writeError = written < 0 ? errno : EIO;
                 return makeStatus(NativePresetStorageError::WriteFailed,
-                                  temporary,
+                                  displayPath,
                                   std::error_code(writeError, std::generic_category()));
             }
             offset += static_cast<std::size_t>(written);
@@ -609,37 +1024,161 @@ void syncParentDirectoryBestEffort(const fs::path &path) noexcept {
 
     const auto firstSize = bytes.size() / 2u;
     auto status = writeRange(bytes.data(), firstSize);
-    if (!status.ok()) {
-        cleanup();
+    if (!status.ok())
         return status;
-    }
-    if (shouldFail(NativePresetWriteStage::AfterPartialWrite)) {
-        cleanup();
-        return makeStatus(NativePresetStorageError::WriteFailed, temporary);
-    }
+    if (shouldFail(NativePresetWriteStage::AfterPartialWrite))
+        return makeStatus(NativePresetStorageError::WriteFailed, displayPath);
     status = writeRange(bytes.data() + firstSize, bytes.size() - firstSize);
-    if (!status.ok()) {
-        cleanup();
+    if (!status.ok())
         return status;
-    }
 
     while (::fsync(fd) != 0) {
         if (errno == EINTR)
             continue;
-        const int flushError = errno;
-        cleanup();
         return makeStatus(NativePresetStorageError::FlushFailed,
-                          temporary,
-                          std::error_code(flushError, std::generic_category()));
-    }
-    if (::close(fd) != 0) {
-        const int closeError = errno;
-        bestEffortRemove(temporary);
-        return makeStatus(NativePresetStorageError::FlushFailed,
-                          temporary,
-                          std::error_code(closeError, std::generic_category()));
+                          displayPath,
+                          std::error_code(errno, std::generic_category()));
     }
     return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus commitTemporaryRelative(
+    const PinnedRoot &root,
+    std::string_view temporaryIdentity,
+    std::string_view destinationIdentity,
+    const fs::path &displayPath,
+    bool replaceExisting,
+    const NativePresetStorageOptions &options) noexcept {
+    const std::string temporary{temporaryIdentity};
+    const std::string destination{destinationIdentity};
+
+    if (replaceExisting) {
+        if (::renameat(root.get(),
+                       temporary.c_str(),
+                       root.get(),
+                       destination.c_str()) == 0) {
+            while (::fsync(root.get()) != 0 && errno == EINTR) {
+            }
+            return {};
+        }
+        return makeStatus(NativePresetStorageError::ReplaceFailed,
+                          displayPath,
+                          std::error_code(errno, std::generic_category()));
+    }
+
+    if (::linkat(root.get(),
+                 temporary.c_str(),
+                 root.get(),
+                 destination.c_str(),
+                 0) != 0) {
+        const int linkError = errno;
+        if (linkError == EEXIST)
+            return makeStatus(NativePresetStorageError::AlreadyExists,
+                              displayPath,
+                              std::error_code(linkError, std::generic_category()));
+        return makeStatus(NativePresetStorageError::ReplaceFailed,
+                          displayPath,
+                          std::error_code(linkError, std::generic_category()));
+    }
+
+    // The destination became atomically visible at successful linkat(). From
+    // this point onward the save is committed and must never be rolled back just
+    // because removing the private temporary name fails.
+    const bool simulateCleanupFailure =
+        options.shouldFailWrite != nullptr &&
+        options.shouldFailWrite(NativePresetWriteStage::BeforeTemporaryCleanup,
+                                options.faultUserData);
+    if (!simulateCleanupFailure)
+        (void)::unlinkat(root.get(), temporary.c_str(), 0);
+    while (::fsync(root.get()) != 0 && errno == EINTR) {
+    }
+    return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus deleteRelativeEntry(
+    const PinnedRoot &root,
+    std::string_view identity,
+    const fs::path &displayPath) noexcept {
+    std::error_code inspectError;
+    const auto kind = inspectRelativeEntry(root, identity, inspectError);
+    if (kind == RelativeEntryKind::Missing)
+        return makeStatus(NativePresetStorageError::NotFound, displayPath);
+    if (kind == RelativeEntryKind::SymlinkOrReparse)
+        return makeStatus(NativePresetStorageError::OutsideRoot, displayPath);
+    if (kind != RelativeEntryKind::Regular)
+        return makeStatus(NativePresetStorageError::DeleteFailed,
+                          displayPath,
+                          inspectError);
+
+    const std::string name{identity};
+    if (::unlinkat(root.get(), name.c_str(), 0) != 0)
+        return makeStatus(NativePresetStorageError::DeleteFailed,
+                          displayPath,
+                          std::error_code(errno, std::generic_category()));
+    while (::fsync(root.get()) != 0 && errno == EINTR) {
+    }
+    return {};
+}
+
+[[nodiscard]] NativePresetStorageStatus listRelativeIdentities(
+    const PinnedRoot &root,
+    std::vector<std::string> &identities,
+    const fs::path &displayRoot) noexcept {
+    identities.clear();
+    const int duplicateFd = ::dup(root.get());
+    if (duplicateFd < 0)
+        return makeStatus(NativePresetStorageError::EnumerateFailed,
+                          displayRoot,
+                          std::error_code(errno, std::generic_category()));
+
+    DIR *directory = ::fdopendir(duplicateFd);
+    if (!directory) {
+        const int directoryError = errno;
+        (void)::close(duplicateFd);
+        return makeStatus(NativePresetStorageError::EnumerateFailed,
+                          displayRoot,
+                          std::error_code(directoryError, std::generic_category()));
+    }
+
+    errno = 0;
+    while (const auto *entry = ::readdir(directory)) {
+        if (std::strcmp(entry->d_name, ".") == 0 ||
+            std::strcmp(entry->d_name, "..") == 0)
+            continue;
+        try {
+            identities.emplace_back(entry->d_name);
+        } catch (...) {
+            (void)::closedir(directory);
+            return makeStatus(NativePresetStorageError::EnumerateFailed,
+                              displayRoot);
+        }
+        errno = 0;
+    }
+    const int enumerationError = errno;
+    (void)::closedir(directory);
+    if (enumerationError != 0)
+        return makeStatus(NativePresetStorageError::EnumerateFailed,
+                          displayRoot,
+                          std::error_code(enumerationError, std::generic_category()));
+    return {};
+}
+
+#endif
+
+[[nodiscard]] NativePresetStorageStatus cleanupTemporaryRelative(
+    const PinnedRoot &root,
+    std::string_view temporaryIdentity) noexcept {
+#if defined(_WIN32)
+    return deleteRelativeEntry(root,
+                               temporaryIdentity,
+                               fs::path{std::string{temporaryIdentity}});
+#else
+    const std::string name{temporaryIdentity};
+    if (::unlinkat(root.get(), name.c_str(), 0) == 0 || errno == ENOENT)
+        return {};
+    return makeStatus(NativePresetStorageError::CleanupFailed,
+                      fs::path{name},
+                      std::error_code(errno, std::generic_category()));
 #endif
 }
 
@@ -766,159 +1305,85 @@ NativePresetStorageStatus NativePresetStorage::ensureReady() const noexcept {
     return ensureReadyUnlocked();
 }
 
-NativePresetStorageStatus NativePresetStorage::validateRootContainmentUnlocked() const noexcept {
+NativePresetStorageStatus NativePresetStorage::ensureReadyUnlocked() const noexcept {
     if (!scopeStatus_.ok())
         return scopeStatus_;
-    try {
-        if (!baseRoot_.is_absolute())
-            return makeStatus(NativePresetStorageError::InvalidBaseRoot, baseRoot_);
-
-        std::error_code error;
-        const auto canonicalBase = fs::weakly_canonical(baseRoot_, error);
-        if (error)
-            return makeStatus(NativePresetStorageError::InvalidBaseRoot,
-                              baseRoot_,
-                              error);
-        const auto canonicalRoot = fs::weakly_canonical(root_, error);
-        if (error) {
-            if (error == std::errc::too_many_symbolic_link_levels)
-                return makeStatus(NativePresetStorageError::OutsideRoot,
-                                  root_,
-                                  error);
-            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
-                              root_,
-                              error);
-        }
-        if (!pathContainedBy(canonicalRoot, canonicalBase))
-            return makeStatus(NativePresetStorageError::OutsideRoot, root_);
-
-        const auto rootStatus = fs::symlink_status(root_, error);
-        if (!error && fs::is_symlink(rootStatus))
-            return makeStatus(NativePresetStorageError::OutsideRoot, root_);
-        return {};
-    } catch (...) {
-        return makeStatus(NativePresetStorageError::OutsideRoot, root_);
-    }
-}
-
-NativePresetStorageStatus NativePresetStorage::ensureReadyUnlocked() const noexcept {
-    auto containment = validateRootContainmentUnlocked();
-    if (!containment.ok())
-        return containment;
-
-    try {
-        std::error_code error;
-        const auto status = fs::symlink_status(root_, error);
-        if (!error && status.type() != fs::file_type::not_found) {
-            if (fs::is_symlink(status))
-                return makeStatus(NativePresetStorageError::OutsideRoot, root_);
-            if (!fs::is_directory(status))
-                return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
-                                  root_);
-            return validateRootContainmentUnlocked();
-        }
-
-        error.clear();
-        if (!fs::create_directories(root_, error) && error)
-            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
-                              root_,
-                              error);
-        error.clear();
-        const auto createdStatus = fs::symlink_status(root_, error);
-        if (error || !fs::is_directory(createdStatus) || fs::is_symlink(createdStatus))
-            return makeStatus(NativePresetStorageError::CreateDirectoryFailed,
-                              root_,
-                              error);
-        return validateRootContainmentUnlocked();
-    } catch (...) {
-        return makeStatus(NativePresetStorageError::CreateDirectoryFailed, root_);
-    }
+    PinnedRoot root;
+    return openPinnedRoot(baseRoot_, targetPluginId_, root);
 }
 
 NativePresetListResult NativePresetStorage::list() const noexcept {
     std::lock_guard<std::mutex> lock{mutex_};
     NativePresetListResult result;
-    result.status = ensureReadyUnlocked();
+    if (!scopeStatus_.ok()) {
+        result.status = scopeStatus_;
+        return result;
+    }
+
+    PinnedRoot pinnedRoot;
+    result.status = openPinnedRoot(baseRoot_, targetPluginId_, pinnedRoot);
     if (!result.status.ok())
         return result;
 
-    try {
-        std::error_code iterationError;
-        fs::directory_iterator iterator{root_, iterationError};
-        if (iterationError) {
-            result.status = makeStatus(NativePresetStorageError::EnumerateFailed,
-                                       root_,
-                                       iterationError);
-            return result;
+    std::vector<std::string> identities;
+    result.status = listRelativeIdentities(pinnedRoot, identities, root_);
+    if (!result.status.ok())
+        return result;
+
+    for (const auto &identity : identities) {
+        fs::path entryPath = root_ / identity;
+        if (fs::path{identity}.extension() != kPresetSuffix)
+            continue;
+        if (!validIdentity(identity)) {
+            result.diagnostics.push_back(
+                {makeStatus(NativePresetStorageError::InvalidIdentity, entryPath)});
+            continue;
         }
 
-        const fs::directory_iterator end{};
-        for (; iterator != end; iterator.increment(iterationError)) {
-            if (iterationError) {
-                result.status = makeStatus(NativePresetStorageError::EnumerateFailed,
-                                           root_,
-                                           iterationError);
-                return result;
-            }
-
-            const auto &entry = *iterator;
-            if (entry.path().extension() != kPresetSuffix)
-                continue;
-
-            std::error_code typeError;
-            const auto type = entry.symlink_status(typeError);
-            if (typeError) {
+        std::error_code inspectError;
+        const auto kind = inspectRelativeEntry(pinnedRoot, identity, inspectError);
+        if (kind == RelativeEntryKind::SymlinkOrReparse) {
+            result.diagnostics.push_back(
+                {makeStatus(NativePresetStorageError::OutsideRoot, entryPath)});
+            continue;
+        }
+        if (kind != RelativeEntryKind::Regular) {
+            if (inspectError)
                 result.diagnostics.push_back(
                     {makeStatus(NativePresetStorageError::EnumerateFailed,
-                                entry.path(),
-                                typeError)});
-                continue;
-            }
-            if (fs::is_symlink(type)) {
-                result.diagnostics.push_back(
-                    {makeStatus(NativePresetStorageError::OutsideRoot, entry.path())});
-                continue;
-            }
-            if (!fs::is_regular_file(type))
-                continue;
-
-            const auto identity = entry.path().filename().string();
-            if (!validIdentity(identity)) {
-                result.diagnostics.push_back(
-                    {makeStatus(NativePresetStorageError::InvalidIdentity, entry.path())});
-                continue;
-            }
-
-            std::string bytes;
-            const auto readStatus = readFileBytes(entry.path(), bytes);
-            if (!readStatus.ok()) {
-                result.diagnostics.push_back({readStatus});
-                continue;
-            }
-
-            const auto metadata = parsePresetMetadata(bytes, targetPluginId_);
-            if (!metadata.ok()) {
-                const auto storageError =
-                    metadata.error == PresetCodecError::WrongTargetPlugin
-                        ? NativePresetStorageError::WrongTargetPlugin
-                        : NativePresetStorageError::ParseFailed;
-                result.diagnostics.push_back(
-                    {makeStatus(storageError, entry.path(), {}, metadata.error)});
-                continue;
-            }
-
-            result.entries.push_back({identity, entry.path(), metadata.metadata});
+                                entryPath,
+                                inspectError)});
+            continue;
         }
 
-        std::sort(result.entries.begin(), result.entries.end(),
-                  [](const auto &a, const auto &b) {
-                      return a.identity < b.identity;
-                  });
-        return result;
-    } catch (...) {
-        result.status = makeStatus(NativePresetStorageError::EnumerateFailed, root_);
-        return result;
+        std::string bytes;
+        const auto readStatus = readRelativeFile(pinnedRoot,
+                                                 identity,
+                                                 entryPath,
+                                                 bytes);
+        if (!readStatus.ok()) {
+            result.diagnostics.push_back({readStatus});
+            continue;
+        }
+
+        const auto metadata = parsePresetMetadata(bytes, targetPluginId_);
+        if (!metadata.ok()) {
+            const auto storageError =
+                metadata.error == PresetCodecError::WrongTargetPlugin
+                    ? NativePresetStorageError::WrongTargetPlugin
+                    : NativePresetStorageError::ParseFailed;
+            result.diagnostics.push_back(
+                {makeStatus(storageError, entryPath, {}, metadata.error)});
+            continue;
+        }
+        result.entries.push_back({identity, entryPath, metadata.metadata});
     }
+
+    std::sort(result.entries.begin(), result.entries.end(),
+              [](const auto &a, const auto &b) {
+                  return a.identity < b.identity;
+              });
+    return result;
 }
 
 NativePresetStorageStatus NativePresetStorage::validateDocumentForStorage(
@@ -946,33 +1411,6 @@ bool NativePresetStorage::shouldFail(NativePresetWriteStage stage) const noexcep
            options_.shouldFailWrite(stage, options_.faultUserData);
 }
 
-NativePresetStorageStatus NativePresetStorage::writeCanonicalFile(
-    const fs::path &destination,
-    std::string_view bytes,
-    bool replaceExisting) const noexcept {
-    for (std::size_t attempt = 0u; attempt < kMaxTemporaryAttempts; ++attempt) {
-        const auto temporary = temporaryPathFor(destination, attempt);
-        auto writeStatus = writeTemporaryFileExclusive(temporary, bytes, options_);
-        if (writeStatus.error == NativePresetStorageError::AlreadyExists)
-            continue;
-        if (!writeStatus.ok())
-            return writeStatus;
-
-        if (shouldFail(NativePresetWriteStage::BeforeReplace)) {
-            bestEffortRemove(temporary);
-            return makeStatus(NativePresetStorageError::ReplaceFailed, destination);
-        }
-
-        auto commitStatus = commitTemporaryFile(temporary,
-                                                destination,
-                                                replaceExisting);
-        if (!commitStatus.ok())
-            bestEffortRemove(temporary);
-        return commitStatus;
-    }
-    return makeStatus(NativePresetStorageError::Collision, destination);
-}
-
 NativePresetSaveResult NativePresetStorage::saveAsUnlocked(
     std::string_view identity,
     const PresetDocument &document,
@@ -988,48 +1426,126 @@ NativePresetSaveResult NativePresetStorage::saveAsUnlocked(
     result.status = validateDocumentForStorage(document, serialized);
     if (!result.status.ok())
         return result;
-    result.status = ensureReadyUnlocked();
+    if (!scopeStatus_.ok()) {
+        result.status = scopeStatus_;
+        return result;
+    }
+
+    PinnedRoot pinnedRoot;
+    result.status = openPinnedRoot(baseRoot_, targetPluginId_, pinnedRoot);
     if (!result.status.ok())
         return result;
 
-    try {
-        const fs::path destination = root_ / std::string{identity};
-        std::error_code typeError;
-        const auto type = fs::symlink_status(destination, typeError);
-        const bool exists = !typeError && type.type() != fs::file_type::not_found;
-        if (exists && fs::is_symlink(type)) {
-            result.status = makeStatus(NativePresetStorageError::OutsideRoot,
-                                       destination);
-            return result;
-        }
-        if (!overwrite && exists) {
-            result.status = makeStatus(NativePresetStorageError::AlreadyExists,
-                                       destination);
-            return result;
-        }
-        if (overwrite && (!exists || !fs::is_regular_file(type))) {
-            result.status = makeStatus(NativePresetStorageError::NotFound,
-                                       destination,
-                                       typeError);
-            return result;
-        }
-
-        result.status = writeCanonicalFile(destination, serialized.bytes, overwrite);
-        if (!result.status.ok())
-            return result;
-        result.identity.assign(identity.data(), identity.size());
-        result.path = destination;
-        return result;
-    } catch (...) {
+    if (shouldFail(NativePresetWriteStage::AfterRootPinned)) {
         result.status = makeStatus(NativePresetStorageError::WriteFailed, root_);
         return result;
     }
+
+    std::error_code inspectError;
+    const auto kind = inspectRelativeEntry(pinnedRoot, identity, inspectError);
+    if (kind == RelativeEntryKind::SymlinkOrReparse) {
+        result.status = makeStatus(NativePresetStorageError::OutsideRoot,
+                                   root_ / std::string{identity});
+        return result;
+    }
+    if (!overwrite && kind != RelativeEntryKind::Missing) {
+        result.status = makeStatus(NativePresetStorageError::AlreadyExists,
+                                   root_ / std::string{identity},
+                                   inspectError);
+        return result;
+    }
+    if (overwrite && kind != RelativeEntryKind::Regular) {
+        result.status = makeStatus(NativePresetStorageError::NotFound,
+                                   root_ / std::string{identity},
+                                   inspectError);
+        return result;
+    }
+
+    const auto destinationPath = root_ / std::string{identity};
+    for (std::size_t attempt = 0u; attempt < kMaxTemporaryAttempts; ++attempt) {
+        const auto temporaryIdentity = temporaryNameFor(identity, attempt);
+        const auto temporaryPath = root_ / temporaryIdentity;
+#if defined(_WIN32)
+        HANDLE rawTemporary = INVALID_HANDLE_VALUE;
+        auto writeStatus = createAndWriteTemporary(pinnedRoot,
+                                                   temporaryIdentity,
+                                                   temporaryPath,
+                                                   serialized.bytes,
+                                                   options_,
+                                                   rawTemporary);
+        PinnedRoot temporary{rawTemporary};
+        if (writeStatus.error == NativePresetStorageError::AlreadyExists)
+            continue;
+        if (!writeStatus.ok()) {
+            temporary.reset();
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+            result.status = writeStatus;
+            return result;
+        }
+        if (shouldFail(NativePresetWriteStage::BeforeReplace)) {
+            temporary.reset();
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+            result.status = makeStatus(NativePresetStorageError::ReplaceFailed,
+                                       destinationPath);
+            return result;
+        }
+        auto commitStatus = renameTemporaryRelative(temporary.get(),
+                                                    pinnedRoot,
+                                                    identity,
+                                                    destinationPath,
+                                                    overwrite);
+        temporary.reset();
+        if (!commitStatus.ok())
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+#else
+        int rawTemporary = -1;
+        auto writeStatus = createAndWriteTemporary(pinnedRoot,
+                                                   temporaryIdentity,
+                                                   temporaryPath,
+                                                   serialized.bytes,
+                                                   options_,
+                                                   rawTemporary);
+        PinnedRoot temporary{rawTemporary};
+        if (writeStatus.error == NativePresetStorageError::AlreadyExists)
+            continue;
+        if (!writeStatus.ok()) {
+            temporary.reset();
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+            result.status = writeStatus;
+            return result;
+        }
+        temporary.reset(); // flushed file is closed before its atomic commit
+        if (shouldFail(NativePresetWriteStage::BeforeReplace)) {
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+            result.status = makeStatus(NativePresetStorageError::ReplaceFailed,
+                                       destinationPath);
+            return result;
+        }
+        auto commitStatus = commitTemporaryRelative(pinnedRoot,
+                                                    temporaryIdentity,
+                                                    identity,
+                                                    destinationPath,
+                                                    overwrite,
+                                                    options_);
+        if (!commitStatus.ok())
+            (void)cleanupTemporaryRelative(pinnedRoot, temporaryIdentity);
+#endif
+        result.status = commitStatus;
+        if (!result.status.ok())
+            return result;
+        result.identity.assign(identity.data(), identity.size());
+        result.path = destinationPath;
+        return result;
+    }
+
+    result.status = makeStatus(NativePresetStorageError::Collision,
+                               destinationPath);
+    return result;
 }
 
 NativePresetSaveResult NativePresetStorage::saveNew(
     const PresetDocument &document) noexcept {
     std::lock_guard<std::mutex> lock{mutex_};
-
     try {
         const auto slug = slugForDisplayName(document.metadata.name);
         for (std::size_t attempt = 1u; attempt <= kMaxSaveIdentityAttempts; ++attempt) {
@@ -1076,54 +1592,53 @@ NativePresetSaveResult NativePresetStorage::replace(
 NativePresetLoadResult NativePresetStorage::load(std::string_view identity) const noexcept {
     std::lock_guard<std::mutex> lock{mutex_};
     NativePresetLoadResult result;
-
     if (!validIdentity(identity)) {
         result.status = makeStatus(NativePresetStorageError::InvalidIdentity, root_);
         return result;
     }
+    if (!scopeStatus_.ok()) {
+        result.status = scopeStatus_;
+        return result;
+    }
 
-    result.status = ensureReadyUnlocked();
+    PinnedRoot pinnedRoot;
+    result.status = openPinnedRoot(baseRoot_, targetPluginId_, pinnedRoot);
     if (!result.status.ok())
         return result;
 
-    try {
-        const fs::path source = root_ / std::string{identity};
-        std::error_code typeError;
-        const auto type = fs::symlink_status(source, typeError);
-        if (!typeError && fs::is_symlink(type)) {
-            result.status = makeStatus(NativePresetStorageError::OutsideRoot, source);
-            return result;
-        }
-        if (typeError || !fs::is_regular_file(type)) {
-            result.status = makeStatus(NativePresetStorageError::NotFound,
-                                       source,
-                                       typeError);
-            return result;
-        }
-
-        std::string bytes;
-        result.status = readFileBytes(source, bytes);
-        if (!result.status.ok())
-            return result;
-
-        const auto parsed = parsePresetDocument(bytes, targetPluginId_);
-        if (!parsed.ok()) {
-            result.status = makeStatus(
-                parsed.error == PresetCodecError::WrongTargetPlugin
-                    ? NativePresetStorageError::WrongTargetPlugin
-                    : NativePresetStorageError::ParseFailed,
-                source,
-                {},
-                parsed.error);
-            return result;
-        }
-
-        result.document = parsed.document;
-        return result;
-    } catch (...) {
-        result.status = makeStatus(NativePresetStorageError::ReadFailed, root_);
+    const auto sourcePath = root_ / std::string{identity};
+    std::error_code inspectError;
+    const auto kind = inspectRelativeEntry(pinnedRoot, identity, inspectError);
+    if (kind == RelativeEntryKind::SymlinkOrReparse) {
+        result.status = makeStatus(NativePresetStorageError::OutsideRoot, sourcePath);
         return result;
     }
+    if (kind != RelativeEntryKind::Regular) {
+        result.status = makeStatus(NativePresetStorageError::NotFound,
+                                   sourcePath,
+                                   inspectError);
+        return result;
+    }
+
+    std::string bytes;
+    result.status = readRelativeFile(pinnedRoot, identity, sourcePath, bytes);
+    if (!result.status.ok())
+        return result;
+
+    const auto parsed = parsePresetDocument(bytes, targetPluginId_);
+    if (!parsed.ok()) {
+        result.status = makeStatus(
+            parsed.error == PresetCodecError::WrongTargetPlugin
+                ? NativePresetStorageError::WrongTargetPlugin
+                : NativePresetStorageError::ParseFailed,
+            sourcePath,
+            {},
+            parsed.error);
+        return result;
+    }
+
+    result.document = parsed.document;
+    return result;
 }
 
 NativePresetStorageStatus NativePresetStorage::remove(
@@ -1131,32 +1646,16 @@ NativePresetStorageStatus NativePresetStorage::remove(
     std::lock_guard<std::mutex> lock{mutex_};
     if (!validIdentity(identity))
         return makeStatus(NativePresetStorageError::InvalidIdentity, root_);
+    if (!scopeStatus_.ok())
+        return scopeStatus_;
 
-    auto ready = ensureReadyUnlocked();
-    if (!ready.ok())
-        return ready;
-
-    try {
-        const fs::path destination = root_ / std::string{identity};
-        std::error_code typeError;
-        const auto type = fs::symlink_status(destination, typeError);
-        if (!typeError && fs::is_symlink(type))
-            return makeStatus(NativePresetStorageError::OutsideRoot, destination);
-        if (typeError || !fs::is_regular_file(type))
-            return makeStatus(NativePresetStorageError::NotFound,
-                              destination,
-                              typeError);
-
-        std::error_code removeError;
-        if (!fs::remove(destination, removeError) || removeError)
-            return makeStatus(NativePresetStorageError::DeleteFailed,
-                              destination,
-                              removeError);
-        syncParentDirectoryBestEffort(root_);
-        return {};
-    } catch (...) {
-        return makeStatus(NativePresetStorageError::DeleteFailed, root_);
-    }
+    PinnedRoot pinnedRoot;
+    auto status = openPinnedRoot(baseRoot_, targetPluginId_, pinnedRoot);
+    if (!status.ok())
+        return status;
+    return deleteRelativeEntry(pinnedRoot,
+                               identity,
+                               root_ / std::string{identity});
 }
 
 } // namespace webview_gui::examples::presets
