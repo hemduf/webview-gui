@@ -92,9 +92,16 @@ struct NativePresetEnvironment {
     std::string_view targetPluginId) noexcept;
 
 enum class NativePresetWriteStage : std::uint8_t {
+    // Called after the verified plug-in directory has been opened/pinned. Tests
+    // use this seam to swap path components and prove later I/O is handle-relative.
+    AfterRootPinned,
     AfterTemporaryOpen,
     AfterPartialWrite,
     BeforeReplace,
+    // POSIX no-clobber save has already committed the destination at this point.
+    // Returning true simulates temporary-name cleanup failure; save must still
+    // report success because the destination is committed.
+    BeforeTemporaryCleanup,
 };
 
 using NativePresetWriteFaultHook =
@@ -183,14 +190,9 @@ public:
 
 private:
     [[nodiscard]] NativePresetStorageStatus ensureReadyUnlocked() const noexcept;
-    [[nodiscard]] NativePresetStorageStatus validateRootContainmentUnlocked() const noexcept;
     [[nodiscard]] NativePresetStorageStatus validateDocumentForStorage(
         const PresetDocument &document,
         PresetSerializeResult &serialized) const noexcept;
-    [[nodiscard]] NativePresetStorageStatus writeCanonicalFile(
-        const std::filesystem::path &destination,
-        std::string_view bytes,
-        bool replaceExisting) const noexcept;
     [[nodiscard]] NativePresetSaveResult saveAsUnlocked(
         std::string_view identity,
         const PresetDocument &document,
