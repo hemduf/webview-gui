@@ -7,6 +7,7 @@ foreach(required IN ITEMS
         GAIN_WCLAP_WORKFLOW
         POLYSYNTH_WCLAP_WORKFLOW
         FORMATS_WORKFLOW
+        SANITIZER_WORKFLOW
         README_FILE)
     if(NOT DEFINED ${required} OR NOT EXISTS "${${required}}")
         message(FATAL_ERROR "${required} must point to an existing file")
@@ -19,6 +20,7 @@ file(READ "${POLYSYNTH_CORE_WORKFLOW}" polysynth_core)
 file(READ "${GAIN_WCLAP_WORKFLOW}" gain_wclap)
 file(READ "${POLYSYNTH_WCLAP_WORKFLOW}" polysynth_wclap)
 file(READ "${FORMATS_WORKFLOW}" formats)
+file(READ "${SANITIZER_WORKFLOW}" example_sanitizers)
 file(READ "${README_FILE}" readme)
 
 function(require_contains haystack_var needle label)
@@ -59,14 +61,24 @@ foreach(workflow_var IN ITEMS gain_wclap polysynth_wclap)
     require_contains(${workflow_var} ".wclap.tar.gz" "WCLAP distributable archive")
 endforeach()
 
-# Sanitizer ownership intentionally remains in the repository-wide CI and only
-# runs on main. This preserves the project's fast branch-iteration policy while
-# still making ASan/UBSan/TSan part of the merged-commit qualification surface.
-require_contains(ci "sanitizers:" "ASan/UBSan job")
-require_contains(ci "ASan+UBSan" "ASan/UBSan job name")
-require_contains(ci "thread-sanitizer:" "TSan job")
-require_contains(ci "TSan registry" "TSan job name")
-require_contains(ci "if: github.ref == 'refs/heads/main'" "main-only sanitizer policy")
+# The repository-wide sanitizers remain a library-level safety net on main, while
+# #35 also qualifies representative Gain/PolySynth processor and handoff binaries
+# directly on pull requests.
+require_contains(ci "sanitizers:" "repository ASan/UBSan job")
+require_contains(ci "thread-sanitizer:" "repository TSan job")
+require_contains(example_sanitizers "Examples ASan+UBSan" "example ASan/UBSan matrix")
+require_contains(example_sanitizers "Examples TSan" "example TSan job")
+require_contains(example_sanitizers
+    "webview_gui_example_gain_clap_tests"
+    "Gain processor/CLAP sanitizer target")
+require_contains(example_sanitizers
+    "webview_gui_example_polysynth_state_snapshot_concurrency_tests"
+    "PolySynth concurrency sanitizer target")
+require_contains(example_sanitizers
+    "polysynth_auv2_float32_parameter_tests.cpp"
+    "AUv2 Float32 endpoint regression")
+require_contains(example_sanitizers "-fsanitize=address,undefined" "ASan/UBSan compiler flags")
+require_contains(example_sanitizers "-fsanitize=thread" "TSan compiler flags")
 
 # #34 owns production of the wrapped products; #35 upgrades that matrix from
 # build-only to actual format/artifact qualification.
@@ -92,6 +104,10 @@ require_contains(formats "auval -v aumu WvPs WvGu" "PolySynth AUv2 auval invocat
 require_contains(formats "Verify native artifact hygiene" "native artifact hygiene step")
 require_contains(formats "GITHUB_WORKSPACE" "source-tree path hygiene input")
 
+require_contains(readme "Native CLAP validator reproduction" "native CLAP validator reproduction documentation")
+require_contains(readme "152b9823e992d782c5c1fd33bca0295478b919aa" "documented clap-validator pin")
+require_contains(readme "WCLAP / WASI reproduction" "WCLAP/WASI reproduction documentation")
+require_contains(readme "wasi-sdk-33.0" "documented WASI SDK version")
 require_contains(readme "VST3 validator" "VST3 validator reproduction documentation")
 require_contains(readme "auval" "AUv2 validator reproduction documentation")
 
