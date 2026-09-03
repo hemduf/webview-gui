@@ -34,6 +34,15 @@ target_include_directories(webview_gui_preset_codec_string_safety_tests PRIVATE
 )
 target_compile_features(webview_gui_preset_codec_string_safety_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_preset_factory_catalog_tests
+    preset_factory_catalog_tests.cpp
+)
+target_include_directories(webview_gui_preset_factory_catalog_tests PRIVATE
+    ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+)
+target_compile_features(webview_gui_preset_factory_catalog_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_core
     COMMAND webview_gui_preset_core_tests)
@@ -41,3 +50,9 @@ add_test(NAME webview_gui_examples_preset_codec
     COMMAND webview_gui_preset_codec_tests)
 add_test(NAME webview_gui_examples_preset_codec_string_safety
     COMMAND webview_gui_preset_codec_string_safety_tests)
+add_test(NAME webview_gui_examples_preset_factory_catalog
+    COMMAND webview_gui_preset_factory_catalog_tests)
+add_test(NAME webview_gui_examples_preset_factory_catalog_isolation
+    COMMAND ${CMAKE_COMMAND}
+        -DCATALOG_HEADER=${WEBVIEW_GUI_PRESET_INCLUDE_DIR}/preset_factory_catalog.h
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_factory_catalog_isolation_contract.cmake)
