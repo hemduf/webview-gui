@@ -2,6 +2,7 @@
 
 #include "preset_codec.h"
 
+#include <cstddef>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -11,6 +12,10 @@
 #include <vector>
 
 namespace webview_gui::examples::presets {
+
+// Native storage rejects oversized files before allocating/reading them. The
+// implementation locks this value to the codec's canonical file bound.
+inline constexpr std::size_t kMaxNativePresetFileBytes = 1024u * 1024u;
 
 enum class NativePresetPlatform : std::uint8_t {
     MacOS,
@@ -33,6 +38,7 @@ enum class NativePresetStorageError : std::uint8_t {
     NotFound,
     AlreadyExists,
     OpenFailed,
+    InputTooLarge,
     ReadFailed,
     SerializeFailed,
     ParseFailed,
