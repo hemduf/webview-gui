@@ -7,14 +7,50 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <type_traits>
 
 namespace webview_gui::examples::presets {
+
+namespace detail {
+
+// #90 owns only the CLAP declaration policy. Production user-root discovery
+// remains owned by #36. A Tag may expose the two functions below when a real
+// filesystem-backed #36 storage root exists; otherwise user FILE discovery is
+// unavailable. Test tags use this seam before #36 lands.
+template <typename Tag, typename = void>
+struct NativeUserPresetLocation {
+    static bool available() noexcept { return false; }
+    static const char *root() noexcept { return nullptr; }
+};
+
+template <typename Tag>
+struct NativeUserPresetLocation<
+    Tag,
+    std::void_t<decltype(Tag::nativeUserPresetFilesAvailable()),
+                decltype(Tag::nativeUserPresetRoot())>> {
+    static bool available() noexcept {
+#if defined(__wasi__)
+        // WCLAP/WASI storage is not a native OS FILE location. Factory content
+        // remains discoverable through the PLUGIN container below.
+        return false;
+#else
+        return Tag::nativeUserPresetFilesAvailable();
+#endif
+    }
+
+    static const char *root() noexcept { return Tag::nativeUserPresetRoot(); }
+};
+
+} // namespace detail
 
 // Tag requirements:
 //   static constexpr const char *providerId;
 //   static constexpr const char *providerName;
 //   static constexpr const char *vendor;
 //   static constexpr const char *targetPluginId;
+// Optional #36 integration seam for a genuine native filesystem user root:
+//   static bool nativeUserPresetFilesAvailable() noexcept;
+//   static const char *nativeUserPresetRoot() noexcept;
 //
 // The target plug-in ID is deliberately carried by the tag now so #91 can map
 // Preset Discovery metadata without introducing a registry or processor object.
@@ -22,6 +58,7 @@ template <typename Tag>
 class PresetDiscoveryFactoryImpl {
     struct ProviderState {
         const clap_preset_discovery_indexer_t *indexer = nullptr;
+        bool initAttempted = false;
         bool initialized = false;
         clap_preset_discovery_provider_t provider{};
 
@@ -45,11 +82,40 @@ class PresetDiscoveryFactoryImpl {
 
     static bool CLAP_ABI providerInit(const clap_preset_discovery_provider_t *provider) noexcept {
         auto *state = stateFrom(provider);
-        if (!state || !state->indexer || state->initialized)
+        if (!state || !state->indexer || state->initAttempted)
             return false;
 
-        // #89 owns lifecycle only. Filetypes and locations are declared by #90,
-        // from init(), never from factory create().
+        state->initAttempted = true;
+        const auto *indexer = state->indexer;
+        if (!indexer->declare_filetype || !indexer->declare_location)
+            return false;
+
+        const bool userFilesAvailable = detail::NativeUserPresetLocation<Tag>::available();
+        const char *userRoot = userFilesAvailable
+                                   ? detail::NativeUserPresetLocation<Tag>::root()
+                                   : nullptr;
+        if (userFilesAvailable && (!userRoot || userRoot[0] == '\0'))
+            return false;
+
+        // The file extension is the #37 CLAP-facing contract seam. #36 remains
+        // authoritative for serialization/schema/storage and may replace this
+        // literal if its final production extension changes before integration.
+        if (!indexer->declare_filetype(indexer, &presetFiletype))
+            return false;
+        if (!indexer->declare_location(indexer, &factoryLocation))
+            return false;
+
+        if (userFilesAvailable) {
+            const clap_preset_discovery_location_t userLocation{
+                CLAP_PRESET_DISCOVERY_IS_USER_CONTENT,
+                "User presets",
+                CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                userRoot,
+            };
+            if (!indexer->declare_location(indexer, &userLocation))
+                return false;
+        }
+
         state->initialized = true;
         return true;
     }
@@ -110,6 +176,19 @@ class PresetDiscoveryFactoryImpl {
     }
 
 public:
+    inline static constexpr clap_preset_discovery_filetype_t presetFiletype{
+        "webview-gui preset",
+        "webview-gui versioned preset",
+        "wvpreset",
+    };
+
+    inline static constexpr clap_preset_discovery_location_t factoryLocation{
+        CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+        "Factory presets",
+        CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+        nullptr,
+    };
+
     inline static const clap_preset_discovery_provider_descriptor_t providerDescriptor{
         CLAP_VERSION,
         Tag::providerId,
