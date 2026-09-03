@@ -43,4 +43,4 @@ jobs:
         run: cmake --build build-native-preset-storage --config Debug --parallel
 
       - name: Run native preset storage
-        run: ctest --test-dir build-native-preset-storage -C Debug --output-on-failure --no-tests=error
+        run: ctest --test-dir build-native-preset-storage -C Debug --output-on-failure --no-tests=error --timeout 30 --verbose
