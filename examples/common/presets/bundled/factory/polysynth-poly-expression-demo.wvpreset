@@ -1,0 +1,3 @@
+WVPRESET
+{"schemaVersion":1,"targetPluginId":"com.webview-gui.example.polysynth","name":"Poly Expression Demo","creator":"webview-gui","description":"Balanced base patch intended for per-note expressive control.","tags":["factory","expression"],"features":["instrument","synthesizer"],"factoryLoadKey":"polysynth:poly-expression-demo","extensions":[]}
+{"parameters":[{"id":1000,"value":-6},{"id":1001,"value":1},{"id":1002,"value":0},{"id":1003,"value":0},{"id":1004,"value":5000},{"id":1005,"value":0.2},{"id":1006,"value":0.01},{"id":1007,"value":0.15},{"id":1008,"value":0.8},{"id":1009,"value":0.5},{"id":1010,"value":0.35},{"id":1011,"value":0},{"id":1012,"value":0.8}],"settings":[]}
