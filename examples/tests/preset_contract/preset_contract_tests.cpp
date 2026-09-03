@@ -10,11 +10,13 @@ namespace {
 
 class CapturingMetadataSink final : public presets::PresetMetadataSink {
 public:
+    explicit CapturingMetadataSink(bool acceptBegin = true) : acceptBegin_(acceptBegin) {}
+
     bool beginPreset(std::string_view name, std::string_view loadKey) noexcept override {
         beginCount++;
         presetName = name;
         presetLoadKey = loadKey;
-        return true;
+        return acceptBegin_;
     }
 
     void setTargetPlugin(std::string_view pluginId) noexcept override {
@@ -47,6 +49,9 @@ public:
     std::string_view featureName{};
     clap_timestamp creationTime = CLAP_TIMESTAMP_UNKNOWN;
     clap_timestamp modificationTime = CLAP_TIMESTAMP_UNKNOWN;
+
+private:
+    bool acceptBegin_ = true;
 };
 
 class CapturingStateSink final : public presets::PresetStateSink {
@@ -63,12 +68,6 @@ public:
         return true;
     }
 
-    bool setSetting(std::string_view key, std::string_view value) noexcept override {
-        settingKey = key;
-        settingValue = value;
-        return true;
-    }
-
     bool endCandidate() noexcept override {
         ended = true;
         return true;
@@ -79,8 +78,6 @@ public:
     std::string_view targetPluginId{};
     std::uint32_t parameterId = 0;
     double parameterValue = 0.0;
-    std::string_view settingKey{};
-    std::string_view settingValue{};
 };
 
 class FakePresetCatalog final : public presets::PresetCatalog {
@@ -92,30 +89,36 @@ public:
         return false;
     }
 
-    bool enumerateFactoryMetadata(presets::PresetMetadataSink &sink) const noexcept override {
+    presets::PresetResult enumerateFactoryMetadata(
+        presets::PresetMetadataSink &sink) const noexcept override {
         if (!sink.beginPreset("Init", "factory:init"))
-            return false;
+            return presets::PresetResult::cancelled();
         sink.setTargetPlugin("com.webview-gui.example.fake");
         sink.addCreator("webview-gui");
         sink.setDescription("Fake preset used to qualify the #36/#37 seam");
         sink.addFeature("init");
         sink.setTimestamps(CLAP_TIMESTAMP_UNKNOWN, CLAP_TIMESTAMP_UNKNOWN);
-        return true;
+        return presets::PresetResult::success();
     }
 
-    bool metadataForFile(std::string_view, presets::PresetMetadataSink &) const noexcept override {
-        return false;
+    presets::PresetResult metadataForFile(
+        std::string_view, presets::PresetMetadataSink &) const noexcept override {
+        return presets::PresetResult::unsupported("native user files unavailable");
     }
 
-    bool loadFactory(std::string_view loadKey, presets::PresetStateSink &sink) const noexcept override {
-        if (loadKey != "factory:init" || !sink.beginCandidate("com.webview-gui.example.fake"))
-            return false;
-        return sink.setParameter(42u, 0.5) && sink.setSetting("mode", "init") &&
-               sink.endCandidate();
+    presets::PresetResult loadFactory(
+        std::string_view loadKey, presets::PresetStateSink &sink) const noexcept override {
+        if (loadKey != "factory:init")
+            return presets::PresetResult::notFound("unknown factory load key");
+        if (!sink.beginCandidate("com.webview-gui.example.fake") ||
+            !sink.setParameter(42u, 0.5) || !sink.endCandidate())
+            return presets::PresetResult::error("candidate sink rejected preset");
+        return presets::PresetResult::success();
     }
 
-    bool loadFile(std::string_view, presets::PresetStateSink &) const noexcept override {
-        return false;
+    presets::PresetResult loadFile(
+        std::string_view, presets::PresetStateSink &) const noexcept override {
+        return presets::PresetResult::unsupported("native user files unavailable");
     }
 };
 
@@ -141,7 +144,8 @@ int main() {
     assert(userLocation.empty());
 
     CapturingMetadataSink metadata;
-    assert(catalog.enumerateFactoryMetadata(metadata));
+    const auto metadataResult = catalog.enumerateFactoryMetadata(metadata);
+    assert(metadataResult.succeeded());
     assert(metadata.beginCount == 1);
     assert(metadata.presetName == "Init");
     assert(metadata.presetLoadKey == "factory:init");
@@ -149,15 +153,25 @@ int main() {
     assert(metadata.creatorName == "webview-gui");
     assert(metadata.featureName == "init");
 
+    CapturingMetadataSink cancellingMetadata(false);
+    const auto cancelled = catalog.enumerateFactoryMetadata(cancellingMetadata);
+    assert(cancelled.status == presets::PresetResultStatus::Cancelled);
+    assert(cancellingMetadata.beginCount == 1);
+    assert(cancellingMetadata.targetPluginId.empty());
+
     CapturingStateSink state;
-    assert(catalog.loadFactory("factory:init", state));
+    const auto loaded = catalog.loadFactory("factory:init", state);
+    assert(loaded.succeeded());
     assert(state.began && state.ended);
     assert(state.targetPluginId == "com.webview-gui.example.fake");
     assert(state.parameterId == 42u);
     assert(state.parameterValue == 0.5);
-    assert(state.settingKey == "mode");
-    assert(state.settingValue == "init");
 
-    assert(!catalog.loadFactory("factory:missing", state));
+    const auto missing = catalog.loadFactory("factory:missing", state);
+    assert(missing.status == presets::PresetResultStatus::NotFound);
+    assert(missing.message == "unknown factory load key");
+
+    const auto fileMetadata = catalog.metadataForFile("/tmp/fake.wvpreset", metadata);
+    assert(fileMetadata.status == presets::PresetResultStatus::Unsupported);
     return 0;
 }
