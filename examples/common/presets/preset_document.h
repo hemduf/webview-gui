@@ -19,11 +19,20 @@ struct PresetParameterValue {
     double value = 0.0;
 };
 
-using PresetSettingValue = std::variant<bool, std::int64_t, double, std::string>;
+using PresetScalarValue = std::variant<bool, std::int64_t, double, std::string>;
+using PresetSettingValue = PresetScalarValue;
 
 struct PersistentSetting {
     std::string key;
     PresetSettingValue value;
+};
+
+// Format-neutral bucket for metadata added by future schema revisions. Plug-in
+// adapters may ignore unknown keys without learning the serialized syntax used
+// by #100. Values deliberately use the same scalar family as persistent settings.
+struct PresetExtensionField {
+    std::string key;
+    PresetScalarValue value;
 };
 
 struct PresetMetadata {
@@ -36,6 +45,7 @@ struct PresetMetadata {
     std::optional<std::string> factoryLoadKey;
     std::optional<std::int64_t> creationTimestamp;
     std::optional<std::int64_t> modificationTimestamp;
+    std::vector<PresetExtensionField> extensions;
 };
 
 struct PresetDocument {
@@ -51,6 +61,9 @@ enum class PresetValidationError : std::uint8_t {
     MissingTargetPluginId,
     MissingPresetName,
     EmptyFactoryLoadKey,
+    MissingMetadataExtensionKey,
+    DuplicateMetadataExtensionKey,
+    NonFiniteMetadataExtensionValue,
     DuplicateParameterId,
     NonFiniteParameterValue,
     MissingSettingKey,
@@ -78,6 +91,17 @@ struct StringListView {
     }
 };
 
+struct ExtensionListView {
+    const PresetExtensionField *data = nullptr;
+    std::size_t count = 0u;
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return count; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return count == 0u; }
+    [[nodiscard]] const PresetExtensionField &operator[](std::size_t index) const noexcept {
+        return data[index];
+    }
+};
+
 // Non-owning metadata view used by discovery/catalog adapters. String and list
 // views remain valid only while the source PresetDocument is alive and the
 // referenced strings/vectors are not mutated. Scalar optionals are copied.
@@ -92,6 +116,7 @@ struct PresetMetadataView {
     StringListView features;
     std::optional<std::int64_t> creationTimestamp;
     std::optional<std::int64_t> modificationTimestamp;
+    ExtensionListView extensions;
 };
 
 [[nodiscard]] inline PresetMetadataView metadataView(const PresetDocument &document) noexcept {
@@ -107,6 +132,7 @@ struct PresetMetadataView {
         {document.metadata.features.data(), document.metadata.features.size()},
         document.metadata.creationTimestamp,
         document.metadata.modificationTimestamp,
+        {document.metadata.extensions.data(), document.metadata.extensions.size()},
     };
 }
 
@@ -123,6 +149,21 @@ struct PresetMetadataView {
 
     if (document.metadata.factoryLoadKey && document.metadata.factoryLoadKey->empty())
         return {PresetValidationError::EmptyFactoryLoadKey, 0u};
+
+    for (std::size_t i = 0; i < document.metadata.extensions.size(); ++i) {
+        const auto &extension = document.metadata.extensions[i];
+        if (extension.key.empty())
+            return {PresetValidationError::MissingMetadataExtensionKey, i};
+
+        if (const auto *value = std::get_if<double>(&extension.value);
+            value && !std::isfinite(*value))
+            return {PresetValidationError::NonFiniteMetadataExtensionValue, i};
+
+        for (std::size_t j = 0; j < i; ++j) {
+            if (document.metadata.extensions[j].key == extension.key)
+                return {PresetValidationError::DuplicateMetadataExtensionKey, i};
+        }
+    }
 
     for (std::size_t i = 0; i < document.parameters.size(); ++i) {
         if (!std::isfinite(document.parameters[i].value))
