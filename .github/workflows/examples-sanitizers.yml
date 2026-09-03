@@ -1,0 +1,141 @@
+name: Examples sanitizer qualification
+
+on:
+  pull_request:
+    paths:
+      - 'examples/**'
+      - 'cmake/**'
+      - 'include/**'
+      - '.github/workflows/examples-sanitizers.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/**'
+      - 'cmake/**'
+      - 'include/**'
+      - '.github/workflows/examples-sanitizers.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: examples-sanitizers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  asan-ubsan:
+    name: ${{ matrix.os }} / Examples ASan+UBSan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address,undefined
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure example sanitizers
+        run: >-
+          cmake -S examples -B build-examples-sanitize
+          -DCMAKE_BUILD_TYPE=Debug
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build sanitizer-qualified example tests
+        run: >-
+          cmake --build build-examples-sanitize --parallel --target
+          webview_gui_example_gain_core_tests
+          webview_gui_example_gain_clap_tests
+          webview_gui_example_gain_state_host_sync_tests
+          webview_gui_example_gain_webview_backpressure_tests
+          webview_gui_example_polysynth_event_stream_tests
+          webview_gui_example_polysynth_parameter_model_tests
+          webview_gui_example_polysynth_parameter_event_tests
+          webview_gui_example_polysynth_state_tests
+          webview_gui_example_polysynth_state_snapshot_concurrency_tests
+
+      - name: Compile AUv2 Float32 endpoint regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 ${CXXFLAGS} \
+            -Iexamples/polysynth \
+            -Ibuild-examples-sanitize/_deps/webview_gui_example_clap-src/include \
+            examples/tests/polysynth_auv2_float32_parameter_tests.cpp \
+            ${LDFLAGS} \
+            -o build-examples-sanitize/polysynth_auv2_float32_parameter_tests
+
+      - name: Run AUv2 Float32 endpoint regression
+        run: ./build-examples-sanitize/polysynth_auv2_float32_parameter_tests
+
+      - name: Run example sanitizers on Linux
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: >-
+          ctest --test-dir build-examples-sanitize --output-on-failure --timeout 60
+          -R '^webview_gui_examples_(gain_(core|clap_adapter|state_host_sync|webview_backpressure)|polysynth_(event_stream|parameter_model|parameter_event|state|state_snapshot_concurrency))$'
+
+      - name: Run example sanitizers on macOS
+        if: runner.os == 'macOS'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: >-
+          ctest --test-dir build-examples-sanitize --output-on-failure --timeout 60
+          -R '^webview_gui_examples_(gain_(core|clap_adapter|state_host_sync|webview_backpressure)|polysynth_(event_stream|parameter_model|parameter_event|state|state_snapshot_concurrency))$'
+
+  tsan:
+    name: ubuntu-latest / Examples TSan
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: -fsanitize=thread -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=thread -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=thread
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Configure example ThreadSanitizer
+        run: >-
+          cmake -S examples -B build-examples-tsan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DWEBVIEW_GUI_SOURCE_DIR="${{ github.workspace }}"
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+          -DWEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS=OFF
+
+      - name: Build concurrent handoff tests
+        run: >-
+          cmake --build build-examples-tsan --parallel --target
+          webview_gui_example_gain_webview_backpressure_tests
+          webview_gui_example_polysynth_state_snapshot_concurrency_tests
+
+      - name: Run concurrent handoff tests under TSan
+        run: >-
+          ctest --test-dir build-examples-tsan --output-on-failure --timeout 60
+          -R '^webview_gui_examples_(gain_webview_backpressure|polysynth_state_snapshot_concurrency)$'

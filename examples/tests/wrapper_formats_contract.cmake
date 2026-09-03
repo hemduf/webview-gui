@@ -73,15 +73,42 @@ endforeach()
 # - Xcode 26 rejects the pinned AUv3 host's unscoped switch case because its block
 #   capture has a lifetime that crosses the following case label. Keep the patch
 #   explicit and fail-closed in the pinned-wrapper compatibility layer.
+# #35 adds two distributable VST3 requirements discovered by real validator and
+# artifact runs: Windows must use Steinberg's bundle layout, and wrapper modules
+# must keep implementation/inlined WebView symbols hidden just like native CLAP.
 foreach(required_compatibility_token IN ITEMS
         "set_property(TARGET \${target}-clap-wrapper-vst3-lib PROPERTY POSITION_INDEPENDENT_CODE ON)"
         "set_property(TARGET base-sdk-vst3 PROPERTY POSITION_INDEPENDENT_CODE ON)"
+        "WINDOWS_FOLDER_VST3 TRUE"
+        "CXX_VISIBILITY_PRESET hidden"
+        "VISIBILITY_INLINES_HIDDEN YES"
         "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
         "webview_gui_apply_clap_wrapper_auv3_host_switch_patch")
     string(FIND "${all_cmake}" "${required_compatibility_token}" compatibility_index)
     if(compatibility_index EQUAL -1)
         message(FATAL_ERROR
             "Missing pinned-wrapper compatibility contract: ${required_compatibility_token}")
+    endif()
+endforeach()
+
+# Standalone wrappers are executables, but they remain distributable release
+# artifacts. Their target-local wrapper sources must not embed the checkout path,
+# and their linked implementation must retain hidden visibility on ELF/Mach-O.
+# Cover both the executable and clap-wrapper's standalone helper library because
+# each compiles sources containing location-aware diagnostics. MSVC only honors
+# /pathmap when deterministic compilation is explicitly enabled, so keep the two
+# switches coupled in this contract to prevent path leakage regressions on Windows.
+foreach(required_standalone_hygiene_token IN ITEMS
+        "webview_gui_apply_standalone_artifact_hygiene"
+        "standalone_wrapper_lib \"\${target}-clap-wrapper-standalone-lib\""
+        "/experimental:deterministic"
+        "/pathmap:\${WEBVIEW_GUI_SOURCE_DIR}=."
+        "-ffile-prefix-map=\${WEBVIEW_GUI_SOURCE_DIR}=."
+        "webview_gui_apply_standalone_artifact_hygiene(\${target})")
+    string(FIND "${formats_cmake}" "${required_standalone_hygiene_token}" standalone_hygiene_index)
+    if(standalone_hygiene_index EQUAL -1)
+        message(FATAL_ERROR
+            "Missing standalone artifact hygiene contract: ${required_standalone_hygiene_token}")
     endif()
 endforeach()
 
