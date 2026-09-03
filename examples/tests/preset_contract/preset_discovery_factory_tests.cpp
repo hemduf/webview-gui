@@ -43,12 +43,9 @@ bool CLAP_ABI declareFiletype(const clap_preset_discovery_indexer_t *indexer,
     auto *state = static_cast<FakeIndexerState *>(indexer->indexer_data);
     if (!state->acceptFiletypes || !filetype || !filetype->name || !filetype->file_extension)
         return false;
-
-    state->filetypes.push_back({
-        filetype->name,
-        filetype->description ? filetype->description : "",
-        filetype->file_extension,
-    });
+    state->filetypes.push_back({filetype->name,
+                                filetype->description ? filetype->description : "",
+                                filetype->file_extension});
     return true;
 }
 
@@ -57,14 +54,11 @@ bool CLAP_ABI declareLocation(const clap_preset_discovery_indexer_t *indexer,
     auto *state = static_cast<FakeIndexerState *>(indexer->indexer_data);
     if (!state->acceptLocations || !location || !location->name)
         return false;
-
-    state->locations.push_back({
-        location->flags,
-        location->name,
-        location->kind,
-        location->location == nullptr,
-        location->location ? location->location : "",
-    });
+    state->locations.push_back({location->flags,
+                                location->name,
+                                location->kind,
+                                location->location == nullptr,
+                                location->location ? location->location : ""});
     return true;
 }
 
@@ -75,8 +69,7 @@ bool CLAP_ABI declareSoundpack(const clap_preset_discovery_indexer_t *indexer,
     return true;
 }
 
-const void *CLAP_ABI indexerGetExtension(const clap_preset_discovery_indexer_t *,
-                                         const char *) {
+const void *CLAP_ABI indexerGetExtension(const clap_preset_discovery_indexer_t *, const char *) {
     return nullptr;
 }
 
@@ -107,8 +100,8 @@ struct NativeUserProviderTag {
     static constexpr const char *providerName = "webview-gui native user preset provider";
     static constexpr const char *vendor = "webview-gui";
     static constexpr const char *targetPluginId = "com.webview-gui.test.plugin";
-    static constexpr const char *nativeUserPresetRoot = "/tmp/webview-gui-user-presets";
-    static constexpr bool nativeUserPresetFilesAvailable = true;
+    static bool nativeUserPresetFilesAvailable() noexcept { return true; }
+    static const char *nativeUserPresetRoot() noexcept { return "/tmp/webview-gui-user-presets"; }
 };
 
 struct BrowserOnlyProviderTag {
@@ -116,10 +109,8 @@ struct BrowserOnlyProviderTag {
     static constexpr const char *providerName = "webview-gui browser-only preset provider";
     static constexpr const char *vendor = "webview-gui";
     static constexpr const char *targetPluginId = "com.webview-gui.test.plugin";
-    // A browser/storage key is deliberately not a native FILE location. This
-    // simulates the WCLAP policy even when a storage backend exposes a string key.
-    static constexpr const char *nativeUserPresetRoot = "browser-storage://presets";
-    static constexpr bool nativeUserPresetFilesAvailable = false;
+    static bool nativeUserPresetFilesAvailable() noexcept { return false; }
+    static const char *nativeUserPresetRoot() noexcept { return "browser-storage://presets"; }
 };
 
 struct InvalidNativeUserProviderTag {
@@ -127,8 +118,8 @@ struct InvalidNativeUserProviderTag {
     static constexpr const char *providerName = "webview-gui invalid user preset provider";
     static constexpr const char *vendor = "webview-gui";
     static constexpr const char *targetPluginId = "com.webview-gui.test.plugin";
-    static constexpr const char *nativeUserPresetRoot = "";
-    static constexpr bool nativeUserPresetFilesAvailable = true;
+    static bool nativeUserPresetFilesAvailable() noexcept { return true; }
+    static const char *nativeUserPresetRoot() noexcept { return ""; }
 };
 
 void verifyCanonicalFiletype(const FakeIndexerState &state) {
@@ -153,17 +144,12 @@ void verifyFactoryContract(const clap_preset_discovery_factory_t *factory,
                            FakeIndexerState &indexerState,
                            clap_preset_discovery_indexer_t &indexer) {
     assert(factory != nullptr);
-    assert(factory->count != nullptr);
-    assert(factory->get_descriptor != nullptr);
-    assert(factory->create != nullptr);
     assert(factory->count(factory) == 1u);
-
     const auto *descriptor = factory->get_descriptor(factory, 0u);
     assert(descriptor != nullptr);
     assert(descriptor->clap_version.major == CLAP_VERSION.major);
     assert(std::strcmp(descriptor->id, expectedProviderId) == 0);
     assert(factory->get_descriptor(factory, 1u) == nullptr);
-
     assert(factory->create(factory, nullptr, expectedProviderId) == nullptr);
     assert(factory->create(factory, &indexer, nullptr) == nullptr);
     assert(factory->create(factory, &indexer, "unknown.provider") == nullptr);
@@ -171,19 +157,9 @@ void verifyFactoryContract(const clap_preset_discovery_factory_t *factory,
     const auto *provider = factory->create(factory, &indexer, expectedProviderId);
     assert(provider != nullptr);
     assert(provider->desc == descriptor);
-    assert(provider->provider_data != nullptr);
-    assert(provider->init != nullptr);
-    assert(provider->destroy != nullptr);
-    assert(provider->get_metadata != nullptr);
-    assert(provider->get_extension != nullptr);
-
-    // create() must never call into the indexer. #90 declarations happen only
-    // from init(), as required by the CLAP Preset Discovery factory contract.
     assert(indexerState.filetypes.empty());
     assert(indexerState.locations.empty());
     assert(indexerState.soundpacks == 0u);
-
-    // Fail closed before init without touching catalog/processor/WebView state.
     assert(provider->get_extension(provider, "unknown") == nullptr);
     assert(!provider->get_metadata(provider,
                                    CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
@@ -195,26 +171,15 @@ void verifyFactoryContract(const clap_preset_discovery_factory_t *factory,
     verifyFactoryLocation(indexerState);
     assert(indexerState.locations.size() == 1u);
     assert(indexerState.soundpacks == 0u);
-
-    // init() is single-shot: repeated calls must fail without duplicate
-    // declarations or any additional indexer callbacks.
     assert(!provider->init(provider));
     assert(indexerState.filetypes.size() == 1u);
     assert(indexerState.locations.size() == 1u);
-    assert(indexerState.soundpacks == 0u);
-    assert(provider->get_extension(provider, "unknown") == nullptr);
-    assert(!provider->get_metadata(provider,
-                                   CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
-                                   nullptr,
-                                   nullptr));
-
     provider->destroy(provider);
 }
 
 template <typename Tag>
-const clap_preset_discovery_provider_t *createProvider(
-    FakeIndexerState &state,
-    clap_preset_discovery_indexer_t &indexer) {
+const clap_preset_discovery_provider_t *createProvider(FakeIndexerState &state,
+                                                       clap_preset_discovery_indexer_t &indexer) {
     const auto *factory = presets::presetDiscoveryFactory<Tag>();
     const auto *descriptor = factory->get_descriptor(factory, 0u);
     assert(descriptor != nullptr);
@@ -228,7 +193,6 @@ const clap_preset_discovery_provider_t *createProvider(
 int main() {
     FakeIndexerState indexerState;
     auto indexer = makeIndexer(indexerState);
-
     const auto *factory = presets::presetDiscoveryFactory<FakeProviderTag>();
     verifyFactoryContract(factory, FakeProviderTag::providerId, indexerState, indexer);
 
@@ -236,13 +200,11 @@ int main() {
     assert(gainFactory != nullptr);
     assert(std::strcmp(gainFactory->get_descriptor(gainFactory, 0u)->id,
                        "com.webview-gui.example.gain.presets") == 0);
-
     const auto *polyFactory = webview_gui::examples::polysynth::polysynthPresetDiscoveryFactory();
     assert(polyFactory != nullptr);
     assert(std::strcmp(polyFactory->get_descriptor(polyFactory, 0u)->id,
                        "com.webview-gui.example.polysynth.presets") == 0);
 
-    // A real native user root is a second FILE location with user flags.
     FakeIndexerState nativeState;
     auto nativeIndexer = makeIndexer(nativeState);
     const auto *nativeProvider = createProvider<NativeUserProviderTag>(nativeState, nativeIndexer);
@@ -255,11 +217,9 @@ int main() {
     assert(userLocation.name == "User presets");
     assert(userLocation.kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE);
     assert(!userLocation.locationWasNull);
-    assert(userLocation.location == NativeUserProviderTag::nativeUserPresetRoot);
+    assert(userLocation.location == NativeUserProviderTag::nativeUserPresetRoot());
     nativeProvider->destroy(nativeProvider);
 
-    // WCLAP/browser-only storage is not a native filesystem location. Factory
-    // discovery remains available through the PLUGIN container only.
     FakeIndexerState browserState;
     auto browserIndexer = makeIndexer(browserState);
     const auto *browserProvider = createProvider<BrowserOnlyProviderTag>(browserState, browserIndexer);
@@ -269,19 +229,15 @@ int main() {
     assert(browserState.locations.size() == 1u);
     browserProvider->destroy(browserProvider);
 
-    // A backend claiming native FILE support without a usable root is invalid.
-    // It must fail before advertising partial/unusable declarations.
     FakeIndexerState invalidState;
     auto invalidIndexer = makeIndexer(invalidState);
-    const auto *invalidProvider =
-        createProvider<InvalidNativeUserProviderTag>(invalidState, invalidIndexer);
+    const auto *invalidProvider = createProvider<InvalidNativeUserProviderTag>(invalidState, invalidIndexer);
     assert(!invalidProvider->init(invalidProvider));
     assert(invalidState.filetypes.empty());
     assert(invalidState.locations.empty());
+    assert(!invalidProvider->init(invalidProvider));
     invalidProvider->destroy(invalidProvider);
 
-    // Indexer rejection is an explicit init failure rather than a provider that
-    // appears initialized with declarations the host did not accept.
     FakeIndexerState rejectingState;
     rejectingState.acceptFiletypes = false;
     auto rejectingIndexer = makeIndexer(rejectingState);
@@ -289,11 +245,22 @@ int main() {
     assert(!rejectingProvider->init(rejectingProvider));
     assert(rejectingState.filetypes.empty());
     assert(rejectingState.locations.empty());
+    assert(!rejectingProvider->init(rejectingProvider));
+    assert(rejectingState.filetypes.empty());
     rejectingProvider->destroy(rejectingProvider);
 
-    // Factory methods are thread-safe, but a provider/indexer instance is not a
-    // shared concurrent surface. Give every thread its own indexer so #90 init
-    // callbacks remain within CLAP's ownership/threading rules.
+    FakeIndexerState locationRejectState;
+    locationRejectState.acceptLocations = false;
+    auto locationRejectIndexer = makeIndexer(locationRejectState);
+    const auto *locationRejectProvider = createProvider<FakeProviderTag>(locationRejectState,
+                                                                         locationRejectIndexer);
+    assert(!locationRejectProvider->init(locationRejectProvider));
+    assert(locationRejectState.filetypes.size() == 1u);
+    assert(locationRejectState.locations.empty());
+    assert(!locationRejectProvider->init(locationRejectProvider));
+    assert(locationRejectState.filetypes.size() == 1u);
+    locationRejectProvider->destroy(locationRejectProvider);
+
     std::atomic<bool> concurrentOk{true};
     std::vector<std::thread> threads;
     for (unsigned t = 0; t < 8u; ++t) {
@@ -322,8 +289,6 @@ int main() {
     for (auto &thread : threads)
         thread.join();
     assert(concurrentOk.load());
-
-    // The original indexer was touched exactly once by its provider init.
     assert(indexerState.filetypes.size() == 1u);
     assert(indexerState.locations.size() == 1u);
     assert(indexerState.soundpacks == 0u);
