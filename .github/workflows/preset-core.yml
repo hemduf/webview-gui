@@ -1,0 +1,42 @@
+name: Preset core contract
+
+on:
+  pull_request:
+    paths:
+      - 'examples/common/presets/**'
+      - 'examples/tests/preset_core/**'
+      - '.github/workflows/preset-core.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/common/presets/**'
+      - 'examples/tests/preset_core/**'
+      - '.github/workflows/preset-core.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: preset-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preset-core:
+    name: ${{ matrix.os }} preset core
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configure preset core
+        run: cmake -S examples/tests/preset_core -B build-preset-core
+
+      - name: Build preset core
+        run: cmake --build build-preset-core --config Debug --parallel
+
+      - name: Run preset core
+        run: ctest --test-dir build-preset-core -C Debug --output-on-failure --no-tests=error
