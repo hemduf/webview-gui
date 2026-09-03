@@ -53,3 +53,8 @@ add_test(NAME webview_gui_examples_preset_gain_state_adapter
     COMMAND webview_gui_preset_gain_state_adapter_tests)
 add_test(NAME webview_gui_examples_preset_polysynth_state_adapter
     COMMAND webview_gui_preset_polysynth_state_adapter_tests)
+add_test(NAME webview_gui_examples_preset_state_plugin_integration
+    COMMAND ${CMAKE_COMMAND}
+        -DGAIN_PLUGIN_FILE=${WEBVIEW_GUI_GAIN_DIR}/gain_plugin.cpp
+        -DPOLYSYNTH_PLUGIN_FILE=${WEBVIEW_GUI_POLYSYNTH_DIR}/polysynth_plugin.cpp
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_state_plugin_integration_contract.cmake)
