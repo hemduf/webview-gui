@@ -49,6 +49,8 @@ enum class PresetValidationError : std::uint8_t {
     None,
     UnsupportedSchemaVersion,
     MissingTargetPluginId,
+    MissingPresetName,
+    EmptyFactoryLoadKey,
     DuplicateParameterId,
     NonFiniteParameterValue,
     MissingSettingKey,
@@ -65,6 +67,20 @@ struct PresetValidationResult {
     }
 };
 
+struct StringListView {
+    const std::string *data = nullptr;
+    std::size_t count = 0u;
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return count; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return count == 0u; }
+    [[nodiscard]] const std::string &operator[](std::size_t index) const noexcept {
+        return data[index];
+    }
+};
+
+// Non-owning metadata view used by discovery/catalog adapters. String and list
+// views remain valid only while the source PresetDocument is alive and the
+// referenced strings/vectors are not mutated. Scalar optionals are copied.
 struct PresetMetadataView {
     std::uint32_t schemaVersion = 0u;
     std::string_view targetPluginId;
@@ -72,10 +88,10 @@ struct PresetMetadataView {
     std::string_view creator;
     std::string_view description;
     std::string_view factoryLoadKey;
-    const std::vector<std::string> *tags = nullptr;
-    const std::vector<std::string> *features = nullptr;
-    const std::optional<std::int64_t> *creationTimestamp = nullptr;
-    const std::optional<std::int64_t> *modificationTimestamp = nullptr;
+    StringListView tags;
+    StringListView features;
+    std::optional<std::int64_t> creationTimestamp;
+    std::optional<std::int64_t> modificationTimestamp;
 };
 
 [[nodiscard]] inline PresetMetadataView metadataView(const PresetDocument &document) noexcept {
@@ -87,10 +103,10 @@ struct PresetMetadataView {
         document.metadata.description,
         document.metadata.factoryLoadKey ? std::string_view{*document.metadata.factoryLoadKey}
                                          : std::string_view{},
-        &document.metadata.tags,
-        &document.metadata.features,
-        &document.metadata.creationTimestamp,
-        &document.metadata.modificationTimestamp,
+        {document.metadata.tags.data(), document.metadata.tags.size()},
+        {document.metadata.features.data(), document.metadata.features.size()},
+        document.metadata.creationTimestamp,
+        document.metadata.modificationTimestamp,
     };
 }
 
@@ -101,6 +117,12 @@ struct PresetMetadataView {
 
     if (document.metadata.targetPluginId.empty())
         return {PresetValidationError::MissingTargetPluginId, 0u};
+
+    if (document.metadata.name.empty())
+        return {PresetValidationError::MissingPresetName, 0u};
+
+    if (document.metadata.factoryLoadKey && document.metadata.factoryLoadKey->empty())
+        return {PresetValidationError::EmptyFactoryLoadKey, 0u};
 
     for (std::size_t i = 0; i < document.parameters.size(); ++i) {
         if (!std::isfinite(document.parameters[i].value))
