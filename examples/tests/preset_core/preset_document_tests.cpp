@@ -47,6 +47,7 @@ presets::PresetDocument makeGainPreset() {
     document.metadata.factoryLoadKey = "gain:unity";
     document.metadata.creationTimestamp = 100;
     document.metadata.modificationTimestamp = 200;
+    document.metadata.extensions.push_back({"authoring-revision", std::int64_t{1}});
     document.parameters = {
         {0x1000u, 0.0},
         {0x1001u, 0.0},
@@ -102,6 +103,9 @@ int main() {
     assert(gainMetadata.features[0] == "utility");
     assert(gainMetadata.creationTimestamp == 100);
     assert(gainMetadata.modificationTimestamp == 200);
+    assert(gainMetadata.extensions.size() == 1u);
+    assert(gainMetadata.extensions[0].key == "authoring-revision");
+    assert(std::get<std::int64_t>(gainMetadata.extensions[0].value) == 1);
 
     auto poly = makePolySynthPreset();
     const auto polyValidation = presets::validatePresetDocument(poly);
@@ -129,6 +133,23 @@ int main() {
     emptyFactoryKey.metadata.factoryLoadKey = std::string{};
     assert(presets::validatePresetDocument(emptyFactoryKey).error ==
            presets::PresetValidationError::EmptyFactoryLoadKey);
+
+    auto missingExtensionKey = gain;
+    missingExtensionKey.metadata.extensions.push_back({"", true});
+    assert(presets::validatePresetDocument(missingExtensionKey).error ==
+           presets::PresetValidationError::MissingMetadataExtensionKey);
+
+    auto duplicateExtension = gain;
+    duplicateExtension.metadata.extensions.push_back(
+        {"authoring-revision", std::int64_t{2}});
+    assert(presets::validatePresetDocument(duplicateExtension).error ==
+           presets::PresetValidationError::DuplicateMetadataExtensionKey);
+
+    auto nonFiniteExtension = gain;
+    nonFiniteExtension.metadata.extensions.push_back(
+        {"bad-number", std::numeric_limits<double>::infinity()});
+    assert(presets::validatePresetDocument(nonFiniteExtension).error ==
+           presets::PresetValidationError::NonFiniteMetadataExtensionValue);
 
     auto zeroSchema = gain;
     zeroSchema.schemaVersion = 0u;
