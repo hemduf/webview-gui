@@ -91,11 +91,16 @@ jobs:
           test -n "$gain" && test -e "$gain"
           test -n "$polysynth" && test -e "$polysynth"
           "$validator" --version
+          echo "Validating Gain VST3 on ${RUNNER_OS}: ${gain}"
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             xvfb-run -a "$validator" "$gain"
-            xvfb-run -a "$validator" "$polysynth"
           else
             "$validator" "$gain"
+          fi
+          echo "Validating PolySynth VST3 on ${RUNNER_OS}: ${polysynth}"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a "$validator" "$polysynth"
+          else
             "$validator" "$polysynth"
           fi
 
@@ -109,8 +114,10 @@ jobs:
           if (-not $validator -or -not $gain -or -not $polysynth) { throw 'Missing validator or VST3 bundle' }
           & $validator.FullName --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Validating Gain VST3 on Windows: $($gain.FullName)"
           & $validator.FullName $gain.FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Validating PolySynth VST3 on Windows: $($polysynth.FullName)"
           & $validator.FullName $polysynth.FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -168,7 +175,9 @@ jobs:
           codesign --force --deep --sign - "$components/WebviewGuiPolySynth.component"
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 2
+          echo "Validating Gain AUv2 on macOS: $components/WebviewGuiGain.component"
           auval -v aufx WvGn WvGu
+          echo "Validating PolySynth AUv2 on macOS: $components/WebviewGuiPolySynth.component"
           auval -v aumu WvPs WvGu
 
   macos-auv3:
@@ -205,7 +214,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$(find build-auv3 -type d -name WebviewGuiGain.appex -print -quit)"
-          test -n "$(find build-auv3 -type d -name WebviewGuiPolySynth.appex -print -quit)"
-          test -n "$(find build-auv3 -type d -name 'WebviewGuiGain AUv3.app' -print -quit)"
-          test -n "$(find build-auv3 -type d -name 'WebviewGuiPolySynth AUv3.app' -print -quit)"
+          gain_appex="$(find build-auv3 -type d -name WebviewGuiGain.appex -print -quit)"
+          polysynth_appex="$(find build-auv3 -type d -name WebviewGuiPolySynth.appex -print -quit)"
+          gain_host="$(find build-auv3 -type d -name 'WebviewGuiGain AUv3.app' -print -quit)"
+          polysynth_host="$(find build-auv3 -type d -name 'WebviewGuiPolySynth AUv3.app' -print -quit)"
+          test -n "$gain_appex" || { echo 'Missing Gain AUv3 extension on macOS' >&2; exit 1; }
+          test -n "$polysynth_appex" || { echo 'Missing PolySynth AUv3 extension on macOS' >&2; exit 1; }
+          test -n "$gain_host" || { echo 'Missing Gain AUv3 host app on macOS' >&2; exit 1; }
+          test -n "$polysynth_host" || { echo 'Missing PolySynth AUv3 host app on macOS' >&2; exit 1; }
+          echo "Qualified Gain AUv3 extension on macOS: $gain_appex"
+          echo "Qualified Gain AUv3 host on macOS: $gain_host"
+          echo "Qualified PolySynth AUv3 extension on macOS: $polysynth_appex"
+          echo "Qualified PolySynth AUv3 host on macOS: $polysynth_host"
