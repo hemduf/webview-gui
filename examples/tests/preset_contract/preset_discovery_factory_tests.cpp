@@ -1,6 +1,6 @@
 #include "preset_discovery_factory.h"
-#include "../gain/gain_preset_discovery.h"
-#include "../polysynth/polysynth_preset_discovery.h"
+#include "gain/gain_preset_discovery.h"
+#include "polysynth/polysynth_preset_discovery.h"
 
 #include <clap/factory/preset-discovery.h>
 
