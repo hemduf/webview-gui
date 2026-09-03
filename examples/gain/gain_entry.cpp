@@ -1,4 +1,5 @@
 #include "gain_plugin.h"
+#include "gain_preset_discovery.h"
 
 #include <cstring>
 
@@ -7,8 +8,12 @@ namespace {
 bool CLAP_ABI gainEntryInit(const char *) { return true; }
 void CLAP_ABI gainEntryDeinit() {}
 const void *CLAP_ABI gainEntryGetFactory(const char *factoryId) {
-    if (factoryId != nullptr && std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
+    if (!factoryId)
+        return nullptr;
+    if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
         return gainFactory();
+    if (presets::classifyPresetClapId(factoryId) == presets::ClapPresetSurface::EntryFactory)
+        return gainPresetDiscoveryFactory();
     return nullptr;
 }
 } // namespace
