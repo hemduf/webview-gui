@@ -1,0 +1,105 @@
+name: One-shot fix NT preset rename
+
+on:
+  push:
+    branches: [feat/36-preset-subsystem]
+    paths: ['.github/workflows/one-shot-fix-nt-rename.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: feat/36-preset-subsystem
+      - name: Patch NT handle-relative rename
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('examples/common/presets/native_preset_storage.cpp')
+          s = p.read_text()
+          marker = 'using RtlNtStatusToDosErrorFn = ULONG(NTAPI *)(NTSTATUS);\n'
+          addition = '''using NtSetInformationFileFn = NTSTATUS(NTAPI *)(\n    HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);\n'''
+          if addition not in s:
+              if marker not in s: raise SystemExit('type marker not found')
+              s = s.replace(marker, marker + addition, 1)
+
+          marker2 = '''[[nodiscard]] RtlNtStatusToDosErrorFn rtlNtStatusToDosErrorFunction() noexcept {\n'''
+          helper = '''[[nodiscard]] NtSetInformationFileFn ntSetInformationFileFunction() noexcept {\n    static const auto function = reinterpret_cast<NtSetInformationFileFn>(\n        ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile"));\n    return function;\n}\n\n'''
+          if helper not in s:
+              if marker2 not in s: raise SystemExit('helper marker not found')
+              s = s.replace(marker2, helper + marker2, 1)
+
+          start = s.index('[[nodiscard]] NativePresetStorageStatus renameTemporaryRelative(')
+          end = s.index('[[nodiscard]] NativePresetStorageStatus deleteRelativeEntry(', start)
+          replacement = r'''[[nodiscard]] NativePresetStorageStatus renameTemporaryRelative(
+    HANDLE temporaryHandle,
+    const PinnedRoot &root,
+    std::string_view destinationIdentity,
+    const fs::path &displayPath,
+    bool replaceExisting) noexcept {
+    const auto ntSetInformationFile = ntSetInformationFileFunction();
+    if (!ntSetInformationFile)
+        return makeStatus(
+            NativePresetStorageError::ReplaceFailed,
+            displayPath,
+            std::error_code(ERROR_NOT_SUPPORTED, std::system_category()));
+
+    const auto destination = widenAscii(destinationIdentity);
+    struct RenameInformation {
+        BOOLEAN replaceIfExists;
+        HANDLE rootDirectory;
+        ULONG fileNameLength;
+        WCHAR fileName[1];
+    };
+    const auto fileNameBytes = destination.size() * sizeof(wchar_t);
+    const auto allocationSize = offsetof(RenameInformation, fileName) + fileNameBytes;
+    std::vector<std::byte> storage;
+    try {
+        storage.resize(allocationSize);
+    } catch (...) {
+        return makeStatus(NativePresetStorageError::ReplaceFailed, displayPath);
+    }
+
+    auto *renameInfo = reinterpret_cast<RenameInformation *>(storage.data());
+    std::memset(renameInfo, 0, allocationSize);
+    renameInfo->replaceIfExists = replaceExisting ? TRUE : FALSE;
+    renameInfo->rootDirectory = root.get();
+    renameInfo->fileNameLength = static_cast<ULONG>(fileNameBytes);
+    if (fileNameBytes != 0u)
+        std::memcpy(renameInfo->fileName, destination.data(), fileNameBytes);
+
+    IO_STATUS_BLOCK ioStatus{};
+    const auto status = ntSetInformationFile(
+        temporaryHandle,
+        &ioStatus,
+        renameInfo,
+        static_cast<ULONG>(allocationSize),
+        static_cast<FILE_INFORMATION_CLASS>(10)); // FileRenameInformation
+    if (ntSuccess(status))
+        return {};
+
+    const auto error = ntStatusError(status);
+    if (!replaceExisting &&
+        (error.value() == ERROR_ALREADY_EXISTS || error.value() == ERROR_FILE_EXISTS))
+        return makeStatus(NativePresetStorageError::AlreadyExists,
+                          displayPath,
+                          error);
+    return makeStatus(NativePresetStorageError::ReplaceFailed,
+                      displayPath,
+                      error);
+}
+
+'''
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
+          PY
+          git config user.name 'chatgpt-codex-connector'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/common/presets/native_preset_storage.cpp
+          git commit -m 'fix(presets): rename Windows presets relative to pinned root'
+          git push origin HEAD:feat/36-preset-subsystem
