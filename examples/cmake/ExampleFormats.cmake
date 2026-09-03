@@ -7,6 +7,8 @@ endif()
 set(WEBVIEW_GUI_EXAMPLES_ASSET_OUTPUT_DIRECTORY
     "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH
     "Predictable build-tree directory for wrapped example products")
+set(WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY
+    "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets")
 
 # clap-wrapper 0.16.0 compiles its Windows support libraries with the static MSVC
 # runtime. The canonical CLAP/core targets are created before FetchContent enters
@@ -175,7 +177,7 @@ function(webview_gui_add_example_wrappers)
             BUNDLE_VERSION "0.1.0"
             STATICALLY_LINKED_CLAP_ENTRY TRUE
             PLUGIN_ID "${FMT_PLUGIN_ID}"
-            RESOURCE_DIRECTORY "")
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}")
         webview_gui_apply_standalone_artifact_hygiene(${target})
 
         # The pinned Windows standalone still includes MSVC's deprecated
@@ -215,7 +217,7 @@ function(webview_gui_add_example_wrappers)
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.auv2"
             BUNDLE_VERSION "0.1.0"
-            RESOURCE_DIRECTORY ""
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
             MANUFACTURER_NAME "webview-gui"
             MANUFACTURER_CODE "WvGu"
             SUBTYPE_CODE "${FMT_AU_SUBTYPE}"
@@ -249,7 +251,7 @@ function(webview_gui_add_example_wrappers)
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.auv3"
             BUNDLE_VERSION "0.1.0"
-            RESOURCE_DIRECTORY ""
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
             MANUFACTURER_NAME "webview-gui"
             MANUFACTURER_CODE "WvGu"
             SUBTYPE_CODE "${FMT_AU_SUBTYPE}"
