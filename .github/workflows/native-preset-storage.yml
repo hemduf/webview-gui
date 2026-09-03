@@ -1,0 +1,44 @@
+name: Native preset storage contract
+
+on:
+  pull_request:
+    paths:
+      - 'examples/common/example_plugin_ids.h'
+      - 'examples/common/presets/**'
+      - 'examples/tests/native_preset_storage/**'
+      - '.github/workflows/native-preset-storage.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/common/example_plugin_ids.h'
+      - 'examples/common/presets/**'
+      - 'examples/tests/native_preset_storage/**'
+      - '.github/workflows/native-preset-storage.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: native-preset-storage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-preset-storage:
+    name: ${{ matrix.os }} native preset storage
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configure native preset storage
+        run: cmake -S examples/tests/native_preset_storage -B build-native-preset-storage
+
+      - name: Build native preset storage
+        run: cmake --build build-native-preset-storage --config Debug --parallel
+
+      - name: Run native preset storage
+        run: ctest --test-dir build-native-preset-storage -C Debug --output-on-failure --no-tests=error
