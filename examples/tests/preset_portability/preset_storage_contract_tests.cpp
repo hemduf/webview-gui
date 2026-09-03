@@ -174,14 +174,14 @@ int main() {
     assert(loaded.document->metadata.targetPluginId == presets::kGainFactoryTargetPluginId);
     assert(loaded.document->parameters.size() == 2u);
     assert(loaded.document->parameters[0].stableParameterId == 0x1000u);
-    assert(loaded.document->parameters[0].baseValue == -6.0);
+    assert(loaded.document->parameters[0].value == -6.0);
 
-    document.parameters[0].baseValue = 6.0;
+    document.parameters[0].value = 6.0;
     const auto overwritten = storage.saveAs("browser-user", document, true);
     assert(overwritten.ok());
     const auto reloaded = storage.load("browser-user");
     assert(reloaded.ok());
-    assert(reloaded.document->parameters[0].baseValue == 6.0);
+    assert(reloaded.document->parameters[0].value == 6.0);
 
     const auto removed = storage.remove("browser-user");
     assert(removed.ok());
