@@ -34,6 +34,8 @@ The CHOC revision used for qualification is pinned in the submodule and document
 
 ## How to use
 
+For a complete local-development walkthrough — checkout, per-platform builds, CLAP/VST3/AUv2/AUv3/WCLAP, validators, DAW installation paths and creating a new plug-in — see [`docs/getting-started.md`](docs/getting-started.md).
+
 See [`webview-gui.h`](include/webview-gui/webview-gui.h) for the core API.
 
 ```cpp
