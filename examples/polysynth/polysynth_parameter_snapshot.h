@@ -13,18 +13,32 @@ struct ParameterSnapshot {
     std::uint32_t waveform = 0u;
     std::int32_t coarseTuneSemitones = 0;
     float pan = 0.0f;
-    float filterCutoffHz = 6000.0f;
+    float filterCutoffHz = 0.0f;
     float filterResonance = 0.0f;
     float filterEnvelopeAmount = 0.0f;
-    float ampLevel = 1.0f;
-    float ampAttackSeconds = 0.01f;
-    float ampDecaySeconds = 0.1f;
-    float ampSustain = 0.8f;
-    float ampReleaseSeconds = 0.25f;
+    float ampLevel = 0.0f;
+    float ampAttackSeconds = 0.0f;
+    float ampDecaySeconds = 0.0f;
+    float ampSustain = 0.0f;
+    float ampReleaseSeconds = 0.0f;
 };
 
 [[nodiscard]] constexpr ParameterSnapshot defaultParameterSnapshot() noexcept {
-    return {};
+    return {
+        static_cast<float>(kParameterSpecs[3].defaultValue),
+        static_cast<float>(kParameterSpecs[0].defaultValue),
+        static_cast<std::uint32_t>(kParameterSpecs[1].defaultValue),
+        static_cast<std::int32_t>(kParameterSpecs[2].defaultValue),
+        static_cast<float>(kParameterSpecs[11].defaultValue),
+        static_cast<float>(kParameterSpecs[4].defaultValue),
+        static_cast<float>(kParameterSpecs[5].defaultValue),
+        static_cast<float>(kParameterSpecs[10].defaultValue),
+        static_cast<float>(kParameterSpecs[12].defaultValue),
+        static_cast<float>(kParameterSpecs[6].defaultValue),
+        static_cast<float>(kParameterSpecs[7].defaultValue),
+        static_cast<float>(kParameterSpecs[8].defaultValue),
+        static_cast<float>(kParameterSpecs[9].defaultValue),
+    };
 }
 
 [[nodiscard]] constexpr bool parameterSnapshotsEqual(
