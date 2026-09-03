@@ -1,9 +1,10 @@
 name: One-shot fix NT preset rename
 
 on:
-  push:
-    branches: [feat/36-preset-subsystem]
+  pull_request:
+    branches: [main]
     paths: ['.github/workflows/one-shot-fix-nt-rename.yml']
+  workflow_dispatch:
 
 permissions:
   contents: write
