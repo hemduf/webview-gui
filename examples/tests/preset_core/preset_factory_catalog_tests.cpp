@@ -49,6 +49,13 @@ static_assert(presets::factoryLoadKeysAreUnique(kExpectedGainKeys));
 static_assert(presets::factoryLoadKeysAreUnique(kExpectedPolyKeys));
 static_assert(!presets::factoryLoadKeysAreUnique(kSyntheticDuplicateKeys),
               "duplicate factory load keys must be rejected by the catalog contract");
+static_assert(presets::FactoryPresetCatalog::fileExtension() == "wvpreset",
+              "#37 CLAP file-extension seam requires no leading dot");
+static_assert(presets::kPresetFileSuffix == ".wvpreset");
+static_assert(presets::kGainFactoryTargetPluginId ==
+              "com.webview-gui.example.gain");
+static_assert(presets::kPolySynthFactoryTargetPluginId ==
+              "com.webview-gui.example.polysynth");
 
 template <std::size_t N>
 void verifyCatalog(const presets::FactoryPresetCatalog &catalog,
@@ -60,6 +67,8 @@ void verifyCatalog(const presets::FactoryPresetCatalog &catalog,
     for (std::size_t i = 0u; i < N; ++i) {
         const auto *resource = catalog.at(i);
         assert(resource != nullptr);
+        assert(resource->valid());
+        assert(resource->codecError == presets::PresetCodecError::None);
         assert(resource->contentKind == presets::PresetContentKind::Factory);
         assert(resource->loadKey == expectedKeys[i]);
         assert(resource->metadata.targetPluginId == expectedTargetPluginId);
@@ -112,13 +121,27 @@ int main() {
     verifyCatalog(gain,
                   kExpectedGainKeys,
                   kExpectedGainNames,
-                  "com.webview-gui.example.gain");
+                  presets::kGainFactoryTargetPluginId);
 
     const auto &poly = presets::polySynthFactoryPresetCatalog();
     verifyCatalog(poly,
                   kExpectedPolyKeys,
                   kExpectedPolyNames,
-                  "com.webview-gui.example.polysynth");
+                  presets::kPolySynthFactoryTargetPluginId);
+
+    // A matched resource with a codec failure must not be presented as a
+    // successful factory hit.
+    presets::FactoryPresetResource invalid;
+    invalid.loadKey = "factory:invalid";
+    invalid.metadata.factoryLoadKey = invalid.loadKey;
+    invalid.codecError = presets::PresetCodecError::InvalidDocument;
+    presets::FactoryPresetCatalog invalidCatalog{&invalid, 1u};
+    assert(invalidCatalog.at(0u) == nullptr);
+    const auto invalidLookup = invalidCatalog.find("factory:invalid");
+    assert(!invalidLookup.ok());
+    assert(invalidLookup.error ==
+           presets::FactoryPresetCatalogError::InvalidResource);
+    assert(invalidLookup.resource == nullptr);
 
     // Poly Expression Demo stores only persistent base parameter data. Live
     // per-note modulation/note-expression state has no catalog representation.
@@ -126,7 +149,7 @@ int main() {
     assert(expression.ok());
     const auto expressionDocument = presets::parsePresetDocument(
         expression.resource->bytes,
-        "com.webview-gui.example.polysynth");
+        presets::kPolySynthFactoryTargetPluginId);
     assert(expressionDocument.ok());
     assert(expressionDocument.document.has_value());
     assert(expressionDocument.document->settings.empty());
