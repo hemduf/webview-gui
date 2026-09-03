@@ -250,6 +250,35 @@ int main() {
     assert(nonFiniteEncoded.bytes.empty());
     assert(nonFiniteEncoded.error == presets::PresetCodecError::NonFiniteParameterValue);
 
+    // Serializer and parser must share string bounds: never emit a file that the
+    // parser rejects merely because a persistent scalar string exceeds the limit.
+    auto oversizedString = source;
+    oversizedString.settings.push_back(
+        {"oversized", std::string(64u * 1024u + 1u, 'x')});
+    const auto oversizedEncoded = presets::serializePresetDocument(oversizedString);
+    assert(!oversizedEncoded.ok());
+    assert(oversizedEncoded.bytes.empty());
+    assert(oversizedEncoded.error == presets::PresetCodecError::InputTooLarge);
+
+    // Unknown fields are forward-compatible but their recursive JSON structure
+    // is bounded before entering CHOC's recursive parser.
+    std::string deeplyNestedMetadata =
+        R"({"schemaVersion":1,"targetPluginId":"com.webview-gui.example.gain","name":"Deep","creator":"webview-gui","description":"depth guard","tags":[],"features":[],"extensions":[],"future":)";
+    deeplyNestedMetadata.append(80u, '[');
+    deeplyNestedMetadata += "0";
+    deeplyNestedMetadata.append(80u, ']');
+    deeplyNestedMetadata += "}";
+    const auto deeplyNested = wire(
+        deeplyNestedMetadata,
+        R"({"parameters":[],"settings":[]})");
+    const auto deepMetadataParsed = presets::parsePresetMetadata(deeplyNested);
+    assert(!deepMetadataParsed.ok());
+    assert(deepMetadataParsed.error == presets::PresetCodecError::NestingTooDeep);
+    const auto deepFullParsed = presets::parsePresetDocument(deeplyNested);
+    assert(!deepFullParsed.ok());
+    assert(!deepFullParsed.document.has_value());
+    assert(deepFullParsed.error == presets::PresetCodecError::NestingTooDeep);
+
     // Synthetic v0 maps legacy pluginId/author fields into the canonical v1 model.
     const auto legacyV0 = wire(
         R"({"schemaVersion":0,"pluginId":"com.webview-gui.example.polysynth","name":"Legacy Init","author":"Legacy Author","description":"legacy fixture","tags":["legacy"],"features":["instrument"],"factoryLoadKey":"polysynth:legacy-init"})",
