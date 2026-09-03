@@ -1,6 +1,13 @@
 name: Temporary preset state integration patch
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/_preset-state-integration-patch.yml'
+      - 'examples/gain/gain_plugin.cpp'
+      - 'examples/polysynth/polysynth_plugin.cpp'
   push:
     branches:
       - feat/36-preset-subsystem
@@ -12,7 +19,9 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'ci(presets): apply #102 integration refactor'
+    if: >-
+      (github.event_name == 'pull_request' && github.head_ref == 'feat/36-preset-subsystem') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/feat/36-preset-subsystem')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -21,9 +30,15 @@ jobs:
           fetch-depth: 0
 
       - name: Apply asserted integration refactor
+        id: patch
         shell: python
         run: |
+          import os
           from pathlib import Path
+
+          def set_changed(value):
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write(f"changed={str(value).lower()}\n")
 
           def replace_once(text, old, new, label):
               count = text.count(old)
@@ -32,7 +47,27 @@ jobs:
               return text.replace(old, new, 1)
 
           gain_path = Path('examples/gain/gain_plugin.cpp')
+          poly_path = Path('examples/polysynth/polysynth_plugin.cpp')
           gain = gain_path.read_text()
+          poly = poly_path.read_text()
+
+          already_integrated = (
+              'gain_persistent_state.h' in gain and
+              'gain_preset_state.h' in gain and
+              'GainParameterSnapshot' in gain and
+              'captureGainPreset' in gain and
+              'makeGainPresetCandidate' in gain and
+              'polysynth_parameter_snapshot.h' in poly and
+              'polysynth_preset_state.h' in poly and
+              'capturePolySynthPreset' in poly and
+              'makePolySynthPresetCandidate' in poly and
+              'struct ParameterSnapshot' not in poly
+          )
+          if already_integrated:
+              print('Preset state integration already applied; no-op.')
+              set_changed(False)
+              raise SystemExit(0)
+
           gain = replace_once(
               gain,
               '#include "gain_plugin.h"\n#include "gain_webview_parameter_bridge.h"\n',
@@ -54,8 +89,6 @@ jobs:
           gain = replace_once(gain, gain_private_marker, gain_helpers, 'Gain private helpers')
           gain_path.write_text(gain)
 
-          poly_path = Path('examples/polysynth/polysynth_plugin.cpp')
-          poly = poly_path.read_text()
           poly = replace_once(
               poly,
               '#include "polysynth_plugin.h"\n#include "polysynth_parameter_voice_engine.h"\n',
@@ -86,19 +119,23 @@ jobs:
                   raise SystemExit(f'PolySynth stateLoad publication block missing {required}')
           poly = (poly[:state_commit_start] +
                   '        return commitPersistentParameterSnapshot(loaded, true);\n    }\n' +
-                  poly[state_commit_end + len('\n    }'):])
+                  poly[state_commit_end:])
 
           poly_private_marker = '''private:\n    ParameterSnapshot loadHostParameterSnapshotRelaxed() const noexcept {\n'''
           poly_helpers = '''private:\n    bool commitPersistentParameterSnapshot(const ParameterSnapshot &loaded,\n                                           bool notifyHostParams) noexcept {\n        ParameterSnapshot current{};\n        const bool haveCurrent = readEffectiveParameterSnapshot(current);\n        const bool parameterValueChanged =\n            !haveCurrent || !parameterSnapshotsEqual(current, loaded);\n\n        if (active_) {\n            std::uint32_t loadedTailSamples = 0u;\n            if (!releaseSecondsToTailSamples(loaded.ampReleaseSeconds,\n                                             activeSampleRate_,\n                                             loadedTailSamples))\n                return false;\n            const auto loadedRevisionBefore =\n                loadedStateRevision_.load(std::memory_order_acquire);\n            const auto tailRevision =\n                tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);\n            if (loadedRevisionBefore != tailRevision) {\n                loadedTailSamples = std::max(\n                    loadedTailSamples,\n                    pendingLoadedTailSamples_.load(std::memory_order_acquire));\n            }\n            pendingLoadedTailSamples_.store(loadedTailSamples,\n                                            std::memory_order_release);\n        }\n\n        publishPendingParameterSnapshot(loaded);\n        const auto loadedRevision =\n            loadedStateRevision_.fetch_add(1u, std::memory_order_release) + 1u;\n\n        if (!active_) {\n            publishHostParameterSnapshot(loaded);\n            appliedLoadedStateRevision_ = loadedRevision;\n            appliedLoadedStateRevisionPublished_.store(loadedRevision,\n                                                       std::memory_order_release);\n        }\n\n        if (notifyHostParams && parameterValueChanged && hostParams_ && hostParams_->rescan)\n            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);\n        return true;\n    }\n\n    [[nodiscard]] presets::PresetDocument capturePolySynthPresetDocument(\n        presets::PresetMetadata metadata) const {\n        ParameterSnapshot snapshot{};\n        if (!readEffectiveParameterSnapshot(snapshot))\n            return {};\n        return capturePolySynthPreset(snapshot, metadata);\n    }\n\n    presets::PresetStateAdapterError applyPolySynthPresetDocument(\n        const presets::PresetDocument &document) noexcept {\n        const auto mapped = makePolySynthPresetCandidate(document);\n        if (!mapped.ok())\n            return mapped.error;\n        if (!commitPersistentParameterSnapshot(*mapped.candidate, false))\n            return presets::PresetStateAdapterError::InvalidKnownParameter;\n        return presets::PresetStateAdapterError::None;\n    }\n\n    ParameterSnapshot loadHostParameterSnapshotRelaxed() const noexcept {\n'''
           poly = replace_once(poly, poly_private_marker, poly_helpers, 'PolySynth private helpers')
           poly_path.write_text(poly)
 
+          set_changed(True)
+
       - name: Verify intended diff
+        if: steps.patch.outputs.changed == 'true'
         run: |
           git diff --check
           git diff -- examples/gain/gain_plugin.cpp examples/polysynth/polysynth_plugin.cpp
 
       - name: Commit integration refactor
+        if: steps.patch.outputs.changed == 'true'
         run: |
           git config user.name "webview-gui preset TDD"
           git config user.email "actions@users.noreply.github.com"
