@@ -1,8 +1,8 @@
 #pragma once
 
 #include <clap/ext/preset-load.h>
+#include <clap/factory/plugin-factory.h>
 #include <clap/factory/preset-discovery.h>
-#include <clap/plugin-factory.h>
 
 #include <cstdint>
 #include <string_view>
