@@ -31,7 +31,7 @@ endforeach()
 foreach(required_token IN ITEMS
         "webview_gui_package_native_clap_preset_resources"
         "webview_gui_package_vst3_preset_resources"
-        "RESOURCE_DIRECTORY \"${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}\""
+        "RESOURCE_DIRECTORY \"\${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}\""
         "webview_gui_track_preset_resources")
     string(FIND "${wrappers}" "${required_token}" found)
     if(found EQUAL -1)
