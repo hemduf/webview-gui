@@ -44,11 +44,12 @@ set_target_properties(webview_gui_example_gain_wclap PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
 )
 
+include("${WEBVIEW_GUI_SOURCE_DIR}/examples/cmake/PresetResources.cmake")
 include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiWclap.cmake")
 webview_gui_configure_wclap_target(webview_gui_example_gain_wclap
     OUTPUT_NAME WebviewGuiGain
     COMPILE_TARGETS webview_gui_example_gain_clap_core
-    RESOURCE_DIRECTORY "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
+    RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
 )
 
 # Review contract: WebView-only is a per-WCLAP compilation profile. It must be
