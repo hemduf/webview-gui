@@ -51,7 +51,21 @@ target_link_libraries(webview_gui_native_preset_storage_race_tests PRIVATE
 )
 target_compile_features(webview_gui_native_preset_storage_race_tests PRIVATE cxx_std_17)
 
+if(WIN32)
+    add_executable(webview_gui_native_preset_storage_windows_smoke
+        native_preset_storage_windows_smoke.cpp
+    )
+    target_link_libraries(webview_gui_native_preset_storage_windows_smoke PRIVATE
+        webview_gui_native_preset_storage
+    )
+    target_compile_features(webview_gui_native_preset_storage_windows_smoke PRIVATE cxx_std_17)
+endif()
+
 enable_testing()
+if(WIN32)
+    add_test(NAME webview_gui_examples_native_preset_storage_windows_smoke
+        COMMAND webview_gui_native_preset_storage_windows_smoke)
+endif()
 add_test(NAME webview_gui_examples_native_preset_storage_paths
     COMMAND webview_gui_native_preset_storage_paths_tests)
 add_test(NAME webview_gui_examples_native_preset_storage
