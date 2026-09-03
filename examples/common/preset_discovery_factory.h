@@ -7,14 +7,71 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <type_traits>
 
 namespace webview_gui::examples::presets {
+
+namespace detail {
+
+// Test-only fallback used by #90 fakes while #36 is not available yet. Production
+// integration should expose functions so the per-user root can be resolved at
+// provider init time instead of being compiled into the plug-in.
+template <typename Tag, typename = void>
+struct NativeUserPresetLocationMembers {
+    static bool available() noexcept { return false; }
+    static const char *root() noexcept { return nullptr; }
+};
+
+template <typename Tag>
+struct NativeUserPresetLocationMembers<
+    Tag,
+    std::void_t<decltype(Tag::nativeUserPresetFilesAvailable),
+                decltype(Tag::nativeUserPresetRoot)>> {
+    static bool available() noexcept {
+#if defined(__wasi__)
+        return false;
+#else
+        return Tag::nativeUserPresetFilesAvailable;
+#endif
+    }
+
+    static const char *root() noexcept { return Tag::nativeUserPresetRoot; }
+};
+
+// #90 owns only the CLAP declaration seam. #36 remains authoritative for
+// storage/root resolution. When #36 provides a genuine native filesystem root,
+// a production Tag can expose these two functions.
+template <typename Tag, typename = void>
+struct NativeUserPresetLocation : NativeUserPresetLocationMembers<Tag> {};
+
+template <typename Tag>
+struct NativeUserPresetLocation<
+    Tag,
+    std::void_t<decltype(Tag::nativeUserPresetFilesAvailable()),
+                decltype(Tag::nativeUserPresetRoot())>> {
+    static bool available() noexcept {
+#if defined(__wasi__)
+        // WCLAP/WASI browser storage must never be represented as a native OS
+        // FILE location. Factory content remains available via PLUGIN.
+        return false;
+#else
+        return Tag::nativeUserPresetFilesAvailable();
+#endif
+    }
+
+    static const char *root() noexcept { return Tag::nativeUserPresetRoot(); }
+};
+
+} // namespace detail
 
 // Tag requirements:
 //   static constexpr const char *providerId;
 //   static constexpr const char *providerName;
 //   static constexpr const char *vendor;
 //   static constexpr const char *targetPluginId;
+// Optional #36 production integration seam for a genuine native user root:
+//   static bool nativeUserPresetFilesAvailable() noexcept;
+//   static const char *nativeUserPresetRoot() noexcept;
 //
 // The target plug-in ID is deliberately carried by the tag now so #91 can map
 // Preset Discovery metadata without introducing a registry or processor object.
@@ -22,6 +79,7 @@ template <typename Tag>
 class PresetDiscoveryFactoryImpl {
     struct ProviderState {
         const clap_preset_discovery_indexer_t *indexer = nullptr;
+        bool initAttempted = false;
         bool initialized = false;
         clap_preset_discovery_provider_t provider{};
 
@@ -45,11 +103,43 @@ class PresetDiscoveryFactoryImpl {
 
     static bool CLAP_ABI providerInit(const clap_preset_discovery_provider_t *provider) noexcept {
         auto *state = stateFrom(provider);
-        if (!state || !state->indexer || state->initialized)
+        if (!state || !state->indexer || state->initAttempted)
             return false;
 
-        // #89 owns lifecycle only. Filetypes and locations are declared by #90,
-        // from init(), never from factory create().
+        // init() is a single declaration transaction from the provider's point
+        // of view. A failed attempt is not retried, preventing duplicate indexer
+        // callbacks if a later declaration was rejected by the host.
+        state->initAttempted = true;
+        const auto *indexer = state->indexer;
+        if (!indexer->declare_filetype || !indexer->declare_location)
+            return false;
+
+        const bool userFilesAvailable = detail::NativeUserPresetLocation<Tag>::available();
+        const char *userRoot = userFilesAvailable
+                                   ? detail::NativeUserPresetLocation<Tag>::root()
+                                   : nullptr;
+
+        // Validate the optional #36 seam before any host callback so an invalid
+        // native backend cannot leave a partially advertised provider.
+        if (userFilesAvailable && (!userRoot || userRoot[0] == '\0'))
+            return false;
+
+        if (!indexer->declare_filetype(indexer, &presetFiletype))
+            return false;
+        if (!indexer->declare_location(indexer, &factoryLocation))
+            return false;
+
+        if (userFilesAvailable) {
+            const clap_preset_discovery_location_t userLocation{
+                CLAP_PRESET_DISCOVERY_IS_USER_CONTENT,
+                "User presets",
+                CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                userRoot,
+            };
+            if (!indexer->declare_location(indexer, &userLocation))
+                return false;
+        }
+
         state->initialized = true;
         return true;
     }
@@ -110,6 +200,19 @@ class PresetDiscoveryFactoryImpl {
     }
 
 public:
+    inline static constexpr clap_preset_discovery_filetype_t presetFiletype{
+        "webview-gui preset",
+        "webview-gui versioned preset",
+        "wvpreset",
+    };
+
+    inline static constexpr clap_preset_discovery_location_t factoryLocation{
+        CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+        "Factory presets",
+        CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+        nullptr,
+    };
+
     inline static const clap_preset_discovery_provider_descriptor_t providerDescriptor{
         CLAP_VERSION,
         Tag::providerId,
