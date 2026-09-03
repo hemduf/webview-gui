@@ -14,24 +14,47 @@ endfunction()
 read_required("examples/gain/wclap/CMakeLists.txt" gain_wclap)
 read_required("examples/polysynth/wclap/CMakeLists.txt" poly_wclap)
 read_required("examples/cmake/ExampleFormats.cmake" wrappers)
+read_required("examples/cmake/PresetResources.cmake" resource_helpers)
 
-string(FIND "${gain_wclap}" "RESOURCE_DIRECTORY" gain_resource_index)
-if(gain_resource_index EQUAL -1)
-    message(FATAL_ERROR
-        "#104 RED: Gain WCLAP does not package a canonical preset resource directory")
+foreach(wclap IN ITEMS gain_wclap poly_wclap)
+    string(FIND "${${wclap}}" "PresetResources.cmake" helper_index)
+    string(FIND "${${wclap}}" "WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY" resource_index)
+    if(helper_index EQUAL -1 OR resource_index EQUAL -1)
+        message(FATAL_ERROR "#104: ${wclap} must use the canonical clean preset resource root")
+    endif()
+    string(FIND "${${wclap}}" "examples/common/presets\"" source_tree_index)
+    if(NOT source_tree_index EQUAL -1)
+        message(FATAL_ERROR "#104: ${wclap} still packages the preset implementation source tree")
+    endif()
+endforeach()
+
+foreach(required_token IN ITEMS
+        "webview_gui_package_native_clap_preset_resources"
+        "webview_gui_package_vst3_preset_resources"
+        "RESOURCE_DIRECTORY \"${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}\""
+        "webview_gui_track_preset_resources")
+    string(FIND "${wrappers}" "${required_token}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "#104: wrapper packaging is missing '${required_token}'")
+    endif()
+endforeach()
+
+string(FIND "${resource_helpers}" "examples/common/presets/bundled" clean_root)
+string(FIND "${resource_helpers}" "LINK_DEPENDS" rebuild_dependency)
+if(clean_root EQUAL -1 OR rebuild_dependency EQUAL -1)
+    message(FATAL_ERROR "#104: canonical resource helper must use the clean bank and track resource-only rebuilds")
 endif()
 
-string(FIND "${poly_wclap}" "RESOURCE_DIRECTORY" poly_resource_index)
-if(poly_resource_index EQUAL -1)
-    message(FATAL_ERROR
-        "#104 RED: PolySynth WCLAP does not package a canonical preset resource directory")
+set(bundle_root "${WEBVIEW_GUI_ROOT}/examples/common/presets/bundled")
+file(GLOB_RECURSE bundled_files LIST_DIRECTORIES FALSE "${bundle_root}/*")
+list(LENGTH bundled_files bundled_count)
+if(NOT bundled_count EQUAL 9)
+    message(FATAL_ERROR "#104: canonical package must contain exactly 9 files, got ${bundled_count}")
 endif()
+foreach(path IN LISTS bundled_files)
+    if(NOT path MATCHES "\\.wvpreset$")
+        message(FATAL_ERROR "#104: non-preset implementation artifact leaked into canonical bank: ${path}")
+    endif()
+endforeach()
 
-# Native wrapper packaging must not deliberately pass an empty resource directory.
-string(FIND "${wrappers}" "RESOURCE_DIRECTORY \"\"" empty_native_resource)
-if(NOT empty_native_resource EQUAL -1)
-    message(FATAL_ERROR
-        "#104 RED: native wrapper formats still disable resource packaging with RESOURCE_DIRECTORY \"\"")
-endif()
-
-message(STATUS "#104 preset packaging wiring contract satisfied")
+message(STATUS "#104 canonical clean preset packaging wiring contract satisfied")
