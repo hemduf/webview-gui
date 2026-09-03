@@ -46,6 +46,7 @@ include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiWclap.cmake")
 webview_gui_configure_wclap_target(webview_gui_example_polysynth_wclap
     OUTPUT_NAME WebviewGuiPolySynth
     COMPILE_TARGETS webview_gui_example_polysynth_clap_core
+    RESOURCE_DIRECTORY "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
 )
 
 get_target_property(_polysynth_wclap_core_defs
