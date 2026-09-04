@@ -1,0 +1,56 @@
+name: Apply CHOC fork CPM migration
+
+on:
+  push:
+    branches:
+      - choc-fork-cpm
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, '[choc-cpm-migration-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: choc-fork-cpm
+          fetch-depth: 0
+          submodules: false
+
+      - name: Apply migration
+        run: python3 tools/apply_choc_fork_cpm_migration.py
+
+      - name: Normalize generated Windows hook lambda
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('include/webview-gui/_impl/platform/choc_plugin_webview.h')
+          text = path.read_text()
+          old = '[] (LPCWSTR uri) {{ webview_gui::detail::openWindowsExternalURL(uri); }})'
+          new = '[] (LPCWSTR uri) { webview_gui::detail::openWindowsExternalURL(uri); })'
+          if old not in text:
+              raise SystemExit('Windows navigation hook normalization anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Validate migration contract
+        shell: bash
+        run: |
+          git diff --check
+          cmake -P tests/choc_bootstrap_lifecycle_contract.cmake
+
+      - name: Commit migration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No migration changes required"
+            exit 0
+          fi
+          git commit -m "Use hemduf/choc fork through CPM [choc-cpm-migration-applied]"
+          git push origin HEAD:choc-fork-cpm
