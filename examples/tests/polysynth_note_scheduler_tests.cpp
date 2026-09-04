@@ -3,6 +3,7 @@
 #include <clap/clap.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -50,6 +51,29 @@ struct InputEvents {
         return true;
     }
 
+    bool pushMidi(uint32_t time,
+                  uint16_t port,
+                  uint8_t status,
+                  uint8_t data1,
+                  uint8_t data2) noexcept {
+        if (count >= kCapacity)
+            return false;
+
+        auto &event = midis[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_MIDI;
+        event.port_index = port;
+        event.data[0] = status;
+        event.data[1] = data1;
+        event.data[2] = data2;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
     bool pushForeign(uint32_t time) noexcept {
         if (count >= kCapacity)
             return false;
@@ -79,6 +103,7 @@ struct InputEvents {
     }
 
     std::array<clap_event_note_t, kCapacity> notes{};
+    std::array<clap_event_midi_t, kCapacity> midis{};
     std::array<clap_event_header_t, kCapacity> foreign{};
     std::array<const clap_event_header_t *, kCapacity> headers{};
     uint32_t count = 0;
@@ -249,6 +274,72 @@ int main() {
     if (scheduler.activeCount() != 0) {
         std::cerr << "scheduler reset leaked active voice identities\n";
         return 18;
+    }
+
+    // PolySynth exposes one note input port, index 0. Native CLAP notes on any
+    // other concrete port must be ignored, and raw MIDI on another port must stay
+    // on the harmless raw-core path rather than allocating a voice.
+    NoteEventScheduler portScheduler;
+    if (!portScheduler.configure(1))
+        return 19;
+    InputEvents wrongPort;
+    if (!wrongPort.pushNote(0, CLAP_EVENT_NOTE_ON, 500, 1, 2, 60) ||
+        !wrongPort.pushMidi(1, 1, 0x92u, 60u, 100u))
+        return 20;
+    Capture wrongPortCapture;
+    std::size_t forwardedWrongPortMidi = 0;
+    auto boundary = [](std::uint32_t) noexcept {};
+    auto wrongPortCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_MIDI)
+            ++forwardedWrongPortMidi;
+        return true;
+    };
+    if (!portScheduler.processWithBoundariesAndEvents(
+            &wrongPort.input, 3, boundary, wrongPortCore, wrongPortCapture) ||
+        wrongPortCapture.count != 0 || portScheduler.activeCount() != 0 ||
+        forwardedWrongPortMidi != 1) {
+        std::cerr << "scheduler accepted an event on a nonexistent note port\n";
+        return 21;
+    }
+
+    // Selecting an NRPN deselects RPN 0. A later Data Entry must therefore not
+    // rewrite pitch-bend sensitivity. The final bend remains at the previously
+    // configured 12-semitone range.
+    NoteEventScheduler rpnScheduler;
+    if (!rpnScheduler.configure(1))
+        return 22;
+    InputEvents rpn;
+    if (!rpn.pushMidi(0, 0, 0xb2u, 101u, 0u) ||
+        !rpn.pushMidi(0, 0, 0xb2u, 100u, 0u) ||
+        !rpn.pushMidi(1, 0, 0xb2u, 6u, 12u) ||
+        !rpn.pushMidi(2, 0, 0xb2u, 99u, 1u) ||
+        !rpn.pushMidi(2, 0, 0xb2u, 98u, 2u) ||
+        !rpn.pushMidi(3, 0, 0xb2u, 6u, 24u) ||
+        !rpn.pushMidi(4, 0, 0xe2u, 0x7fu, 0x7fu))
+        return 23;
+
+    double finalTuning = -999.0;
+    std::size_t rawNrpnMessages = 0;
+    auto rpnCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_MIDI) {
+            ++rawNrpnMessages;
+            return true;
+        }
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION &&
+            header.size >= sizeof(clap_event_note_expression_t)) {
+            const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING)
+                finalTuning = event.value;
+        }
+        return true;
+    };
+    Capture rpnCapture;
+    if (!rpnScheduler.processWithBoundariesAndEvents(
+            &rpn.input, 5, boundary, rpnCore, rpnCapture) ||
+        rpnCapture.count != 0 || rawNrpnMessages != 3 ||
+        std::fabs(finalTuning - 12.0) > 1.0e-12) {
+        std::cerr << "NRPN selection leaked into RPN pitch-bend sensitivity\n";
+        return 24;
     }
 
     return 0;
