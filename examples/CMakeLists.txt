@@ -162,6 +162,7 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     add_library(webview_gui_example_gain_clap_core STATIC
         gain/gain_plugin.cpp
     )
+    webview_gui_attach_native_preset_runtime(webview_gui_example_gain_clap_core)
     target_include_directories(webview_gui_example_gain_clap_core PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/gain
     )
@@ -347,6 +348,7 @@ endif()
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
+    webview_gui_attach_native_preset_runtime(webview_gui_example_polysynth_clap_core)
     webview_gui_package_native_clap_preset_resources(
         webview_gui_example_polysynth WebviewGuiPolySynth)
 endif()

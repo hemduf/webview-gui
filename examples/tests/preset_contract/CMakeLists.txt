@@ -94,6 +94,21 @@ target_link_libraries(webview_gui_preset_metadata_review_tests PRIVATE
 )
 target_compile_features(webview_gui_preset_metadata_review_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_preset_load_tests
+    preset_load_tests.cpp
+)
+target_include_directories(webview_gui_preset_load_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_load_tests PRIVATE
+    clap
+    Threads::Threads
+    webview_gui_preset_contract_native_support
+)
+target_compile_features(webview_gui_preset_load_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -103,6 +118,12 @@ add_test(NAME webview_gui_examples_preset_metadata
     COMMAND webview_gui_preset_metadata_tests)
 add_test(NAME webview_gui_examples_preset_metadata_review
     COMMAND webview_gui_preset_metadata_review_tests)
+add_test(NAME webview_gui_examples_preset_load
+    COMMAND webview_gui_preset_load_tests)
+add_test(NAME webview_gui_examples_preset_plugin_load_contract
+    COMMAND ${CMAKE_COMMAND}
+        -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_plugin_load_contract.cmake)
 add_test(NAME webview_gui_examples_preset_validator_stage_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
