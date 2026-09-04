@@ -261,7 +261,9 @@ bool verifyGainPresetHostAndGuiSync() {
     const auto *preset = presetLoadExtension(plugin);
     const auto *gui = static_cast<const clap_plugin_gui_t *>(
         plugin->get_extension(plugin, CLAP_EXT_GUI));
-    if (!params || !preset || !preset->from_location || !gui ||
+    const auto *webview = static_cast<const webview_gui::clap_plugin_webview *>(
+        plugin->get_extension(plugin, webview_gui::CLAP_EXT_WEBVIEW));
+    if (!params || !preset || !preset->from_location || !gui || !webview || !webview->receive ||
         !gui->is_api_supported(plugin, webview_gui::CLAP_WINDOW_API_WEBVIEW, false) ||
         !gui->create(plugin, webview_gui::CLAP_WINDOW_API_WEBVIEW, false)) {
         plugin->destroy(plugin);
@@ -273,13 +275,15 @@ bool verifyGainPresetHostAndGuiSync() {
                                               CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
                                               nullptr,
                                               "gain:trim-minus-6db");
-    const bool ok = loaded &&
+    const std::array<std::uint8_t, 4> sync{{'W', 'V', 'Q', '1'}};
+    const bool guiSynced = loaded && webview->receive(plugin, sync.data(), sync.size());
+    const bool ok = guiSynced &&
                     readValue(plugin, params, gain::kGainParamId, -6.0) &&
                     readValue(plugin, params, gain::kBypassParamId, 0.0) &&
                     host.rescanCount == 1u &&
                     (host.rescanFlags & CLAP_PARAM_RESCAN_VALUES) != 0u &&
                     host.loadedCount == 1u && host.errorCount == 0u &&
-                    host.order.size() >= 2u && host.order[0] == "rescan" &&
+                    host.order.size() >= 4u && host.order[0] == "rescan" &&
                     host.order[1] == "loaded" &&
                     host.gainBaseMessages == 2u &&
                     host.flushRequests == 0u && host.processRequests == 0u;
@@ -372,8 +376,10 @@ bool verifyPolyPresetInactiveAndActiveSync() {
                                CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
                                nullptr,
                                "polysynth:pad") ||
-        !hasPolyPadGeneration(plugin, params) || host.rescanCount != 0u ||
-        host.loadedCount != 1u) {
+        !hasPolyPadGeneration(plugin, params) || host.rescanCount != 1u ||
+        (host.rescanFlags & CLAP_PARAM_RESCAN_VALUES) == 0u ||
+        host.loadedCount != 1u || host.order.size() < 2u ||
+        host.order[0] != "rescan" || host.order[1] != "loaded") {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
         plugin->destroy(plugin);
@@ -386,7 +392,9 @@ bool verifyPolyPresetInactiveAndActiveSync() {
                                CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
                                nullptr,
                                "polysynth:bass") ||
-        host.rescanCount != 1u || host.loadedCount != 1u ||
+        host.rescanCount != 1u ||
+        (host.rescanFlags & CLAP_PARAM_RESCAN_VALUES) == 0u ||
+        host.loadedCount != 1u ||
         host.order.size() < 2u || host.order[0] != "rescan" || host.order[1] != "loaded") {
         plugin->stop_processing(plugin);
         plugin->deactivate(plugin);
@@ -439,8 +447,10 @@ bool verifyPolyPresetGuiSyncThroughProxy() {
 
     const auto *gui = static_cast<const clap_plugin_gui_t *>(
         plugin->get_extension(plugin, CLAP_EXT_GUI));
+    const auto *webview = static_cast<const webview_gui::clap_plugin_webview *>(
+        plugin->get_extension(plugin, webview_gui::CLAP_EXT_WEBVIEW));
     const auto *preset = presetLoadExtension(plugin);
-    if (!gui || !preset || !preset->from_location ||
+    if (!gui || !webview || !webview->receive || !preset || !preset->from_location ||
         !gui->is_api_supported(plugin, webview_gui::CLAP_WINDOW_API_WEBVIEW, false) ||
         !gui->create(plugin, webview_gui::CLAP_WINDOW_API_WEBVIEW, false)) {
         plugin->destroy(plugin);
@@ -452,7 +462,9 @@ bool verifyPolyPresetGuiSyncThroughProxy() {
                                               CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
                                               nullptr,
                                               "polysynth:pad");
-    const bool ok = loaded && host.rescanCount == 1u && host.loadedCount == 1u &&
+    const std::array<std::uint8_t, 4> sync{{'W', 'V', 'S', '1'}};
+    const bool guiSynced = loaded && webview->receive(plugin, sync.data(), sync.size());
+    const bool ok = guiSynced && host.rescanCount == 1u && host.loadedCount == 1u &&
                     host.order.size() >= 16u && host.order[0] == "rescan" &&
                     host.order[1] == "loaded" &&
                     host.polyBaseMessages == poly::kParameterCount &&
