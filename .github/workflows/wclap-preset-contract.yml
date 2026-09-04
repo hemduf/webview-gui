@@ -1,0 +1,27 @@
+name: WCLAP preset contract
+
+on:
+  pull_request:
+    paths:
+      - 'examples/gain/wclap/**'
+      - 'examples/polysynth/wclap/**'
+      - 'examples/common/preset_*.h'
+      - 'examples/common/presets/**'
+      - 'examples/tests/wclap_preset_surface_contract.cmake'
+      - '.github/scripts/patch_clap_trap_wclap.py'
+      - '.github/workflows/gain-wclap.yml'
+      - '.github/workflows/polysynth-wclap.yml'
+      - '.github/workflows/wclap-preset-contract.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+      - name: Run WCLAP preset surface contract
+        run: cmake -DWEBVIEW_GUI_SOURCE_DIR=${GITHUB_WORKSPACE} -P examples/tests/wclap_preset_surface_contract.cmake
