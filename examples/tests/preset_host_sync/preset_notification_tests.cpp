@@ -174,22 +174,36 @@ int main() {
 
     host.reset();
     host.exposeParams = true;
+    host.params.rescan = nullptr;
+    if (!runLoad(catalog, host, true, commitCalls) || host.rescans != 0u ||
+        host.loaded != 1u || host.errors != 0u || host.order != "CL")
+        return 3;
+    host.params.rescan = HostState::rescan;
+
+    host.reset();
+    host.host.get_extension = nullptr;
+    if (!runLoad(catalog, host, true, commitCalls) || host.rescans != 0u ||
+        host.loaded != 1u || host.errors != 0u || host.order != "CL")
+        return 4;
+    host.host.get_extension = HostState::getExtension;
+
+    host.reset();
     host.exposePresetLoad = false;
     if (!runLoad(catalog, host, true, commitCalls) || host.rescans != 1u ||
         host.loaded != 0u || host.errors != 0u || host.order != "CR")
-        return 3;
+        return 5;
 
     host.reset();
     host.exposePresetLoad = true;
     if (runLoad(catalog, host, false, commitCalls) || host.rescans != 0u ||
         host.loaded != 0u || host.errors != 1u || host.order != "CE")
-        return 4;
+        return 6;
 
     host.reset();
     catalog.failLoad = true;
     if (runLoad(catalog, host, true, commitCalls) || host.rescans != 0u ||
         host.loaded != 0u || host.errors != 1u || host.order != "E")
-        return 5;
+        return 7;
 
     return 0;
 }
