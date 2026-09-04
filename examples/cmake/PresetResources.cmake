@@ -22,14 +22,6 @@ function(webview_gui_add_preset_copy_command target destination)
         message(FATAL_ERROR "preset resources: missing target ${target}")
     endif()
 
-    # add_custom_command(TARGET ... POST_BUILD) may only be declared in the
-    # directory that created the target. Most wrappers are created in the
-    # examples root, but the canonical PolySynth CLAP target is created by the
-    # polysynth subdirectory and packaged by its parent. For that cross-directory
-    # case use an explicit staging dependency before link; LINK_DEPENDS below
-    # still makes resource-only changes relink the owning target. The staging
-    # commands create the final resource directory directly and CMake's later
-    # link/bundle step preserves it.
     get_target_property(target_source_dir ${target} SOURCE_DIR)
     if(target_source_dir STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
         add_custom_command(TARGET ${target} POST_BUILD
@@ -59,13 +51,46 @@ function(webview_gui_add_preset_copy_command target destination)
     add_dependencies(${target} ${stage_target})
 endfunction()
 
-# Make resource-only edits rebuild the target that owns the packaged copy. The
-# pinned clap-wrapper accepts RESOURCE_DIRECTORY for standalone but does not copy
-# it, so the existing standalone tracking call also closes that wrapper gap.
+function(webview_gui_attach_native_preset_runtime target)
+    if(NOT TARGET ${target})
+        message(FATAL_ERROR "preset runtime: missing target ${target}")
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        return()
+    endif()
+
+    get_target_property(runtime_attached ${target} WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED)
+    if(runtime_attached)
+        return()
+    endif()
+    set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED TRUE)
+
+    target_sources(${target} PRIVATE
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
+    target_include_directories(${target} PRIVATE
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
+        "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
+    if(WIN32)
+        # Keep wrapper-visible Win32 declarations intact. native_preset_storage.cpp
+        # scopes its own lean Windows include configuration internally.
+        target_compile_definitions(${target} PRIVATE NOMINMAX)
+        target_link_libraries(${target} PRIVATE shell32 ole32)
+    endif()
+endfunction()
+
 function(webview_gui_track_preset_resources target)
     if(NOT TARGET ${target})
         message(FATAL_ERROR "preset resources: missing target ${target}")
     endif()
+
+    # Every native artifact compiling the shared CLAP entry also needs the #36
+    # production catalog/native storage runtime and the pinned CHOC include path.
+    # The target property makes this idempotent for the canonical CLAP target,
+    # while the WASI guard keeps native filesystem code out of WCLAP.
+    webview_gui_attach_native_preset_runtime(${target})
+
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
         ${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_FILES})
 
@@ -87,14 +112,14 @@ function(webview_gui_track_preset_resources target)
     endif()
 endfunction()
 
-# Copy the clean resource root into a format-specific artifact location. The
-# source tree itself is never copied, only examples/common/presets/bundled.
 function(webview_gui_copy_preset_resources target destination)
     webview_gui_track_preset_resources(${target})
     webview_gui_add_preset_copy_command(${target} "${destination}")
 endfunction()
 
 function(webview_gui_package_native_clap_preset_resources target output_name)
+    webview_gui_attach_native_preset_runtime(${target})
+
     get_target_property(already_packaged ${target} WEBVIEW_GUI_PRESET_RESOURCES_PACKAGED)
     if(already_packaged)
         return()
@@ -109,9 +134,6 @@ function(webview_gui_package_native_clap_preset_resources target output_name)
     webview_gui_copy_preset_resources(${target} "${destination}")
 endfunction()
 
-# clap-wrapper 0.16.0 only copies VST3 RESOURCE_DIRECTORY on macOS and contains
-# stale TCLP_RESOURCE_DIRECTORY checks on Windows/Linux. Use one repository-owned
-# post-build path for all three desktop platforms.
 function(webview_gui_package_vst3_preset_resources target)
     webview_gui_copy_preset_resources(
         ${target}

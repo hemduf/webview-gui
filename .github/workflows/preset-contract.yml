@@ -1,0 +1,56 @@
+name: Preset CLAP contract
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/common/preset_clap_contract.h'
+      - 'examples/common/preset_discovery_factory.h'
+      - 'examples/common/preset_production_catalog.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
+      - 'examples/gain/gain_preset_discovery.h'
+      - 'examples/polysynth/polysynth_preset_discovery.h'
+      - 'examples/tests/preset_contract/**'
+      - '.github/workflows/preset-contract.yml'
+  pull_request:
+    paths:
+      - 'examples/common/preset_clap_contract.h'
+      - 'examples/common/preset_discovery_factory.h'
+      - 'examples/common/preset_production_catalog.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
+      - 'examples/gain/gain_preset_discovery.h'
+      - 'examples/polysynth/polysynth_preset_discovery.h'
+      - 'examples/tests/preset_contract/**'
+      - '.github/workflows/preset-contract.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: preset-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preset-contract:
+    name: ${{ matrix.os }} preset contract
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Configure preset contract
+        run: cmake -S examples/tests/preset_contract -B build-preset-contract
+
+      - name: Build preset contract
+        run: cmake --build build-preset-contract --config Debug --parallel
+
+      - name: Run preset contract
+        run: ctest --test-dir build-preset-contract -C Debug --output-on-failure --no-tests=error
