@@ -21,9 +21,13 @@ add_subdirectory(
 
 # WASI SDK reactors do not link a C++ exception runtime. Keep the profile local
 # to this WCLAP build; native PolySynth keeps its normal compiler settings.
+# #94 force-includes the factory-only production adapter before the #92 WASI stub
+# so instance preset-load/2 reuses the normal PolySynth implementation.
 target_compile_options(webview_gui_example_polysynth_clap_core PRIVATE
     -msimd128
     -fno-exceptions
+    -include
+    "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_wasi_production_catalog.h"
 )
 
 # The pinned WCLAP bridge performs its historical pre-init clap.webview/3 probe
