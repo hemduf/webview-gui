@@ -14,6 +14,7 @@ on:
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
+      - '.github/scripts/apply_wclap_preset_discovery_upstream.py'
       - '.github/scripts/patch_clap_trap_wclap.py'
       - '.github/scripts/patch_clap_trap_wclap_presets.py'
       - '.github/scripts/patch_clap_trap_wclap_discovery_smoke.py'
@@ -106,14 +107,10 @@ jobs:
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
 
-          python3 .github/scripts/patch_wclap_preset_discovery_bridge.py \
+          python3 .github/scripts/apply_wclap_preset_discovery_upstream.py \
             --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
             --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
             --loader-source .ci/clap-trap/src/plugin-loader.cpp
-          python3 .github/scripts/patch_wclap_preset_discovery_thread_safety.py \
-            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h
-          python3 .github/scripts/patch_wclap_preset_null_semantics.py \
-            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVS1 \
