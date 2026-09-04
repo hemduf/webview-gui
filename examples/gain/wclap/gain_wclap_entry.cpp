@@ -1,4 +1,5 @@
 #include "../gain_plugin.h"
+#include "../gain_preset_discovery.h"
 #include "webview-gui/wclap-legacy-webview-proxy.h"
 
 #include <clap/clap.h>
@@ -65,8 +66,12 @@ bool CLAP_ABI gainWclapEntryInit(const char *) { return true; }
 void CLAP_ABI gainWclapEntryDeinit() {}
 
 const void *CLAP_ABI gainWclapEntryGetFactory(const char *factoryId) {
-    if (factoryId && std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
+    if (!factoryId)
+        return nullptr;
+    if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
         return &kWclapFactory;
+    if (presets::classifyPresetClapId(factoryId) == presets::ClapPresetSurface::EntryFactory)
+        return gainPresetDiscoveryFactory();
     return nullptr;
 }
 
