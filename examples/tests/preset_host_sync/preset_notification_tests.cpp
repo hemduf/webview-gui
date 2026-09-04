@@ -146,6 +146,7 @@ bool runLoad(FakeCatalog &catalog,
         presetHostExtension(host),
         [&](const PresetDocument &document) noexcept {
             ++commitCalls;
+            host.order.push_back('C');
             if (document.metadata.targetPluginId != "test.plugin" || document.parameters.size() != 1u)
                 return PresetResult::error("unexpected candidate");
             return commitSucceeds ? PresetResult::success()
@@ -162,26 +163,26 @@ int main() {
 
     if (!runLoad(catalog, host, true, commitCalls) || commitCalls != 1u ||
         host.rescans != 1u || (host.flags & CLAP_PARAM_RESCAN_VALUES) == 0u ||
-        host.loaded != 1u || host.errors != 0u || host.order != "RL")
+        host.loaded != 1u || host.errors != 0u || host.order != "CRL")
         return 1;
 
     host.reset();
     host.exposeParams = false;
     if (!runLoad(catalog, host, true, commitCalls) || host.rescans != 0u ||
-        host.loaded != 1u || host.errors != 0u || host.order != "L")
+        host.loaded != 1u || host.errors != 0u || host.order != "CL")
         return 2;
 
     host.reset();
     host.exposeParams = true;
     host.exposePresetLoad = false;
     if (!runLoad(catalog, host, true, commitCalls) || host.rescans != 1u ||
-        host.loaded != 0u || host.errors != 0u || host.order != "R")
+        host.loaded != 0u || host.errors != 0u || host.order != "CR")
         return 3;
 
     host.reset();
     host.exposePresetLoad = true;
     if (runLoad(catalog, host, false, commitCalls) || host.rescans != 0u ||
-        host.loaded != 0u || host.errors != 1u || host.order != "E")
+        host.loaded != 0u || host.errors != 1u || host.order != "CE")
         return 4;
 
     host.reset();
