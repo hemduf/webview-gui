@@ -16,16 +16,15 @@ file(READ "${gain_entry}" gain)
 file(READ "${poly_entry}" poly)
 file(READ "${catalog_header}" catalog)
 
-foreach(pair IN ITEMS
-        "${gain};gainPresetDiscoveryFactory"
-        "${poly};polysynthPresetDiscoveryFactory")
-    list(GET pair 0 text)
-    list(GET pair 1 marker)
-    string(FIND "${text}" "${marker}" pos)
-    if(pos EQUAL -1)
-        message(FATAL_ERROR "#94 RED: WCLAP entry does not expose ${marker}")
-    endif()
-endforeach()
+string(FIND "${gain}" "gainPresetDiscoveryFactory" gain_factory)
+if(gain_factory EQUAL -1)
+    message(FATAL_ERROR "#94 RED: Gain WCLAP entry does not expose Preset Discovery")
+endif()
+
+string(FIND "${poly}" "polysynthPresetDiscoveryFactory" poly_factory)
+if(poly_factory EQUAL -1)
+    message(FATAL_ERROR "#94 RED: PolySynth WCLAP entry does not expose Preset Discovery")
+endif()
 
 string(FIND "${catalog}" "class WasiFactoryPresetCatalog" wasi_catalog)
 if(wasi_catalog EQUAL -1)
