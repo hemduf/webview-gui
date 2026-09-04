@@ -300,13 +300,15 @@ class PresetDiscoveryFactoryImpl {
             result = PresetResult::unsupported("unsupported preset discovery location kind");
         }
 
-        if (result.status == PresetResultStatus::Cancelled || sink.cancelled())
-            return true;
+        // Adapter faults (allocation/callback exceptions) are not host-requested
+        // cancellation. Report them even if the catalog saw beginPreset()==false.
         if (sink.failed()) {
             detail::notifyMetadataError(receiver,
                 PresetResult::error("metadata receiver adapter failed"));
             return false;
         }
+        if (result.status == PresetResultStatus::Cancelled || sink.cancelled())
+            return true;
         if (!result.succeeded()) {
             detail::notifyMetadataError(receiver, result);
             return false;
