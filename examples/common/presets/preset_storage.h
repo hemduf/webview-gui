@@ -51,6 +51,12 @@ struct PresetStorageStatus {
     }
 };
 
+[[nodiscard]] inline PresetStorageStatus unavailablePresetStorageStatus() {
+    PresetStorageStatus status;
+    status.error = PresetStorageError::Unavailable;
+    return status;
+}
+
 struct PresetStorageEntry {
     std::string identity;
     PresetMetadata metadata;
@@ -120,22 +126,22 @@ public:
     }
 
     [[nodiscard]] PresetStorageListResult list() const override {
-        return {{PresetStorageError::Unavailable}, {}, {}};
+        return {unavailablePresetStorageStatus(), {}, {}};
     }
 
     [[nodiscard]] PresetStorageLoadResult load(std::string_view) const override {
-        return {{PresetStorageError::Unavailable}, std::nullopt};
+        return {unavailablePresetStorageStatus(), std::nullopt};
     }
 
     [[nodiscard]] PresetStorageSaveResult saveAs(
         std::string_view,
         const PresetDocument &,
         bool = false) override {
-        return {{PresetStorageError::Unavailable}, {}};
+        return {unavailablePresetStorageStatus(), {}};
     }
 
     [[nodiscard]] PresetStorageStatus remove(std::string_view) override {
-        return {PresetStorageError::Unavailable};
+        return unavailablePresetStorageStatus();
     }
 
 private:
