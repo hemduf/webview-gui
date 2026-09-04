@@ -46,29 +46,21 @@ macro(expect_absent haystack_var needle label)
     endif()
 endmacro()
 
-macro(expect_min_occurrences haystack_var needle minimum label)
-    set(_remaining "${${haystack_var}}")
-    set(_occurrences 0)
-    string(LENGTH "${needle}" _needle_length)
-    while(TRUE)
-        string(FIND "${_remaining}" "${needle}" _position)
-        if(_position EQUAL -1)
-            break()
-        endif()
-        math(EXPR _occurrences "${_occurrences} + 1")
-        math(EXPR _next "${_position} + ${_needle_length}")
-        string(LENGTH "${_remaining}" _remaining_length)
-        if(_next GREATER_EQUAL _remaining_length)
-            set(_remaining "")
-            break()
-        endif()
-        string(SUBSTRING "${_remaining}" ${_next} -1 _remaining)
-    endwhile()
-    if(_occurrences LESS ${minimum})
-        list(APPEND violations
-            "${label}: '${needle}' appears ${_occurrences} time(s), expected at least ${minimum}")
-    endif()
-endmacro()
+# Split the watchdog workflow into its two filtered event sections. This avoids
+# a false green where a guarded path is duplicated in one list but absent from
+# the other.
+string(FIND "${preset_ci}" "  push:\n" preset_push_start)
+string(FIND "${preset_ci}" "  pull_request:\n" preset_pull_start)
+string(FIND "${preset_ci}" "  workflow_dispatch:" preset_dispatch_start)
+if(preset_push_start EQUAL -1 OR preset_pull_start EQUAL -1 OR preset_dispatch_start EQUAL -1
+   OR NOT preset_push_start LESS preset_pull_start
+   OR NOT preset_pull_start LESS preset_dispatch_start)
+    message(FATAL_ERROR "#95 could not parse preset-contract.yml event sections")
+endif()
+math(EXPR preset_push_length "${preset_pull_start} - ${preset_push_start}")
+math(EXPR preset_pull_length "${preset_dispatch_start} - ${preset_pull_start}")
+string(SUBSTRING "${preset_ci}" ${preset_push_start} ${preset_push_length} preset_push_ci)
+string(SUBSTRING "${preset_ci}" ${preset_pull_start} ${preset_pull_length} preset_pull_ci)
 
 # Preserve the already-blocking native validator baseline while #95 adds preset
 # ownership. A failure here means the baseline regressed independently of #95.
@@ -121,8 +113,8 @@ expect_contains(aggregate_ci
     "webview_gui_examples_preset_load"
     "aggregate preset-load ownership guard")
 
-# The watchdog itself must run whenever a guarded CI surface changes. Each path
-# must appear in both push.paths and pull_request.paths.
+# The watchdog itself must run whenever a guarded CI surface changes, on both
+# main pushes and pull requests.
 foreach(guarded_path IN ITEMS
         "examples/common/preset_*.h"
         ".github/workflows/gain-core.yml"
@@ -130,8 +122,10 @@ foreach(guarded_path IN ITEMS
         "examples/tests/aggregate_qualification_contract.cmake"
         ".github/scripts/patch_clap_validator_preset_discovery.cmake"
         "clap-validator.toml")
-    expect_min_occurrences(preset_ci "${guarded_path}" 2
-        "preset contract watchdog trigger")
+    expect_contains(preset_push_ci "${guarded_path}"
+        "preset contract push watchdog trigger")
+    expect_contains(preset_pull_ci "${guarded_path}"
+        "preset contract pull-request watchdog trigger")
 endforeach()
 
 # The #91 staged validator workaround is explicitly temporary. #95 must remove
