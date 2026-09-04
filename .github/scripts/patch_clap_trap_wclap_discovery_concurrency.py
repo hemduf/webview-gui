@@ -6,6 +6,27 @@ from pathlib import Path
 
 
 CONCURRENCY_HELPER = r'''
+struct WclapConcurrentPresetProviderCase {
+    WclapPresetDiscoverySmokeState state{};
+    clap_preset_discovery_indexer_t indexer{};
+    const clap_preset_discovery_provider_t *provider = nullptr;
+
+    WclapConcurrentPresetProviderCase() {
+        indexer = {
+            CLAP_VERSION,
+            "clap-trap concurrent preset smoke",
+            "webview-gui CI",
+            "https://github.com/hemduf/webview-gui",
+            "1",
+            &state,
+            wclapDiscoveryDeclareFiletype,
+            wclapDiscoveryDeclareLocation,
+            wclapDiscoveryDeclareSoundpack,
+            wclapDiscoveryIndexerExtension,
+        };
+    }
+};
+
 static bool runWclapPresetDiscoveryConcurrencySmoke(PluginLoader &loader) {
     const auto *factory = static_cast<const clap_preset_discovery_factory_t *>(
         loader.getFactory(CLAP_PRESET_DISCOVERY_FACTORY_ID));
@@ -18,79 +39,51 @@ static bool runWclapPresetDiscoveryConcurrencySmoke(PluginLoader &loader) {
     const auto *descriptor = factory->get_descriptor(factory, 0);
     if (!descriptor || !descriptor->id)
         return false;
+    const std::string providerId{descriptor->id};
 
     std::atomic<bool> ok{true};
     constexpr uint32_t kWorkerCount = 4;
     constexpr uint32_t kIterations = 4;
     std::vector<std::thread> workers;
     workers.reserve(kWorkerCount);
+    std::vector<std::unique_ptr<WclapConcurrentPresetProviderCase>> providers;
+    providers.reserve(kWorkerCount * kIterations);
+    std::mutex providersMutex;
 
+    // CLAP explicitly marks the factory methods count/get_descriptor/create as
+    // thread-safe. The provider/indexer interfaces themselves are explicitly
+    // not thread-safe, so this stress phase exercises only the factory contract.
     for (uint32_t workerIndex = 0; workerIndex < kWorkerCount; ++workerIndex) {
-        workers.emplace_back([&, descriptor]() {
+        workers.emplace_back([&]() {
             for (uint32_t iteration = 0; iteration < kIterations && ok.load(); ++iteration) {
                 if (factory->count(factory) != providerCount) {
                     ok.store(false);
                     return;
                 }
                 const auto *current = factory->get_descriptor(factory, 0);
-                if (!current || !current->id || std::strcmp(current->id, descriptor->id) != 0) {
+                if (!current || !current->id || providerId != current->id) {
                     ok.store(false);
                     return;
                 }
 
-                WclapPresetDiscoverySmokeState state{};
-                clap_preset_discovery_indexer_t indexer{
-                    CLAP_VERSION,
-                    "clap-trap concurrent preset smoke",
-                    "webview-gui CI",
-                    "https://github.com/hemduf/webview-gui",
-                    "1",
-                    &state,
-                    wclapDiscoveryDeclareFiletype,
-                    wclapDiscoveryDeclareLocation,
-                    wclapDiscoveryDeclareSoundpack,
-                    wclapDiscoveryIndexerExtension,
-                };
-
-                const auto *provider = factory->create(factory, &indexer, descriptor->id);
-                if (!provider || !provider->init || !provider->destroy || !provider->get_metadata) {
-                    ok.store(false);
-                    if (provider && provider->destroy)
-                        provider->destroy(provider);
-                    return;
-                }
-                if (!provider->init(provider)) {
-                    provider->destroy(provider);
+                auto item = std::make_unique<WclapConcurrentPresetProviderCase>();
+                item->provider = factory->create(factory, &item->indexer, providerId.c_str());
+                if (!item->provider || !item->provider->destroy) {
                     ok.store(false);
                     return;
                 }
 
-                clap_preset_discovery_metadata_receiver_t receiver{
-                    &state,
-                    wclapDiscoveryMetadataError,
-                    wclapDiscoveryBeginPreset,
-                    wclapDiscoveryAddPluginId,
-                    wclapDiscoverySetSoundpackId,
-                    wclapDiscoverySetFlags,
-                    wclapDiscoveryAddCreator,
-                    wclapDiscoverySetDescription,
-                    wclapDiscoverySetTimestamps,
-                    wclapDiscoveryAddFeature,
-                    wclapDiscoveryAddExtraInfo,
-                };
-                const bool metadataOk = provider->get_metadata(
-                    provider,
-                    CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
-                    nullptr,
-                    &receiver);
-                provider->destroy(provider);
-
-                if (!metadataOk || state.metadataError || !state.filetypeDeclared ||
-                    !state.pluginLocationDeclared || state.presetCount == 0 ||
-                    !state.sawTargetPlugin || !state.sawExpectedLoadKey) {
+                // Factory create() must not call back into the indexer before
+                // provider->init(), per the Preset Discovery factory contract.
+                if (item->state.filetypeDeclared || item->state.pluginLocationDeclared ||
+                    item->state.presetCount != 0 || item->state.metadataError) {
+                    item->provider->destroy(item->provider);
                     ok.store(false);
                     return;
                 }
+
+                std::lock_guard<std::mutex> lock(providersMutex);
+                providers.push_back(std::move(item));
             }
         });
     }
@@ -98,12 +91,21 @@ static bool runWclapPresetDiscoveryConcurrencySmoke(PluginLoader &loader) {
     for (auto &worker : workers)
         worker.join();
 
-    if (!ok.load()) {
-        fprintf(stderr, "✗ WCLAP Preset Discovery concurrent factory/provider smoke failed\n");
+    // Provider methods are intentionally not part of the concurrent stress.
+    // Keep every indexer alive through provider destruction, then clean up
+    // sequentially. The existing sequential smoke separately covers
+    // provider init/get_metadata/destroy behavior.
+    for (auto &item : providers) {
+        if (item && item->provider && item->provider->destroy)
+            item->provider->destroy(item->provider);
+    }
+
+    if (!ok.load() || providers.size() != kWorkerCount * kIterations) {
+        fprintf(stderr, "✗ WCLAP Preset Discovery concurrent factory smoke failed\n");
         return false;
     }
 
-    printf("✓ WCLAP Preset Discovery concurrent factory/provider smoke (%u workers x %u iterations)\n",
+    printf("✓ WCLAP Preset Discovery concurrent factory smoke (%u workers x %u iterations)\n",
            kWorkerCount,
            kIterations);
     return true;
@@ -132,7 +134,7 @@ def main() -> None:
     text = replace_once(
         text,
         '#include <clap/factory/preset-discovery.h>\n',
-        '#include <clap/factory/preset-discovery.h>\n#include <atomic>\n#include <thread>\n#include <vector>\n',
+        '#include <clap/factory/preset-discovery.h>\n#include <atomic>\n#include <memory>\n#include <mutex>\n#include <thread>\n#include <vector>\n',
         "concurrency smoke includes",
     )
 
@@ -154,7 +156,7 @@ def main() -> None:
     )
 
     path.write_text(text)
-    print("patched clap-trap: concurrent WCLAP Preset Discovery factory/provider smoke")
+    print("patched clap-trap: concurrent WCLAP Preset Discovery factory smoke")
 
 
 if __name__ == "__main__":
