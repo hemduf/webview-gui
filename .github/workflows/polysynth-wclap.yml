@@ -39,6 +39,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Verify WCLAP preset entry contract
+        run: >-
+          cmake -DWEBVIEW_GUI_ROOT="${GITHUB_WORKSPACE}"
+          -P examples/tests/preset_portability/wclap_preset_surface_contract.cmake
+
       - name: Install build and lifecycle-host dependencies
         run: |
           sudo apt-get update
