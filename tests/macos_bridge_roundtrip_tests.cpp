@@ -40,6 +40,15 @@ void pumpMainRunLoopFor(std::chrono::steady_clock::duration duration)
         pumpMainRunLoop(0.01);
 }
 
+// Native -> page delivery is intentionally an ordinary `message` event. Tests
+// which need a native round-trip must therefore echo it explicitly from page JS;
+// relying on the bootstrap to reflect native messages back would prevent real
+// plug-in message listeners from ever observing them.
+constexpr const char kEchoScript[] =
+    "<script>window.addEventListener('message',e=>{"
+    "if(e.data instanceof ArrayBuffer)window.postMessage(e.data,'*');"
+    "});</script>";
+
 struct SelfDeletingReceiveState {
     WebviewGui::UniquePtr* owner = nullptr;
     std::size_t liveTargets = 0;
@@ -145,6 +154,12 @@ struct SelfDeletingResource {
     std::shared_ptr<SelfDeletingResourceState> state;
 };
 
+std::string echoPage(const char* title)
+{
+    return std::string{"<!doctype html><html><head><title>"} + title +
+           "</title></head><body>ready" + kEchoScript + "</body></html>";
+}
+
 } // namespace
 
 TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque bytes through WKWebView")
@@ -157,10 +172,9 @@ TEST_CASE("public WebviewGui bridge queues one early send and round-trips opaque
             if (!path || std::string(path) != "/index.html")
                 return false;
 
-            static constexpr const char html[] =
-                "<!doctype html><html><head><title>bridge</title></head><body>ready</body></html>";
+            const auto html = echoPage("bridge");
             resource.mediaType = "text/html";
-            resource.bytes.assign(html, html + sizeof(html) - 1);
+            resource.bytes.assign(html.begin(), html.end());
             return true;
         });
 
@@ -197,10 +211,9 @@ TEST_CASE("public WebviewGui keeps receive target alive when the callback destro
             if (!path || std::string(path) != "/index.html")
                 return false;
 
-            static constexpr const char html[] =
-                "<!doctype html><html><head><title>self-delete</title></head><body>ready</body></html>";
+            const auto html = echoPage("self-delete");
             resource.mediaType = "text/html";
-            resource.bytes.assign(html, html + sizeof(html) - 1);
+            resource.bytes.assign(html.begin(), html.end());
             return true;
         });
 
@@ -250,10 +263,9 @@ TEST_CASE("public WebviewGui bounds the number of messages queued before bridge 
             if (!path || std::string(path) != "/index.html")
                 return false;
 
-            static constexpr const char html[] =
-                "<!doctype html><html><head><title>bridge</title></head><body>ready</body></html>";
+            const auto html = echoPage("bridge");
             resource.mediaType = "text/html";
-            resource.bytes.assign(html, html + sizeof(html) - 1);
+            resource.bytes.assign(html.begin(), html.end());
             return true;
         });
 
@@ -299,12 +311,13 @@ TEST_CASE("native WKWebView CSP blocks JavaScript eval while bridge remains oper
             if (!path || std::string(path) != "/index.html")
                 return false;
 
-            static constexpr const char html[] =
-                "<!doctype html><html><head><title>csp-effective</title></head><body>"
+            const std::string html =
+                std::string{"<!doctype html><html><head><title>csp-effective</title></head><body>"} +
+                kEchoScript +
                 "<script>setTimeout(()=>{try{eval(`window.postMessage(new Uint8Array([202]).buffer,'*')`)}catch(_){}},50)</script>"
                 "</body></html>";
             resource.mediaType = "text/html";
-            resource.bytes.assign(html, html + sizeof(html) - 1);
+            resource.bytes.assign(html.begin(), html.end());
             return true;
         });
 
