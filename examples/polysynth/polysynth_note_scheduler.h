@@ -224,6 +224,14 @@ private:
         return static_cast<double>(value) / 127.0;
     }
 
+    // MIDI CC10 defines 64 as the exact center, so a simple value/127 mapping
+    // would introduce a small right-pan offset at the protocol's center value.
+    static double normalizedMidiPan(std::uint8_t value) noexcept {
+        if (value <= 64u)
+            return static_cast<double>(value) / 128.0;
+        return 0.5 + static_cast<double>(value - 64u) / 126.0;
+    }
+
     static double pitchBendRange(const MidiChannelState &state) noexcept {
         const auto configured = static_cast<double>(state.pitchBendRangeCoarse) +
                                 static_cast<double>(state.pitchBendRangeFine) / 100.0;
@@ -424,8 +432,8 @@ private:
                                                      1.0),
                                           coreEventSink);
 
-            case 10u: // Pan.
-                state.pan = normalized;
+            case 10u: // MIDI pan: 0 left, 64 exact center, 127 right.
+                state.pan = normalizedMidiPan(value);
                 return emitNoteExpression(midi,
                                           CLAP_NOTE_EXPRESSION_PAN,
                                           -1,
@@ -531,7 +539,11 @@ private:
                                           coreEventSink);
             }
 
-            case 123u: { // All Notes Off: sustain-aware note-off for this channel.
+            case 123u: // All Notes Off.
+            case 124u: // Omni Mode Off (+ All Notes Off).
+            case 125u: // Omni Mode On (+ All Notes Off).
+            case 126u: // Mono Mode On (+ All Notes Off); mode itself is not modelled.
+            case 127u: { // Poly Mode On (+ All Notes Off); mode itself is already poly.
                 const auto wildcard = midiWildcardNote(midi, CLAP_EVENT_NOTE_OFF);
                 if (state.sustain)
                     deferMatching(wildcard);
