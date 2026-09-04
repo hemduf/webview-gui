@@ -50,7 +50,7 @@ def emit_git_patch(original: str, patched: str, output: Path) -> None:
     if not diff:
         raise SystemExit("qualified upstream patch produced an empty Git diff")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(diff)
+    output.write_text(diff, encoding="utf-8", newline="\n")
 
 
 def main() -> None:
