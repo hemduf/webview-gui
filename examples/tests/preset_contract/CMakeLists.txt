@@ -120,6 +120,10 @@ add_test(NAME webview_gui_examples_preset_metadata_review
     COMMAND webview_gui_preset_metadata_review_tests)
 add_test(NAME webview_gui_examples_preset_load
     COMMAND webview_gui_preset_load_tests)
+add_test(NAME webview_gui_examples_preset_plugin_load_contract
+    COMMAND ${CMAKE_COMMAND}
+        -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_plugin_load_contract.cmake)
 add_test(NAME webview_gui_examples_preset_validator_stage_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
