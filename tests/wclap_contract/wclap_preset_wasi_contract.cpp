@@ -1,6 +1,7 @@
 #include "preset_discovery_factory.h"
 #include "preset_load_controller.h"
 #include "preset_production_catalog.h"
+#include "presets/preset_document.h"
 #include "presets/preset_factory_catalog.h"
 
 #include <clap/clap.h>
