@@ -2,6 +2,7 @@
 
 #include "preset_clap_contract.h"
 #include "presets/preset_codec.h"
+#include "presets/preset_exception_boundary.h"
 #include "presets/preset_factory_catalog.h"
 #include "presets/preset_storage.h"
 
@@ -128,8 +129,8 @@ namespace production_catalog_detail {
         identity.find('\\') != std::string_view::npos)
         return false;
 
-    auto normalizedRoot = normalizePath(root);
-    auto normalizedLocation = normalizePath(location);
+    const auto normalizedRoot = normalizePath(root);
+    const auto normalizedLocation = normalizePath(location);
     std::string expected = normalizedRoot;
     expected.push_back('/');
     expected.append(identity.data(), identity.size());
@@ -192,49 +193,53 @@ public:
         location = {};
         if (!userStorage_)
             return false;
-        try {
-            const auto root = userStorage_->nativeFileRoot();
-            if (!root || root->empty()) {
+        return detail::exceptionBoundary(
+            [&]() -> bool {
+                const auto root = userStorage_->nativeFileRoot();
+                if (!root || root->empty()) {
+                    nativeRootCache_.clear();
+                    return false;
+                }
+                nativeRootCache_ = *root;
+                location = nativeRootCache_;
+                return true;
+            },
+            [&]() -> bool {
                 nativeRootCache_.clear();
                 return false;
-            }
-            nativeRootCache_ = *root;
-            location = nativeRootCache_;
-            return true;
-        } catch (...) {
-            nativeRootCache_.clear();
-            return false;
-        }
+            });
     }
 
     PresetResult enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept override {
-        try {
-            // Validate the whole container before the first receiver callback so
-            // a corrupt later resource cannot leak a partial factory listing.
-            for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
-                const auto *resource = factoryCatalog_.at(i);
-                if (!resource || !resource->valid())
-                    return PresetResult::error("invalid bundled factory preset resource");
-                const auto validation = validateMetadata(resource->metadata, true);
-                if (!validation.succeeded())
-                    return validation;
-                if (resource->loadKey != *resource->metadata.factoryLoadKey)
-                    return PresetResult::error("factory preset load key mismatch");
-            }
+        return detail::exceptionBoundary(
+            [&]() -> PresetResult {
+                // Validate the whole container before the first receiver callback so
+                // a corrupt later resource cannot leak a partial factory listing.
+                for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
+                    const auto *resource = factoryCatalog_.at(i);
+                    if (!resource || !resource->valid())
+                        return PresetResult::error("invalid bundled factory preset resource");
+                    const auto validation = validateMetadata(resource->metadata, true);
+                    if (!validation.succeeded())
+                        return validation;
+                    if (resource->loadKey != *resource->metadata.factoryLoadKey)
+                        return PresetResult::error("factory preset load key mismatch");
+                }
 
-            for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
-                const auto *resource = factoryCatalog_.at(i);
-                const auto result = emitMetadata(resource->metadata,
-                                                 resource->loadKey,
-                                                 CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
-                                                 sink);
-                if (!result.succeeded())
-                    return result;
-            }
-            return PresetResult::success();
-        } catch (...) {
-            return PresetResult::error("factory preset metadata extraction failed");
-        }
+                for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
+                    const auto *resource = factoryCatalog_.at(i);
+                    const auto result = emitMetadata(resource->metadata,
+                                                     resource->loadKey,
+                                                     CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+                                                     sink);
+                    if (!result.succeeded())
+                        return result;
+                }
+                return PresetResult::success();
+            },
+            []() -> PresetResult {
+                return PresetResult::error("factory preset metadata extraction failed");
+            });
     }
 
     PresetResult metadataForFile(std::string_view path,
@@ -242,90 +247,96 @@ public:
         if (!userStorage_)
             return PresetResult::unsupported("native user preset storage unavailable");
 
-        try {
-            std::string_view rootView;
-            if (!nativeUserLocation(rootView))
-                return PresetResult::unsupported("native user preset storage unavailable");
-            const std::string root{rootView};
+        return detail::exceptionBoundary(
+            [&]() -> PresetResult {
+                std::string_view rootView;
+                if (!nativeUserLocation(rootView))
+                    return PresetResult::unsupported("native user preset storage unavailable");
+                const std::string root{rootView};
 
-            if (!userSnapshot_) {
-                auto listing = userStorage_->list();
-                if (!listing.ok())
-                    return production_catalog_detail::storageStatusResult(listing.status);
-                userSnapshot_ = std::move(listing);
-            }
+                if (!userSnapshot_) {
+                    auto listing = userStorage_->list();
+                    if (!listing.ok())
+                        return production_catalog_detail::storageStatusResult(listing.status);
+                    userSnapshot_ = std::move(listing);
+                }
 
-            for (const auto &entry : userSnapshot_->entries) {
-                if (!production_catalog_detail::pathMatchesEntry(root, entry.identity, path))
-                    continue;
-                const auto validation = validateMetadata(entry.metadata, false);
-                if (!validation.succeeded())
-                    return validation;
-                return emitMetadata(entry.metadata,
-                                    {},
-                                    CLAP_PRESET_DISCOVERY_IS_USER_CONTENT,
-                                    sink);
-            }
+                for (const auto &entry : userSnapshot_->entries) {
+                    if (!production_catalog_detail::pathMatchesEntry(root, entry.identity, path))
+                        continue;
+                    const auto validation = validateMetadata(entry.metadata, false);
+                    if (!validation.succeeded())
+                        return validation;
+                    return emitMetadata(entry.metadata,
+                                        {},
+                                        CLAP_PRESET_DISCOVERY_IS_USER_CONTENT,
+                                        sink);
+                }
 
-            for (const auto &diagnostic : userSnapshot_->diagnostics) {
-                if (production_catalog_detail::diagnosticMatchesPath(diagnostic, path))
-                    return production_catalog_detail::storageStatusResult(diagnostic);
-            }
+                for (const auto &diagnostic : userSnapshot_->diagnostics) {
+                    if (production_catalog_detail::diagnosticMatchesPath(diagnostic, path))
+                        return production_catalog_detail::storageStatusResult(diagnostic);
+                }
 
-            return PresetResult::notFound("user preset metadata not found");
-        } catch (...) {
-            return PresetResult::error("user preset metadata extraction failed");
-        }
+                return PresetResult::notFound("user preset metadata not found");
+            },
+            []() -> PresetResult {
+                return PresetResult::error("user preset metadata extraction failed");
+            });
     }
 
     PresetResult loadFactory(std::string_view loadKey,
                              PresetStateSink &sink) const noexcept override {
         if (loadKey.empty())
             return PresetResult::error("factory preset load key is empty");
-        try {
-            const auto lookup = factoryCatalog_.find(loadKey);
-            if (!lookup.ok()) {
-                if (lookup.error == FactoryPresetCatalogError::NotFound)
-                    return PresetResult::notFound("factory preset load key was not found");
-                return PresetResult::error("factory preset resource is invalid");
-            }
+        return detail::exceptionBoundary(
+            [&]() -> PresetResult {
+                const auto lookup = factoryCatalog_.find(loadKey);
+                if (!lookup.ok()) {
+                    if (lookup.error == FactoryPresetCatalogError::NotFound)
+                        return PresetResult::notFound("factory preset load key was not found");
+                    return PresetResult::error("factory preset resource is invalid");
+                }
 
-            const auto parsed = parsePresetDocument(lookup.resource->bytes, targetPluginId_);
-            if (!parsed.ok())
-                return production_catalog_detail::codecLoadResult(parsed.error);
-            if (!parsed.document->metadata.factoryLoadKey ||
-                *parsed.document->metadata.factoryLoadKey != loadKey)
-                return PresetResult::error("factory preset load key mismatch");
-            return emitState(*parsed.document, sink);
-        } catch (...) {
-            return PresetResult::error("factory preset loading failed");
-        }
+                const auto parsed = parsePresetDocument(lookup.resource->bytes, targetPluginId_);
+                if (!parsed.ok())
+                    return production_catalog_detail::codecLoadResult(parsed.error);
+                if (!parsed.document->metadata.factoryLoadKey ||
+                    *parsed.document->metadata.factoryLoadKey != loadKey)
+                    return PresetResult::error("factory preset load key mismatch");
+                return emitState(*parsed.document, sink);
+            },
+            []() -> PresetResult {
+                return PresetResult::error("factory preset loading failed");
+            });
     }
 
     PresetResult loadFile(std::string_view path,
                           PresetStateSink &sink) const noexcept override {
         if (!userStorage_)
             return PresetResult::unsupported("native user preset storage unavailable");
-        try {
-            std::string_view rootView;
-            if (!nativeUserLocation(rootView))
-                return PresetResult::unsupported("native user preset storage unavailable");
+        return detail::exceptionBoundary(
+            [&]() -> PresetResult {
+                std::string_view rootView;
+                if (!nativeUserLocation(rootView))
+                    return PresetResult::unsupported("native user preset storage unavailable");
 
-            const auto identity = production_catalog_detail::directChildIdentity(rootView, path);
-            if (!identity)
-                return PresetResult::error("preset path is outside the declared user root");
+                const auto identity = production_catalog_detail::directChildIdentity(rootView, path);
+                if (!identity)
+                    return PresetResult::error("preset path is outside the declared user root");
 
-            auto loaded = userStorage_->load(*identity);
-            if (!loaded.ok())
-                return production_catalog_detail::storageLoadStatusResult(loaded.status);
-            if (!loaded.document)
-                return PresetResult::error("preset storage returned no document");
-            if (loaded.document->metadata.targetPluginId != targetPluginId_)
-                return PresetResult::error("preset targets a different plug-in");
-            return emitState(*loaded.document, sink);
-        } catch (...) {
-            return PresetResult::error("user preset loading failed");
-        }
+                auto loaded = userStorage_->load(*identity);
+                if (!loaded.ok())
+                    return production_catalog_detail::storageLoadStatusResult(loaded.status);
+                if (!loaded.document)
+                    return PresetResult::error("preset storage returned no document");
+                if (loaded.document->metadata.targetPluginId != targetPluginId_)
+                    return PresetResult::error("preset targets a different plug-in");
+                return emitState(*loaded.document, sink);
+            },
+            []() -> PresetResult {
+                return PresetResult::error("user preset loading failed");
+            });
     }
 
 private:
@@ -408,17 +419,17 @@ private:
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId,
     std::unique_ptr<PresetUserStorage> userStorage) noexcept {
-    try {
-        return std::make_unique<ProductionPresetCatalog>(factoryCatalog,
-                                                         std::string{targetPluginId},
-                                                         std::move(userStorage));
-    } catch (...) {
-        return {};
-    }
+    return detail::exceptionBoundary(
+        [&]() -> std::unique_ptr<PresetCatalog> {
+            return std::make_unique<ProductionPresetCatalog>(factoryCatalog,
+                                                             std::string{targetPluginId},
+                                                             std::move(userStorage));
+        },
+        []() -> std::unique_ptr<PresetCatalog> { return {}; });
 }
 
 // Native implementation is isolated in preset_production_catalog.cpp so the
-// generic CLAP metadata adapter and future WCLAP provider do not import native
+// generic CLAP metadata adapter and WCLAP provider do not import native
 // filesystem APIs merely by including this header.
 [[nodiscard]] std::unique_ptr<PresetCatalog> makeNativeProductionPresetCatalog(
     const FactoryPresetCatalog &factoryCatalog,
@@ -429,14 +440,14 @@ template <typename = void>
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId) noexcept {
 #if defined(__wasi__)
-    try {
-        return makeProductionPresetCatalog(
-            factoryCatalog,
-            targetPluginId,
-            std::make_unique<UnavailablePresetUserStorage>(std::string{targetPluginId}));
-    } catch (...) {
-        return {};
-    }
+    return detail::exceptionBoundary(
+        [&]() -> std::unique_ptr<PresetCatalog> {
+            return makeProductionPresetCatalog(
+                factoryCatalog,
+                targetPluginId,
+                std::make_unique<UnavailablePresetUserStorage>(std::string{targetPluginId}));
+        },
+        []() -> std::unique_ptr<PresetCatalog> { return {}; });
 #else
     return makeNativeProductionPresetCatalog(factoryCatalog, targetPluginId);
 #endif
