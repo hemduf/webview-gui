@@ -1,5 +1,29 @@
 #pragma once
 
+#if defined(__wasi__)
+
+#include "preset_clap_contract.h"
+#include "presets/preset_factory_catalog.h"
+
+#include <memory>
+#include <string_view>
+
+namespace webview_gui::examples::presets {
+
+// #94 owns the real WCLAP catalog/discovery/load wiring. #92 keeps the core
+// build honest and CHOC/filesystem-free rather than manufacturing a partial
+// WASI implementation here.
+template <typename = void>
+[[nodiscard]] inline std::unique_ptr<PresetCatalog> makeDefaultProductionPresetCatalog(
+    const FactoryPresetCatalog &,
+    std::string_view) noexcept {
+    return {};
+}
+
+} // namespace webview_gui::examples::presets
+
+#else
+
 #include "preset_clap_contract.h"
 #include "presets/preset_factory_catalog.h"
 #include "presets/preset_storage.h"
@@ -209,8 +233,6 @@ public:
 
     PresetResult enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept override {
         try {
-            // Validate the whole container before the first receiver callback so
-            // a corrupt later resource cannot leak a partial factory listing.
             for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
                 const auto *resource = factoryCatalog_.at(i);
                 if (!resource || !resource->valid())
@@ -415,9 +437,6 @@ private:
     }
 }
 
-// Native implementation is isolated in preset_production_catalog.cpp so the
-// generic CLAP metadata adapter and future WCLAP provider do not import native
-// filesystem APIs merely by including this header.
 [[nodiscard]] std::unique_ptr<PresetCatalog> makeNativeProductionPresetCatalog(
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId) noexcept;
@@ -426,18 +445,9 @@ template <typename = void>
 [[nodiscard]] inline std::unique_ptr<PresetCatalog> makeDefaultProductionPresetCatalog(
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId) noexcept {
-#if defined(__wasi__)
-    try {
-        return makeProductionPresetCatalog(
-            factoryCatalog,
-            targetPluginId,
-            std::make_unique<UnavailablePresetUserStorage>(std::string{targetPluginId}));
-    } catch (...) {
-        return {};
-    }
-#else
     return makeNativeProductionPresetCatalog(factoryCatalog, targetPluginId);
-#endif
 }
 
 } // namespace webview_gui::examples::presets
+
+#endif
