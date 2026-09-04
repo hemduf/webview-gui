@@ -64,8 +64,6 @@ endif()
 
 set(WEBVIEW_GUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
     "Path to the webview-gui repository root")
-set(WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR
-    "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/PresetResources.cmake")
 
 if(NOT TARGET webview-gui)
@@ -105,26 +103,6 @@ FetchContent_Declare(webview_gui_example_clap_helpers
     GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_HELPERS_REVISION}
 )
 FetchContent_MakeAvailable(webview_gui_example_clap_helpers)
-
-function(webview_gui_enable_native_preset_support target)
-    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-        return()
-    endif()
-
-    target_sources(${target} PRIVATE
-        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/preset_production_catalog.cpp
-        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/presets/native_preset_storage.cpp
-    )
-    target_include_directories(${target} PRIVATE
-        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common
-        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/presets
-        ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
-    )
-    if(WIN32)
-        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-        target_link_libraries(${target} PRIVATE shell32 ole32)
-    endif()
-endfunction()
 
 add_library(webview_gui_example_skeleton_core STATIC
     common/skeleton_plugin.cpp
@@ -184,7 +162,7 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     add_library(webview_gui_example_gain_clap_core STATIC
         gain/gain_plugin.cpp
     )
-    webview_gui_enable_native_preset_support(webview_gui_example_gain_clap_core)
+    webview_gui_attach_native_preset_runtime(webview_gui_example_gain_clap_core)
     target_include_directories(webview_gui_example_gain_clap_core PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/gain
     )
@@ -370,7 +348,7 @@ endif()
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
-    webview_gui_enable_native_preset_support(webview_gui_example_polysynth_clap_core)
+    webview_gui_attach_native_preset_runtime(webview_gui_example_polysynth_clap_core)
     webview_gui_package_native_clap_preset_resources(
         webview_gui_example_polysynth WebviewGuiPolySynth)
 endif()
