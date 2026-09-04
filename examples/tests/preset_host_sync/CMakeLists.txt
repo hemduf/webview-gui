@@ -32,6 +32,17 @@ target_link_libraries(webview_gui_preset_host_sync_tests PRIVATE
 )
 target_compile_features(webview_gui_preset_host_sync_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_preset_notification_tests
+    preset_notification_tests.cpp
+)
+target_include_directories(webview_gui_preset_notification_tests PRIVATE
+    "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
+)
+target_link_libraries(webview_gui_preset_notification_tests PRIVATE clap)
+target_compile_features(webview_gui_preset_notification_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_preset_host_sync
     COMMAND webview_gui_preset_host_sync_tests)
+add_test(NAME webview_gui_preset_notification
+    COMMAND webview_gui_preset_notification_tests)
