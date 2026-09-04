@@ -217,9 +217,9 @@ require_absent(plugin_source
 require_absent(plugin_source
     "bool implementsRender() const noexcept override { return true; }"
     "render advertisement")
-require_absent(plugin_source
+require_contains(plugin_source
     "bool implementsPresetLoad() const noexcept override { return true; }"
-    "preset-load advertisement")
+    "preset-load implementation marker")
 # #33 exposes clap.gui/clap.webview in the native/WCLAP proxy, not in the DSP/core
 # plugin object. Keep the core free of GUI ownership while documenting the complete
 # externally visible plugin surface below.
@@ -252,7 +252,7 @@ require_contains(readme "| `clap.gui` + `clap.webview` | Implemented |" "GUI/Web
 require_contains(readme "| `clap.render` | Intentionally not advertised |" "render matrix row")
 require_contains(readme "| `clap.latency` | Intentionally not advertised |" "latency matrix row")
 require_contains(readme "| `clap.note-name` | Implemented |" "note-name matrix row")
-require_contains(readme "| `clap.preset-load/2` | Not advertised (owned by #36/#37) |" "preset-load ownership matrix row")
+require_contains(readme "| `clap.preset-load/2` | Implemented |" "preset-load matrix row")
 require_absent(readme "| Partial |" "partial extension status after #32 completion")
 require_absent(readme "| Pending |" "pending extension status after #32 completion")
 require_contains(readme "surround/ambisonics" "unrelated-extension rationale")
@@ -260,4 +260,4 @@ require_contains(readme "NOTE_EXPRESSION" "note-expression event coverage")
 require_contains(readme "PARAM_MOD" "parameter-modulation event coverage")
 require_contains(readme "Editor-originated `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` are emitted by the shared #33 GUI path" "GUI gesture ownership")
 
-message(STATUS "PolySynth CLAP extension matrix contract is synchronized with completed #32/#33")
+message(STATUS "PolySynth CLAP extension matrix contract is synchronized with completed #32/#33 and #92 preset-load surface")
