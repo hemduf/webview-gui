@@ -8,6 +8,7 @@ on:
     paths:
       - 'examples/polysynth/**'
       - 'examples/common/presets/**'
+      - 'examples/common/preset_*.h'
       - 'examples/tests/preset_portability/**'
       - 'examples/cmake/PresetResources.cmake'
       - 'examples/CMakeLists.txt'
@@ -79,14 +80,17 @@ jobs:
           }
           const imports = WebAssembly.Module.imports(module);
           for (const entry of imports) {
-            if (/gtk|webkit|cocoa|user32|ole32/i.test(`${entry.module}:${entry.name}`))
-              throw new Error(`native GUI import leaked into WCLAP: ${entry.module}:${entry.name}`);
+            const symbol = `${entry.module}:${entry.name}`;
+            if (/gtk|webkit|cocoa|user32|ole32/i.test(symbol))
+              throw new Error(`native GUI import leaked into WCLAP: ${symbol}`);
+            if (/choc/i.test(symbol))
+              throw new Error(`CHOC import leaked into WCLAP: ${symbol}`);
           }
           NODE
           tar tzf build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz | grep -F 'WebviewGuiPolySynth.wclap/module.wasm'
           test "$(tar tzf build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
-      - name: Build pinned WCLAP lifecycle and WebView smoke host
+      - name: Build pinned WCLAP lifecycle, WebView and preset smoke host
         run: |
           git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
           git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
@@ -97,6 +101,9 @@ jobs:
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVS1 \
+            --preset-load-key polysynth:bass \
+            --preset-param-id 1000 \
+            --preset-param-value -3.0 \
             --instrument
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
@@ -104,7 +111,7 @@ jobs:
             -DCLAP_TRAP_BUILD_TESTS=OFF
           cmake --build build-clap-trap --target clap-trap-cli --parallel
 
-      - name: Execute real PolySynth WCLAP lifecycle and WebView smoke twice
+      - name: Execute real PolySynth WCLAP lifecycle, WebView and factory preset-load smoke twice
         run: |
           ./build-clap-trap/clap-trap validate build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
           ./build-clap-trap/clap-trap validate build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4

@@ -22,6 +22,8 @@ add_subdirectory(
 # WASI SDK reactors do not link a C++ exception runtime. Keep this profile local
 # to the WCLAP build so the native Gain target preserves its normal compiler
 # settings while the exact same core sources compile without __cxa_* references.
+# The canonical preset_production_catalog.h now contains the factory-only WASI
+# implementation directly; do not force-include a second catalog adapter.
 target_compile_options(webview_gui_example_gain_clap_core PRIVATE
     -msimd128
     -fno-exceptions

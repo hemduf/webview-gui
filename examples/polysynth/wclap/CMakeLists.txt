@@ -20,7 +20,8 @@ add_subdirectory(
 )
 
 # WASI SDK reactors do not link a C++ exception runtime. Keep the profile local
-# to this WCLAP build; native PolySynth keeps its normal compiler settings.
+# to this WCLAP build; native PolySynth keeps its normal compiler settings. The
+# canonical preset_production_catalog.h provides the factory-only WASI catalog.
 target_compile_options(webview_gui_example_polysynth_clap_core PRIVATE
     -msimd128
     -fno-exceptions

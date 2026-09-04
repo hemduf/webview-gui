@@ -24,6 +24,10 @@ struct WclapHostWebviewSmoke {
 };
 
 static uint32_t wclapWebviewSendCalls = 0;
+static uint32_t wclapPresetRescanCalls = 0;
+static clap_param_rescan_flags wclapPresetRescanFlags = 0;
+static uint32_t wclapPresetLoadedCalls = 0;
+static uint32_t wclapPresetErrorCalls = 0;
 
 static bool CLAP_ABI wclapHostWebviewSend(const clap_host_t *,
                                           const void *buffer,
@@ -34,11 +38,49 @@ static bool CLAP_ABI wclapHostWebviewSend(const clap_host_t *,
     return true;
 }
 
+static void CLAP_ABI wclapHostParamsRescan(const clap_host_t *,
+                                           clap_param_rescan_flags flags) {
+    ++wclapPresetRescanCalls;
+    wclapPresetRescanFlags |= flags;
+}
+static void CLAP_ABI wclapHostParamsClear(const clap_host_t *, clap_id, clap_param_clear_flags) {}
+static void CLAP_ABI wclapHostParamsRequestFlush(const clap_host_t *) {}
+
+static void CLAP_ABI wclapHostPresetOnError(const clap_host_t *,
+                                             uint32_t,
+                                             const char *,
+                                             const char *,
+                                             int32_t,
+                                             const char *) {
+    ++wclapPresetErrorCalls;
+}
+static void CLAP_ABI wclapHostPresetLoaded(const clap_host_t *,
+                                           uint32_t,
+                                           const char *,
+                                           const char *) {
+    ++wclapPresetLoadedCalls;
+}
+
 static const WclapHostWebviewSmoke wclapHostWebview{wclapHostWebviewSend};
+static const clap_host_params_t wclapHostParams{
+    wclapHostParamsRescan,
+    wclapHostParamsClear,
+    wclapHostParamsRequestFlush,
+};
+static const clap_host_preset_load_t wclapHostPresetLoad{
+    wclapHostPresetOnError,
+    wclapHostPresetLoaded,
+};
 
 static const void *wclapHostExtension(const char *id) {
-    if (id && std::strcmp(id, kWclapWebviewExtensionId) == 0)
+    if (!id)
+        return nullptr;
+    if (std::strcmp(id, kWclapWebviewExtensionId) == 0)
         return &wclapHostWebview;
+    if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
+        return &wclapHostParams;
+    if (std::strcmp(id, CLAP_EXT_PRESET_LOAD) == 0)
+        return &wclapHostPresetLoad;
     return nullptr;
 }
 
@@ -126,6 +168,49 @@ static bool runWclapWebviewSmoke(const clap_plugin_t *plugin) {
     printf("  ✓ WCLAP WebView bridge smoke (create/size/resource/message round-trip)\n");
     return true;
 }
+
+static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {
+    if (!plugin || !plugin->get_extension)
+        return false;
+
+    const auto *presetLoad = static_cast<const clap_plugin_preset_load_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_PRESET_LOAD));
+    const auto *params = static_cast<const clap_plugin_params_t *>(
+        plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+    if (!presetLoad || !presetLoad->from_location || !params || !params->get_value) {
+        fprintf(stderr, "  ✗ WCLAP preset smoke: incomplete preset-load/params surface\n");
+        return false;
+    }
+
+    wclapPresetRescanCalls = 0;
+    wclapPresetRescanFlags = 0;
+    wclapPresetLoadedCalls = 0;
+    wclapPresetErrorCalls = 0;
+
+    if (!presetLoad->from_location(plugin,
+                                   CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+                                   nullptr,
+                                   "__PRESET_LOAD_KEY__")) {
+        fprintf(stderr, "  ✗ WCLAP preset smoke: factory preset load failed\n");
+        return false;
+    }
+    if (wclapPresetErrorCalls != 0 || wclapPresetLoadedCalls != 1 ||
+        wclapPresetRescanCalls != 1 ||
+        (wclapPresetRescanFlags & CLAP_PARAM_RESCAN_VALUES) == 0) {
+        fprintf(stderr, "  ✗ WCLAP preset smoke: host notifications are inconsistent\n");
+        return false;
+    }
+
+    double value = 0.0;
+    if (!params->get_value(plugin, static_cast<clap_id>(__PRESET_PARAM_ID__), &value) ||
+        std::fabs(value - (__PRESET_PARAM_VALUE__)) > 1.0e-6) {
+        fprintf(stderr, "  ✗ WCLAP preset smoke: loaded base parameter is not visible\n");
+        return false;
+    }
+
+    printf("  ✓ WCLAP factory preset-load/2 smoke\n");
+    return true;
+}
 '''
 
 
@@ -151,13 +236,29 @@ def main() -> None:
     parser.add_argument("--source", required=True)
     parser.add_argument("--sync-magic", required=True)
     parser.add_argument("--instrument", action="store_true")
+    parser.add_argument("--preset-load-key")
+    parser.add_argument("--preset-param-id", type=int)
+    parser.add_argument("--preset-param-value", type=float)
     args = parser.parse_args()
 
     if len(args.sync_magic) != 4 or not args.sync_magic.isascii():
         raise SystemExit("--sync-magic must be exactly four ASCII characters")
 
+    preset_args = (args.preset_load_key, args.preset_param_id, args.preset_param_value)
+    preset_enabled = any(value is not None for value in preset_args)
+    if preset_enabled and not all(value is not None for value in preset_args):
+        raise SystemExit("preset smoke requires --preset-load-key, --preset-param-id and --preset-param-value")
+
     path = Path(args.source)
     text = path.read_text()
+
+    include_anchor = '#include "clap-trap/clap-trap.h"\n'
+    extra_includes = (
+        '#include "clap-trap/clap-trap.h"\n'
+        '#include <clap/ext/preset-load.h>\n'
+        '#include <clap/factory/preset-discovery.h>\n'
+    )
+    text, _ = replace_required(text, include_anchor, extra_includes, "CLAP include anchor", 1)
 
     text, load_count = replace_required(
         text,
@@ -175,6 +276,14 @@ def main() -> None:
     helper_anchor = "using namespace clap_trap;\n"
     sync_bytes = ", ".join(f"0x{ord(ch):02x}" for ch in args.sync_magic)
     helpers = WEBVIEW_HELPERS.replace("__SYNC_BYTES__", sync_bytes)
+    if preset_enabled:
+        helpers = helpers.replace("__PRESET_LOAD_KEY__", args.preset_load_key)
+        helpers = helpers.replace("__PRESET_PARAM_ID__", str(args.preset_param_id))
+        helpers = helpers.replace("__PRESET_PARAM_VALUE__", repr(args.preset_param_value))
+    else:
+        helpers = helpers.replace("__PRESET_LOAD_KEY__", "unused")
+        helpers = helpers.replace("__PRESET_PARAM_ID__", "0")
+        helpers = helpers.replace("__PRESET_PARAM_VALUE__", "0.0")
     text, _ = replace_required(
         text,
         helper_anchor,
@@ -203,6 +312,15 @@ def main() -> None:
         '        printf("  ✓ init()\\n");\n\n'
         '        if (!plugin->activate(plugin, opts.sampleRate, opts.bufferSize, opts.bufferSize)) {'
     )
+    preset_call = ""
+    if preset_enabled:
+        preset_call = (
+            '        if (!runWclapPresetLoadSmoke(plugin)) {\n'
+            '            plugin->destroy(plugin);\n'
+            '            failures++;\n'
+            '            continue;\n'
+            '        }\n\n'
+        )
     init_replacement = (
         '        printf("  ✓ init()\\n");\n\n'
         '        if (!runWclapWebviewSmoke(plugin)) {\n'
@@ -210,6 +328,7 @@ def main() -> None:
         '            failures++;\n'
         '            continue;\n'
         '        }\n\n'
+        + preset_call +
         '        if (!plugin->activate(plugin, opts.sampleRate, opts.bufferSize, opts.bufferSize)) {'
     )
     text, _ = replace_required(
@@ -248,9 +367,10 @@ def main() -> None:
         io_patch = f"instrument audio topology ({io_count} match)"
 
     path.write_text(text)
+    preset_patch = f"preset-load {args.preset_load_key}" if preset_enabled else "no preset smoke"
     print(
         f"patched clap-trap: {load_count} loader call(s), {entry_count} entry guard(s), "
-        f"real WebView bridge smoke ({args.sync_magic}), {io_patch}"
+        f"real WebView bridge smoke ({args.sync_magic}), {preset_patch}, {io_patch}"
     )
 
 

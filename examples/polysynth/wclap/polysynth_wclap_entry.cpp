@@ -1,7 +1,9 @@
 #include "../polysynth_plugin.h"
+#include "../polysynth_preset_discovery.h"
 #include "polysynth_wclap_proxy.h"
 
 #include <clap/clap.h>
+#include <clap/factory/preset-discovery.h>
 
 #include <cstring>
 
@@ -37,11 +39,6 @@ const clap_plugin_t *CLAP_ABI wclapFactoryCreatePlugin(
     if (!inner)
         return nullptr;
 
-    // The WCLAP-only proxy keeps the already-qualified PolySynth DSP/CLAP
-    // implementation unchanged while adding host-owned clap.gui + clap.webview,
-    // bounded GUI parameter events and read-only RT telemetry. It also contains
-    // the single historical pre-init clap.webview/3 compatibility exception
-    // required by the pinned bridge.
     const auto *wrapped = wclap::wrapPolySynthWclapPlugin(inner, host);
     if (wrapped)
         return wrapped;
@@ -61,8 +58,13 @@ bool CLAP_ABI polysynthWclapEntryInit(const char *) { return true; }
 void CLAP_ABI polysynthWclapEntryDeinit() {}
 
 const void *CLAP_ABI polysynthWclapEntryGetFactory(const char *factoryId) {
-    if (factoryId && std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
+    if (!factoryId)
+        return nullptr;
+    if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
         return &kWclapFactory;
+    if (std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID) == 0 ||
+        std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT) == 0)
+        return polysynthPresetDiscoveryFactory();
     return nullptr;
 }
 
