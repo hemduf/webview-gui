@@ -503,9 +503,19 @@ private:
                 return true;
             }
 
-            case 121u: { // Reset All Controllers.
+            case 121u: { // Reset All Controllers (MIDI RP-015 semantics).
+                // Preserve Channel Volume, Pan, sound-controller state and the
+                // selected RPN's stored value (notably pitch-bend sensitivity).
+                // Reset the transient controllers we model, null the RPN selector,
+                // and lift sustain. RP-015 explicitly does not mean "restore the
+                // whole channel to power-on defaults".
                 const bool hadSustain = state.sustain;
-                state = MidiChannelState{};
+                state.pitchBend = 8192u;
+                state.rpnMsb = 127u;
+                state.rpnLsb = 127u;
+                state.channelPressure = 0.0;
+                state.expression = 1.0;
+                state.sustain = false;
                 if (hadSustain)
                     releaseSustained(kInputPortIndex,
                                      static_cast<std::int16_t>(channel),
@@ -524,17 +534,9 @@ private:
                        emitNoteExpression(midi,
                                           CLAP_NOTE_EXPRESSION_EXPRESSION,
                                           -1,
-                                          1.0,
-                                          coreEventSink) &&
-                       emitNoteExpression(midi,
-                                          CLAP_NOTE_EXPRESSION_PAN,
-                                          -1,
-                                          0.5,
-                                          coreEventSink) &&
-                       emitNoteExpression(midi,
-                                          CLAP_NOTE_EXPRESSION_BRIGHTNESS,
-                                          -1,
-                                          0.0,
+                                          std::clamp(state.channelVolume,
+                                                     0.0,
+                                                     1.0),
                                           coreEventSink);
             }
 
