@@ -78,7 +78,7 @@ This table is the completed #32 CLAP surface. Every interface marked `Implemente
 | `clap.render` | Intentionally not advertised | The current DSP has no alternate offline-quality algorithm, so render mode does not influence processing. The pinned CLAP contract explicitly advises not implementing this extension when the information has no effect. |
 | `clap.latency` | Intentionally not advertised | Current processing has zero algorithmic latency, so no latency extension is necessary. If later DSP introduces non-zero latency, the extension must be added with a matching deterministic contract. |
 | `clap.note-name` | Implemented | Publishes deterministic chromatic names for all 128 keys on the single note-input port (`C-1` through `G9`) for every channel. The mapping is static, main-thread-only, allocation-free, and does not affect note processing. |
-| `clap.preset-load/2` | Not advertised (owned by #36/#37) | Preset serialization/storage is owned by #36 and CLAP `preset-load/2` plus Preset Discovery by #37. The plug-in intentionally exposes neither interface until those contracts land. |
+| `clap.preset-load/2` | Implemented | #92 exposes transactional preset loading in Gain and PolySynth. `PLUGIN` locations resolve stable bundled factory keys and native `FILE` locations resolve validated user-preset paths. Loading parses and validates into a candidate before mutating live state; failures call `host.preset-load.on_error()` without changing state, successes call `host.preset-load.loaded()` only after commit, and filesystem/serialization work stays off `process()`. Preset Discovery remains a separate #37 stage. |
 
 The PolySynth consumes CLAP core events sample-accurately. Qualified event handling covers `NOTE_ON`, `NOTE_OFF`, `NOTE_CHOKE`, generated `NOTE_END`, `PARAM_VALUE`, `PARAM_MOD`, and `NOTE_EXPRESSION` mappings for tuning, volume, pan, brightness, expression, and pressure. Transient per-note modulation/expression state is voice-generation-local and is cleared on reuse/reset rather than entering persistent state. Editor-originated `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` are emitted by the shared #33 GUI path rather than synthesized by the processor.
 
@@ -225,7 +225,7 @@ python examples/tests/verify_native_artifacts.py \
   --workspace "$PWD"
 ```
 
-This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators. Preset files are not yet part of the artifact gate because #37 (Preset Discovery / `preset-load/2`) is still open; once that ticket lands, its bundled preset resources become required here as well.
+This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators. Preset files are not yet part of the artifact gate because the remaining #37 Preset Discovery/packaging qualification is still open; once that stage lands, its bundled preset resources become required here as well.
 
 ### macOS AUv2
 
