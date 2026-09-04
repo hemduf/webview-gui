@@ -2,6 +2,7 @@
 #include "preset_production_catalog.h"
 #include "presets/preset_factory_catalog.h"
 #include "presets/preset_storage.h"
+#include "gain/gain_plugin.h"
 #include "gain/gain_preset_state.h"
 
 #include <clap/factory/preset-discovery.h>
