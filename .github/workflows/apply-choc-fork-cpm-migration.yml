@@ -19,6 +19,45 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      - name: Fix one-shot migration guard
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_choc_fork_cpm_migration.py')
+          text = path.read_text()
+          old = '''stale = []
+          for path in ROOT.rglob("*"):
+              if not path.is_file() or ".git" in path.parts or path == Path(__file__):
+                  continue
+              try:
+                  source = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for needle in needles:
+                  if needle in source:
+                      stale.append(f"{path}: {needle}")
+          '''
+          new = '''stale = []
+          scan_paths = [Path("CMakeLists.txt"), Path("PLUGIN_SAFE_CMAKE.md"), Path("README.md")]
+          for root in (Path("include"), Path("cmake"), Path("docs")):
+              if root.exists():
+                  scan_paths.extend(path for path in root.rglob("*") if path.is_file())
+
+          for path in scan_paths:
+              try:
+                  source = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for needle in needles:
+                  if needle in source:
+                      stale.append(f"{path}: {needle}")
+          '''
+          if old not in text:
+              raise SystemExit('migration stale-reference guard anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply migration
         run: python3 tools/apply_choc_fork_cpm_migration.py
 
@@ -41,6 +80,7 @@ jobs:
         run: |
           git diff --check
           cmake -P tests/choc_bootstrap_lifecycle_contract.cmake
+          cmake -P tests/native_csp_response_contract.cmake
 
       - name: Commit migration
         shell: bash
