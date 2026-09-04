@@ -279,7 +279,13 @@ struct ClapWebviewGui {
                 return false;
         }
 
-        return parent != nullptr && nativeWebview->attach(parent);
+        if (parent == nullptr || !nativeWebview->attach(parent))
+            return false;
+
+        // Some hosts size their native window from get_size() but do not issue an
+        // initial set_size() call. Apply the remembered CLAP size immediately so
+        // the embedded WebView has a drawable frame before the first user resize.
+        return nativeWebview->trySetSize(width, height);
     }
 
     bool setTransient(const clap_window *) { return false; }
@@ -337,8 +343,8 @@ private:
         }
         return pluginWebview != nullptr
             && pluginWebview->get_uri != nullptr
-            && pluginWebview->get_resource != nullptr
-            && pluginWebview->receive != nullptr;
+            && pluginWebview->receive != nullptr
+            && pluginWebview->get_resource != nullptr;
     }
 
     bool resolveHostWebviewExtension() noexcept {
