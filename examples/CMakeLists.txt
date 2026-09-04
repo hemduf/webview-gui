@@ -83,7 +83,7 @@ set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REPOSITORY
     "https://github.com/hemduf/clap-wrapper.git" CACHE STRING
     "clap-wrapper repository used by the native wrapper examples")
 set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION
-    "e1bb61404389fbdf619e63230da0972356346c11" CACHE STRING
+    "59dd0508f82288a6518cb7fdd5ef54cd88b3ac66" CACHE STRING
     "Pinned hemduf/clap-wrapper revision")
 set(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_REVISION
     "152b9823e992d782c5c1fd33bca0295478b919aa" CACHE STRING
