@@ -16,6 +16,8 @@ on:
       - 'include/webview-gui/**'
       - '.github/scripts/patch_clap_trap_wclap.py'
       - '.github/scripts/patch_clap_trap_wclap_presets.py'
+      - '.github/scripts/patch_clap_trap_wclap_discovery_smoke.py'
+      - '.github/scripts/patch_wclap_preset_discovery_bridge.py'
       - '.github/workflows/gain-wclap.yml'
   workflow_dispatch:
 
@@ -93,7 +95,7 @@ jobs:
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
           test "$(tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
-      - name: Build pinned WCLAP lifecycle, WebView and preset smoke host
+      - name: Build pinned WCLAP lifecycle, WebView and preset discovery/load smoke host
         run: |
           git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
           git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
@@ -101,6 +103,10 @@ jobs:
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
 
+          python3 .github/scripts/patch_wclap_preset_discovery_bridge.py \
+            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
+            --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
+            --loader-source .ci/clap-trap/src/plugin-loader.cpp
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVQ1
@@ -109,13 +115,15 @@ jobs:
             --preset-load-key gain:trim-minus-6db \
             --expected-param-id 4096 \
             --expected-param-value -6
+          python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
+            --source .ci/clap-trap/examples/cli.cpp
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_TRAP_BUILD_TESTS=OFF
           cmake --build build-clap-trap --target clap-trap-cli --parallel
 
-      - name: Execute real WCLAP lifecycle, WebView and preset smoke twice
+      - name: Execute real WCLAP lifecycle, WebView and preset discovery/load smoke twice
         run: |
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
