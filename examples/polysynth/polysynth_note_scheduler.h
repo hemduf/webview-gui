@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <type_traits>
 
 namespace webview_gui::examples::polysynth {
@@ -184,6 +183,8 @@ public:
     }
 
 private:
+    static constexpr std::int16_t kInputPortIndex = 0;
+
     struct MidiChannelState {
         std::uint16_t pitchBend = 8192u;
         std::uint8_t pitchBendRangeCoarse = 2u;
@@ -215,9 +216,8 @@ private:
         return static_cast<std::uint8_t>(midi.data[0] & 0x0fu);
     }
 
-    static bool midiPortCanAddressClap(const clap_event_midi_t &midi) noexcept {
-        return midi.port_index <= static_cast<std::uint16_t>(
-                                      std::numeric_limits<std::int16_t>::max());
+    static bool midiUsesInputPort(const clap_event_midi_t &midi) noexcept {
+        return midi.port_index == static_cast<std::uint16_t>(kInputPortIndex);
     }
 
     static double normalizedMidi7(std::uint8_t value) noexcept {
@@ -244,7 +244,7 @@ private:
                                    std::int16_t key,
                                    double value,
                                    CoreEventSink &coreEventSink) noexcept {
-        if (!midiPortCanAddressClap(midi) || !std::isfinite(value))
+        if (!midiUsesInputPort(midi) || !std::isfinite(value))
             return false;
 
         clap_event_note_expression_t expression{};
@@ -253,7 +253,7 @@ private:
         expression.header.type = CLAP_EVENT_NOTE_EXPRESSION;
         expression.expression_id = expressionId;
         expression.note_id = -1;
-        expression.port_index = static_cast<std::int16_t>(midi.port_index);
+        expression.port_index = kInputPortIndex;
         expression.channel = static_cast<std::int16_t>(midiChannel(midi));
         expression.key = key;
         expression.value = value;
@@ -300,7 +300,7 @@ private:
         if (family != 0x80u && family != 0x90u)
             return false;
         if (!validMidiDataByte(midi.data[1]) || !validMidiDataByte(midi.data[2]) ||
-            !midiPortCanAddressClap(midi))
+            !midiUsesInputPort(midi))
             return false;
 
         note = {};
@@ -310,7 +310,7 @@ private:
                                ? CLAP_EVENT_NOTE_ON
                                : CLAP_EVENT_NOTE_OFF;
         note.note_id = -1;
-        note.port_index = static_cast<std::int16_t>(midi.port_index);
+        note.port_index = kInputPortIndex;
         note.channel = static_cast<std::int16_t>(midiChannel(midi));
         note.key = static_cast<std::int16_t>(midi.data[1]);
         note.velocity = normalizedMidi7(midi.data[2]);
@@ -322,7 +322,7 @@ private:
                           CoreEventSink &coreEventSink,
                           Sink &sink) noexcept {
         const auto family = midiFamily(midi);
-        if (family >= 0x80u && family <= 0xe0u && !midiPortCanAddressClap(midi))
+        if (family >= 0x80u && family <= 0xe0u && !midiUsesInputPort(midi))
             return coreEventSink(midi.header);
 
         if (family == 0x80u || family == 0x90u) {
@@ -445,7 +445,8 @@ private:
             case 38u: // Data Entry LSB for RPN 0,0: pitch bend sensitivity cents.
                 if (state.rpnMsb != 0u || state.rpnLsb != 0u)
                     return coreEventSink(midi.header);
-                state.pitchBendRangeFine = static_cast<std::uint8_t>(std::min<unsigned>(value, 99u));
+                state.pitchBendRangeFine =
+                    static_cast<std::uint8_t>(std::min<unsigned>(value, 99u));
                 return emitNoteExpression(midi,
                                           CLAP_NOTE_EXPRESSION_TUNING,
                                           -1,
@@ -457,7 +458,7 @@ private:
                 const bool releasePending = state.sustain && !sustain;
                 state.sustain = sustain;
                 if (releasePending)
-                    releaseSustained(static_cast<std::int16_t>(midi.port_index),
+                    releaseSustained(kInputPortIndex,
                                      static_cast<std::int16_t>(channel),
                                      midi.header.time,
                                      sink);
@@ -471,6 +472,15 @@ private:
                                           -1,
                                           state.brightness,
                                           coreEventSink);
+
+            // Selecting an NRPN must deselect any previously selected RPN.
+            // Otherwise a later Data Entry CC6/38 could accidentally mutate
+            // pitch-bend sensitivity while the sender is addressing an NRPN.
+            case 98u: // NRPN LSB.
+            case 99u: // NRPN MSB.
+                state.rpnMsb = 127u;
+                state.rpnLsb = 127u;
+                return coreEventSink(midi.header);
 
             case 100u: // RPN LSB.
                 state.rpnLsb = value;
@@ -490,7 +500,7 @@ private:
                 const bool hadSustain = state.sustain;
                 state = MidiChannelState{};
                 if (hadSustain)
-                    releaseSustained(static_cast<std::int16_t>(midi.port_index),
+                    releaseSustained(kInputPortIndex,
                                      static_cast<std::int16_t>(channel),
                                      midi.header.time,
                                      sink);
@@ -542,7 +552,7 @@ private:
         note.header.size = sizeof(note);
         note.header.type = type;
         note.note_id = -1;
-        note.port_index = static_cast<std::int16_t>(midi.port_index);
+        note.port_index = kInputPortIndex;
         note.channel = static_cast<std::int16_t>(midiChannel(midi));
         note.key = -1;
         note.velocity = 0.0;
@@ -551,7 +561,7 @@ private:
 
     static bool validNoteOn(const clap_event_note_t &event) noexcept {
         return event.note_id >= -1 &&
-               event.port_index >= 0 &&
+               event.port_index == kInputPortIndex &&
                event.channel >= 0 && event.channel <= 15 &&
                event.key >= 0 && event.key <= 127 &&
                std::isfinite(event.velocity) && event.velocity >= 0.0 && event.velocity <= 1.0;
@@ -559,7 +569,7 @@ private:
 
     static bool validWildcardAddress(const clap_event_note_t &event) noexcept {
         return event.note_id >= -1 &&
-               event.port_index >= -1 &&
+               (event.port_index == -1 || event.port_index == kInputPortIndex) &&
                event.channel >= -1 && event.channel <= 15 &&
                event.key >= -1 && event.key <= 127;
     }
