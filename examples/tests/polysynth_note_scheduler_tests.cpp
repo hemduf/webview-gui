@@ -288,6 +288,7 @@ int main() {
     if (!rpn.pushMidi(0, 0, 0xb2u, 101u, 0u) ||
         !rpn.pushMidi(0, 0, 0xb2u, 100u, 0u) ||
         !rpn.pushMidi(1, 0, 0xb2u, 6u, 12u) ||
+        !rpn.pushMidi(1, 0, 0xb2u, 38u, 127u) ||
         !rpn.pushMidi(2, 0, 0xb2u, 99u, 1u) ||
         !rpn.pushMidi(2, 0, 0xb2u, 98u, 2u) ||
         !rpn.pushMidi(3, 0, 0xb2u, 6u, 24u) ||
@@ -313,13 +314,11 @@ int main() {
     if (!rpnScheduler.processWithBoundariesAndEvents(
             &rpn.input, 5, boundary, rpnCore, rpnCapture) ||
         rpnCapture.count != 0 || rawNrpnMessages != 3 ||
-        std::fabs(finalTuning - 12.0) > 1.0e-12) {
-        std::cerr << "NRPN selection leaked into RPN pitch-bend sensitivity\n";
+        std::fabs(finalTuning - 13.27) > 1.0e-12) {
+        std::cerr << "RPN cents range or NRPN isolation changed pitch-bend sensitivity\n";
         return 24;
     }
 
-    // MIDI CC10 has an asymmetric 7-bit center: 64 is exactly center while 127
-    // is the right endpoint. Protect both values rather than using value/127.
     NoteEventScheduler panScheduler;
     if (!panScheduler.configure(1))
         return 25;
@@ -347,8 +346,6 @@ int main() {
         return 27;
     }
 
-    // Channel Mode messages 124..127 carry the same All Notes Off side effect
-    // as CC123 even though this reference synth does not model Omni/Mono modes.
     for (const auto controller : std::array<std::uint8_t, 5>{{123u, 124u, 125u, 126u, 127u}}) {
         NoteEventScheduler modeScheduler;
         if (!modeScheduler.configure(1))
