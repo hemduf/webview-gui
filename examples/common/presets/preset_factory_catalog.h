@@ -1,5 +1,46 @@
 #pragma once
 
+#if defined(__wasi__)
+
+#include "../example_plugin_ids.h"
+
+#include <cstddef>
+#include <string_view>
+
+namespace webview_gui::examples::presets {
+
+inline constexpr std::string_view kPresetFileExtension = "wvpreset";
+inline constexpr std::string_view kPresetFileSuffix = ".wvpreset";
+inline constexpr std::string_view kGainFactoryTargetPluginId =
+    plugin_ids::kGainPluginId;
+inline constexpr std::string_view kPolySynthFactoryTargetPluginId =
+    plugin_ids::kPolySynthPluginId;
+
+// #94 owns real WCLAP Preset Discovery + factory loading. Until that bounded
+// stage lands, keep the #92 instance build free of the CHOC JSON parser and do
+// not synthesize factory data in WASI.
+class FactoryPresetCatalog {
+public:
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return 0u; }
+    [[nodiscard]] static constexpr std::string_view fileExtension() noexcept {
+        return kPresetFileExtension;
+    }
+};
+
+[[nodiscard]] inline const FactoryPresetCatalog &gainFactoryPresetCatalog() {
+    static const FactoryPresetCatalog catalog{};
+    return catalog;
+}
+
+[[nodiscard]] inline const FactoryPresetCatalog &polySynthFactoryPresetCatalog() {
+    static const FactoryPresetCatalog catalog{};
+    return catalog;
+}
+
+} // namespace webview_gui::examples::presets
+
+#else
+
 #include "../example_plugin_ids.h"
 #include "preset_codec.h"
 
@@ -284,3 +325,5 @@ polyFactoryResources() {
 }
 
 } // namespace webview_gui::examples::presets
+
+#endif
