@@ -3,6 +3,7 @@
 #include <clap/clap.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 
@@ -32,6 +33,24 @@ struct InputEvents {
         event.channel = 2;
         event.key = 60;
         event.velocity = 1.0;
+        headers[count++] = &event.header;
+        return true;
+    }
+
+    bool midi(std::uint32_t time,
+              std::uint8_t status,
+              std::uint8_t key,
+              std::uint8_t velocity) noexcept {
+        auto &event = midis[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_MIDI;
+        event.port_index = 0;
+        event.data[0] = status;
+        event.data[1] = key;
+        event.data[2] = velocity;
         headers[count++] = &event.header;
         return true;
     }
@@ -81,6 +100,7 @@ struct InputEvents {
     }
 
     std::array<clap_event_note_t, 8> notes{};
+    std::array<clap_event_midi_t, 8> midis{};
     std::array<clap_event_param_mod_t, 8> mods{};
     std::array<clap_event_note_expression_t, 8> expressions{};
     std::array<const clap_event_header_t *, 8> headers{};
@@ -159,6 +179,51 @@ int main() {
             std::cerr << "same-sample event ordering changed\n";
             return 4;
         }
+    }
+
+    NoteEventScheduler midiScheduler;
+    if (!midiScheduler.configure(2))
+        return 8;
+
+    InputEvents midiInput;
+    midiInput.midi(0, 0x92u, 60u, 100u);
+    midiInput.midi(2, 0x82u, 60u, 64u);
+
+    std::array<ScheduledNoteEvent, 2> midiSequence{};
+    std::size_t midiSequenceCount = 0;
+    std::size_t forwardedMidiCount = 0;
+    auto midiBoundary = [](std::uint32_t) noexcept {};
+    auto midiCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_MIDI)
+            ++forwardedMidiCount;
+        return true;
+    };
+    auto midiNote = [&](const ScheduledNoteEvent &event) noexcept {
+        if (midiSequenceCount < midiSequence.size())
+            midiSequence[midiSequenceCount++] = event;
+    };
+
+    if (!midiScheduler.processWithBoundariesAndEvents(
+            &midiInput.input, 4, midiBoundary, midiCore, midiNote)) {
+        std::cerr << "standalone MIDI note stream rejected\n";
+        return 9;
+    }
+
+    const auto expectedOnVelocity = 100.0 / 127.0;
+    const auto expectedOffVelocity = 64.0 / 127.0;
+    if (forwardedMidiCount != 0 || midiSequenceCount != 2 ||
+        midiSequence[0].kind != ScheduledNoteKind::NoteOn ||
+        midiSequence[0].time != 0 || midiSequence[0].identity.noteId != -1 ||
+        midiSequence[0].identity.portIndex != 0 || midiSequence[0].identity.channel != 2 ||
+        midiSequence[0].identity.key != 60 ||
+        std::fabs(midiSequence[0].velocity - expectedOnVelocity) > 1.0e-12 ||
+        midiSequence[1].kind != ScheduledNoteKind::NoteOff ||
+        midiSequence[1].time != 2 || midiSequence[1].identity.noteId != -1 ||
+        midiSequence[1].identity.portIndex != 0 || midiSequence[1].identity.channel != 2 ||
+        midiSequence[1].identity.key != 60 ||
+        std::fabs(midiSequence[1].velocity - expectedOffVelocity) > 1.0e-12) {
+        std::cerr << "standalone MIDI note translation failed\n";
+        return 10;
     }
 
     VoiceLifecycle lifecycle;
