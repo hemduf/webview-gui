@@ -29,3 +29,28 @@ add_test(
     NAME webview_gui_standalone_device_bridge_tests
     COMMAND webview_gui_standalone_device_bridge_tests
 )
+
+if(APPLE)
+    add_subdirectory(
+        ${CMAKE_CURRENT_LIST_DIR}/../..
+        ${CMAKE_CURRENT_BINARY_DIR}/webview-gui-under-test
+        EXCLUDE_FROM_ALL
+    )
+
+    add_executable(webview_gui_standalone_device_bridge_macos_runtime_tests
+        standalone_device_bridge_macos_runtime_tests.cpp
+    )
+    target_include_directories(webview_gui_standalone_device_bridge_macos_runtime_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../../include
+        ${clap_SOURCE_DIR}/include
+    )
+    target_link_libraries(webview_gui_standalone_device_bridge_macos_runtime_tests PRIVATE
+        webview-gui
+        "-framework CoreFoundation"
+    )
+
+    add_test(
+        NAME webview_gui_standalone_device_bridge_macos_runtime_tests
+        COMMAND webview_gui_standalone_device_bridge_macos_runtime_tests
+    )
+endif()
