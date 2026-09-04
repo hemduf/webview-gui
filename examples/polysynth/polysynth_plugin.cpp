@@ -2,6 +2,9 @@
 #include "polysynth_parameter_snapshot.h"
 #include "polysynth_parameter_voice_engine.h"
 #include "polysynth_preset_state.h"
+#include "../common/preset_load_controller.h"
+#include "../common/preset_production_catalog.h"
+#include "../common/presets/preset_factory_catalog.h"
 
 #include <clap/ext/note-name.h>
 #include <clap/ext/remote-controls.h>
@@ -888,6 +891,57 @@ protected:
         loaded.fineTuneCents = static_cast<float>(fineTuneCents);
 
         return commitPersistentParameterSnapshot(loaded, true);
+    }
+
+    bool implementsPresetLoad() const noexcept override { return true; }
+
+    bool presetLoadFromLocation(std::uint32_t locationKind,
+                                const char *location,
+                                const char *loadKey) noexcept override {
+        const clap_host_preset_load_t *hostPresetLoad = nullptr;
+        if (host_ && host_->get_extension) {
+            hostPresetLoad = static_cast<const clap_host_preset_load_t *>(
+                host_->get_extension(host_, CLAP_EXT_PRESET_LOAD));
+            if (!hostPresetLoad) {
+                hostPresetLoad = static_cast<const clap_host_preset_load_t *>(
+                    host_->get_extension(host_, CLAP_EXT_PRESET_LOAD_COMPAT));
+            }
+        }
+
+        auto catalog = presets::makeDefaultProductionPresetCatalog(
+            presets::polySynthFactoryPresetCatalog(), kPolySynthPluginId);
+        if (!catalog) {
+            const auto result = presets::PresetResult::error(
+                "PolySynth preset catalog is unavailable");
+            presets::notifyPresetLoadFailure(host_,
+                                             hostPresetLoad,
+                                             locationKind,
+                                             location,
+                                             loadKey,
+                                             result);
+            return false;
+        }
+
+        return presets::loadPresetFromLocation(
+            *catalog,
+            locationKind,
+            location,
+            loadKey,
+            host_,
+            hostPresetLoad,
+            [this](const presets::PresetDocument &document) noexcept -> presets::PresetResult {
+                switch (applyPolySynthPresetDocument(document)) {
+                    case presets::PresetStateAdapterError::None:
+                        return presets::PresetResult::success();
+                    case presets::PresetStateAdapterError::WrongTargetPlugin:
+                        return presets::PresetResult::error("preset targets a different plug-in");
+                    case presets::PresetStateAdapterError::InvalidDocument:
+                        return presets::PresetResult::error("PolySynth preset document is invalid");
+                    case presets::PresetStateAdapterError::InvalidKnownParameter:
+                        return presets::PresetResult::error("PolySynth preset parameter is invalid");
+                }
+                return presets::PresetResult::error("unknown PolySynth preset state error");
+            });
     }
 
     bool implementsStateContext() const noexcept override { return true; }
