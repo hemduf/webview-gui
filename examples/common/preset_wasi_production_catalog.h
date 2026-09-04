@@ -171,7 +171,8 @@ private:
     }
 }
 
-template <typename = void>
+// Non-template overload intentionally outranks the historical #92 WASI stub
+// template when both headers are visible from plug-in translation units.
 [[nodiscard]] inline std::unique_ptr<PresetCatalog> makeDefaultProductionPresetCatalog(
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId) noexcept {
