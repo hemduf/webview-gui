@@ -155,3 +155,24 @@ add_test(
     NAME webview_gui_wclap_backend_selection_contract
     COMMAND webview_gui_wclap_backend_selection_contract
 )
+
+add_executable(webview_gui_wclap_preset_wasi_contract
+    wclap_preset_wasi_contract.cpp
+)
+target_include_directories(webview_gui_wclap_preset_wasi_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/common"
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+    "${clap_SOURCE_DIR}/include"
+)
+target_compile_definitions(webview_gui_wclap_preset_wasi_contract PRIVATE
+    __wasi__=1
+)
+target_compile_options(webview_gui_wclap_preset_wasi_contract PRIVATE
+    -fno-exceptions
+)
+target_link_libraries(webview_gui_wclap_preset_wasi_contract PRIVATE clap)
+
+add_test(
+    NAME webview_gui_wclap_preset_wasi_contract
+    COMMAND webview_gui_wclap_preset_wasi_contract
+)
