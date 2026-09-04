@@ -73,10 +73,9 @@ function(webview_gui_attach_native_preset_runtime target)
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
         "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
     if(WIN32)
-        target_compile_definitions(${target} PRIVATE
-            NOMINMAX
-            WIN32_LEAN_AND_MEAN
-        )
+        # Keep wrapper-visible Win32 declarations intact. native_preset_storage.cpp
+        # scopes its own lean Windows include configuration internally.
+        target_compile_definitions(${target} PRIVATE NOMINMAX)
         target_link_libraries(${target} PRIVATE shell32 ole32)
     endif()
 endfunction()
