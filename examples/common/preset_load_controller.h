@@ -121,6 +121,20 @@ inline void notifyLoadError(const clap_host_t *host,
 
 } // namespace preset_load_detail
 
+inline void notifyPresetLoadFailure(const clap_host_t *host,
+                                    const clap_host_preset_load_t *hostPresetLoad,
+                                    std::uint32_t locationKind,
+                                    const char *location,
+                                    const char *loadKey,
+                                    const PresetResult &result) noexcept {
+    preset_load_detail::notifyLoadError(host,
+                                        hostPresetLoad,
+                                        locationKind,
+                                        location,
+                                        loadKey,
+                                        result);
+}
+
 template <typename CommitFn>
 [[nodiscard]] bool loadPresetFromLocation(PresetCatalog &catalog,
                                           std::uint32_t locationKind,
@@ -132,12 +146,12 @@ template <typename CommitFn>
     const auto locationValidation =
         preset_load_detail::validateLocationShape(locationKind, location, loadKey);
     if (!locationValidation.succeeded()) {
-        preset_load_detail::notifyLoadError(host,
-                                            hostPresetLoad,
-                                            locationKind,
-                                            location,
-                                            loadKey,
-                                            locationValidation);
+        notifyPresetLoadFailure(host,
+                                hostPresetLoad,
+                                locationKind,
+                                location,
+                                loadKey,
+                                locationValidation);
         return false;
     }
 
@@ -153,24 +167,24 @@ template <typename CommitFn>
     }
 
     if (!loadResult.succeeded()) {
-        preset_load_detail::notifyLoadError(host,
-                                            hostPresetLoad,
-                                            locationKind,
-                                            location,
-                                            loadKey,
-                                            loadResult);
+        notifyPresetLoadFailure(host,
+                                hostPresetLoad,
+                                locationKind,
+                                location,
+                                loadKey,
+                                loadResult);
         return false;
     }
 
     const auto *document = sink.candidate();
     if (!document) {
         const auto result = PresetResult::error("preset catalog produced no complete candidate");
-        preset_load_detail::notifyLoadError(host,
-                                            hostPresetLoad,
-                                            locationKind,
-                                            location,
-                                            loadKey,
-                                            result);
+        notifyPresetLoadFailure(host,
+                                hostPresetLoad,
+                                locationKind,
+                                location,
+                                loadKey,
+                                result);
         return false;
     }
 
@@ -182,12 +196,12 @@ template <typename CommitFn>
     }
 
     if (!commitResult.succeeded()) {
-        preset_load_detail::notifyLoadError(host,
-                                            hostPresetLoad,
-                                            locationKind,
-                                            location,
-                                            loadKey,
-                                            commitResult);
+        notifyPresetLoadFailure(host,
+                                hostPresetLoad,
+                                locationKind,
+                                location,
+                                loadKey,
+                                commitResult);
         return false;
     }
 
