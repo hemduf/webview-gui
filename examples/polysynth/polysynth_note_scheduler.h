@@ -453,8 +453,7 @@ private:
             case 38u: // Data Entry LSB for RPN 0,0: pitch bend sensitivity cents.
                 if (state.rpnMsb != 0u || state.rpnLsb != 0u)
                     return coreEventSink(midi.header);
-                state.pitchBendRangeFine =
-                    static_cast<std::uint8_t>(std::min<unsigned>(value, 99u));
+                state.pitchBendRangeFine = value;
                 return emitNoteExpression(midi,
                                           CLAP_NOTE_EXPRESSION_TUNING,
                                           -1,
