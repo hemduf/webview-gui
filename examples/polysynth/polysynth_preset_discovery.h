@@ -2,11 +2,7 @@
 
 #include "polysynth_plugin.h"
 #include "../common/preset_discovery_factory.h"
-#if defined(__wasi__)
-#include "../common/preset_wasi_production_catalog.h"
-#else
 #include "../common/preset_production_catalog.h"
-#endif
 #include "../common/presets/preset_factory_catalog.h"
 
 #include <memory>
