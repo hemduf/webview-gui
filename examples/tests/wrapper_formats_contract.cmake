@@ -58,6 +58,7 @@ foreach(required_token IN ITEMS
         WebviewGuiPolySynth
         webview_gui_example_gain_formats
         webview_gui_example_polysynth_formats
+        StandaloneAudioSettingsButton.mm
         SUPPORTS_ALL_NOTE_EXPRESSIONS)
     string(FIND "${all_cmake}" "${required_token}" token_index)
     if(token_index EQUAL -1)
