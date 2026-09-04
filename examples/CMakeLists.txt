@@ -64,6 +64,8 @@ endif()
 
 set(WEBVIEW_GUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
     "Path to the webview-gui repository root")
+set(WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR
+    "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/PresetResources.cmake")
 
 if(NOT TARGET webview-gui)
@@ -162,8 +164,9 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     add_library(webview_gui_example_gain_clap_core STATIC
         gain/gain_plugin.cpp
     )
-    target_include_directories(webview_gui_example_gain_clap_core PUBLIC
-        ${CMAKE_CURRENT_LIST_DIR}/gain
+    target_include_directories(webview_gui_example_gain_clap_core
+        PUBLIC ${CMAKE_CURRENT_LIST_DIR}/gain
+        PRIVATE ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
     )
     target_link_libraries(webview_gui_example_gain_clap_core
         PUBLIC clap-helpers
@@ -347,6 +350,9 @@ endif()
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
+    target_include_directories(webview_gui_example_polysynth_clap_core PRIVATE
+        ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
+    )
     webview_gui_package_native_clap_preset_resources(
         webview_gui_example_polysynth WebviewGuiPolySynth)
 endif()
