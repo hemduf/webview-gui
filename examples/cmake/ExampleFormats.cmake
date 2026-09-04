@@ -173,6 +173,10 @@ function(webview_gui_add_example_wrappers)
         add_executable(${target} ${FMT_ENTRY_SOURCE})
         target_link_libraries(${target} PRIVATE ${common_libraries})
         target_compile_features(${target} PRIVATE cxx_std_17)
+        if(APPLE)
+            target_sources(${target} PRIVATE
+                "${CMAKE_CURRENT_LIST_DIR}/StandaloneAudioSettingsButton.mm")
+        endif()
         target_add_standalone_wrapper(
             TARGET ${target}
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
