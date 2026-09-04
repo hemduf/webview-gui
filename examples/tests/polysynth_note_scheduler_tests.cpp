@@ -177,8 +177,6 @@ int main() {
         return 3;
     }
 
-    // Same-time events must preserve host list order. These two note-ons also
-    // prove that identical key/channel values remain isolated by note_id.
     if (!expectEvent(capture, 0, 2, ScheduledNoteKind::NoteOn, 0, 100, 0, 1, 60,
                      "first same-time NOTE_ON") ||
         !expectEvent(capture, 1, 2, ScheduledNoteKind::NoteOn, 1, 101, 0, 1, 60,
@@ -186,17 +184,11 @@ int main() {
         return 4;
     }
 
-    // NOTE_OFF may wildcard any address field. A note_id-only release must
-    // target the concrete active identity without leaking to the overlapping
-    // same-key voice.
     if (!expectEvent(capture, 2, 5, ScheduledNoteKind::NoteOff, 0, 100, 0, 1, 60,
                      "note-id wildcard NOTE_OFF")) {
         return 5;
     }
 
-    // NOTE_OFF begins release but does not retire a voice. A later key-scoped
-    // NOTE_CHOKE therefore still sees both active identities. Fan-out order is
-    // deterministic ascending voice-slot order.
     if (!expectEvent(capture, 3, 7, ScheduledNoteKind::NoteChoke, 0, 100, 0, 1, 60,
                      "first wildcard NOTE_CHOKE") ||
         !expectEvent(capture, 4, 7, ScheduledNoteKind::NoteChoke, 1, 101, 0, 1, 60,
@@ -216,8 +208,6 @@ int main() {
         return 8;
     }
 
-    // Malformed NOTE_ON addresses are ignored rather than allocating a voice:
-    // CLAP requires port/channel/key to be specified for NOTE_ON.
     InputEvents malformed;
     if (!malformed.pushNote(1, CLAP_EVENT_NOTE_ON, 200, -1, 1, 64))
         return 9;
@@ -228,10 +218,6 @@ int main() {
         return 10;
     }
 
-    // Review regression: when deterministic stealing occurs, the old concrete
-    // identity must survive in the scheduled NOTE_ON result. The future voice
-    // engine needs it to emit the correct CLAP NOTE_END for the host voice that
-    // was terminated by stealing.
     scheduler.reset();
     if (!scheduler.configure(1))
         return 11;
@@ -253,10 +239,6 @@ int main() {
         return 14;
     }
 
-    // CLAP process events use offsets inside the current block. An event at
-    // frames_count has no corresponding sample and must not be scheduled or
-    // mutate the allocator; accepting it could later produce an invalid output
-    // NOTE_END at the same out-of-range offset.
     scheduler.reset();
     if (!scheduler.configure(1))
         return 15;
@@ -276,9 +258,6 @@ int main() {
         return 18;
     }
 
-    // PolySynth exposes one note input port, index 0. Native CLAP notes on any
-    // other concrete port must be ignored, and raw MIDI on another port must stay
-    // on the harmless raw-core path rather than allocating a voice.
     NoteEventScheduler portScheduler;
     if (!portScheduler.configure(1))
         return 19;
@@ -302,9 +281,6 @@ int main() {
         return 21;
     }
 
-    // Selecting an NRPN deselects RPN 0. A later Data Entry must therefore not
-    // rewrite pitch-bend sensitivity. The final bend remains at the previously
-    // configured 12-semitone range.
     NoteEventScheduler rpnScheduler;
     if (!rpnScheduler.configure(1))
         return 22;
@@ -340,6 +316,58 @@ int main() {
         std::fabs(finalTuning - 12.0) > 1.0e-12) {
         std::cerr << "NRPN selection leaked into RPN pitch-bend sensitivity\n";
         return 24;
+    }
+
+    // MIDI CC10 has an asymmetric 7-bit center: 64 is exactly center while 127
+    // is the right endpoint. Protect both values rather than using value/127.
+    NoteEventScheduler panScheduler;
+    if (!panScheduler.configure(1))
+        return 25;
+    InputEvents panInput;
+    if (!panInput.pushMidi(0, 0, 0xb2u, 10u, 64u) ||
+        !panInput.pushMidi(1, 0, 0xb2u, 10u, 127u))
+        return 26;
+    std::array<double, 2> panValues{};
+    std::size_t panCount = 0;
+    auto panCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION &&
+            header.size >= sizeof(clap_event_note_expression_t)) {
+            const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN && panCount < panValues.size())
+                panValues[panCount++] = event.value;
+        }
+        return true;
+    };
+    Capture panCapture;
+    if (!panScheduler.processWithBoundariesAndEvents(
+            &panInput.input, 2, boundary, panCore, panCapture) ||
+        panCount != 2 || std::fabs(panValues[0] - 0.5) > 1.0e-12 ||
+        std::fabs(panValues[1] - 1.0) > 1.0e-12) {
+        std::cerr << "MIDI CC10 center/endpoints were mapped incorrectly\n";
+        return 27;
+    }
+
+    // Channel Mode messages 124..127 carry the same All Notes Off side effect
+    // as CC123 even though this reference synth does not model Omni/Mono modes.
+    for (const auto controller : std::array<std::uint8_t, 5>{{123u, 124u, 125u, 126u, 127u}}) {
+        NoteEventScheduler modeScheduler;
+        if (!modeScheduler.configure(1))
+            return 28;
+        InputEvents modeInput;
+        if (!modeInput.pushMidi(0, 0, 0x92u, 60u, 100u) ||
+            !modeInput.pushMidi(1, 0, 0xb2u, controller, 0u))
+            return 29;
+        Capture modeCapture;
+        auto modeCore = [](const clap_event_header_t &) noexcept -> bool { return true; };
+        if (!modeScheduler.processWithBoundariesAndEvents(
+                &modeInput.input, 2, boundary, modeCore, modeCapture) ||
+            modeCapture.count != 2 ||
+            modeCapture.events[0].kind != ScheduledNoteKind::NoteOn ||
+            modeCapture.events[1].kind != ScheduledNoteKind::NoteOff ||
+            modeCapture.events[1].time != 1) {
+            std::cerr << "MIDI Channel Mode message omitted its All Notes Off side effect\n";
+            return 30;
+        }
     }
 
     return 0;
