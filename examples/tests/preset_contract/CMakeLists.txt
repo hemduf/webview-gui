@@ -32,6 +32,10 @@ target_include_directories(webview_gui_preset_contract_native_support PUBLIC
 target_link_libraries(webview_gui_preset_contract_native_support PUBLIC clap)
 target_compile_features(webview_gui_preset_contract_native_support PUBLIC cxx_std_17)
 if(WIN32)
+    target_compile_definitions(webview_gui_preset_contract_native_support PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
     target_link_libraries(webview_gui_preset_contract_native_support PRIVATE shell32 ole32)
 endif()
 

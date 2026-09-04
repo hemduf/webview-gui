@@ -81,9 +81,6 @@ function(webview_gui_copy_preset_resources target destination)
     webview_gui_add_preset_copy_command(${target} "${destination}")
 endfunction()
 
-# Native CLAP discovery needs the same #36 storage implementation used by the
-# preset subsystem tests. Attach it once to each canonical native module here,
-# where both Gain and PolySynth already pass for resource packaging.
 function(webview_gui_attach_native_preset_runtime target)
     get_target_property(runtime_attached ${target} WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED)
     if(runtime_attached)
@@ -99,6 +96,10 @@ function(webview_gui_attach_native_preset_runtime target)
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
         "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
     if(WIN32)
+        target_compile_definitions(${target} PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+        )
         target_link_libraries(${target} PRIVATE shell32 ole32)
     endif()
 endfunction()
