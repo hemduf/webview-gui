@@ -77,6 +77,15 @@ public:
     bool beginPreset(std::string_view name, std::string_view loadKey) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->begin_preset)
             return false;
+#if defined(__wasi__)
+        std::string nameText{name};
+        std::string loadKeyText{loadKey};
+        const char *loadKeyPtr = loadKey.empty() ? nullptr : loadKeyText.c_str();
+        const bool accepted = receiver_->begin_preset(receiver_, nameText.c_str(), loadKeyPtr);
+        if (!accepted)
+            cancelled_ = true;
+        return accepted;
+#else
         try {
             std::string nameText{name};
             std::string loadKeyText{loadKey};
@@ -91,11 +100,17 @@ public:
             failed_ = true;
             return false;
         }
+#endif
     }
 
     void setTargetPlugin(std::string_view pluginId) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->add_plugin_id)
             return;
+#if defined(__wasi__)
+        std::string idText{pluginId};
+        const clap_universal_plugin_id_t universalId{"clap", idText.c_str()};
+        receiver_->add_plugin_id(receiver_, &universalId);
+#else
         try {
             std::string idText{pluginId};
             const clap_universal_plugin_id_t universalId{"clap", idText.c_str()};
@@ -103,16 +118,21 @@ public:
         } catch (...) {
             failed_ = true;
         }
+#endif
     }
 
     void setFlags(std::uint32_t flags) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->set_flags)
             return;
+#if defined(__wasi__)
+        receiver_->set_flags(receiver_, flags);
+#else
         try {
             receiver_->set_flags(receiver_, flags);
         } catch (...) {
             failed_ = true;
         }
+#endif
     }
 
     void addCreator(std::string_view creator) noexcept override {
@@ -131,11 +151,15 @@ public:
                        clap_timestamp modification) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->set_timestamps)
             return;
+#if defined(__wasi__)
+        receiver_->set_timestamps(receiver_, creation, modification);
+#else
         try {
             receiver_->set_timestamps(receiver_, creation, modification);
         } catch (...) {
             failed_ = true;
         }
+#endif
     }
 
     [[nodiscard]] bool failed() const noexcept { return failed_; }
@@ -148,12 +172,17 @@ private:
     void callString(StringCallback callback, std::string_view text) noexcept {
         if (failed_ || cancelled_ || !receiver_ || !callback)
             return;
+#if defined(__wasi__)
+        std::string copy{text};
+        callback(receiver_, copy.c_str());
+#else
         try {
             std::string copy{text};
             callback(receiver_, copy.c_str());
         } catch (...) {
             failed_ = true;
         }
+#endif
     }
 
     const clap_preset_discovery_metadata_receiver_t *receiver_ = nullptr;
@@ -166,6 +195,12 @@ inline void notifyMetadataError(
     const PresetResult &result) noexcept {
     if (!receiver || !receiver->on_error)
         return;
+#if defined(__wasi__)
+    const std::string message = result.message.empty()
+                                    ? std::string{"preset metadata extraction failed"}
+                                    : std::string{result.message};
+    receiver->on_error(receiver, result.osError, message.c_str());
+#else
     try {
         std::string message = result.message.empty()
                                   ? std::string{"preset metadata extraction failed"}
@@ -173,6 +208,7 @@ inline void notifyMetadataError(
         receiver->on_error(receiver, result.osError, message.c_str());
     } catch (...) {
     }
+#endif
 }
 
 } // namespace detail
@@ -300,8 +336,6 @@ class PresetDiscoveryFactoryImpl {
             result = PresetResult::unsupported("unsupported preset discovery location kind");
         }
 
-        // Adapter faults (allocation/callback exceptions) are not host-requested
-        // cancellation. Report them even if the catalog saw beginPreset()==false.
         if (sink.failed()) {
             detail::notifyMetadataError(receiver,
                 PresetResult::error("metadata receiver adapter failed"));
