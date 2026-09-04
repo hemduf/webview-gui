@@ -58,4 +58,6 @@ jobs:
           webview_gui_preset_notification_tests
 
       - name: Run preset host/UI sync contract
-        run: ctest --test-dir build-preset-host-sync -C Debug --output-on-failure --no-tests=error
+        run: >-
+          ctest --test-dir build-preset-host-sync -C Debug --output-on-failure --no-tests=error
+          -R '^webview_gui_preset_(host_sync|notification)$'
