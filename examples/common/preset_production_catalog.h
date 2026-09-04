@@ -6,18 +6,94 @@
 #include "presets/preset_factory_catalog.h"
 
 #include <memory>
+#include <new>
 #include <string_view>
 
 namespace webview_gui::examples::presets {
 
-// #94 owns the real WCLAP catalog/discovery/load wiring. #92 keeps the core
-// build honest and CHOC/filesystem-free rather than manufacturing a partial
-// WASI implementation here.
+class WasiFactoryPresetCatalog final : public PresetCatalog {
+public:
+    WasiFactoryPresetCatalog(const FactoryPresetCatalog &factoryCatalog,
+                             std::string_view targetPluginId) noexcept
+        : factoryCatalog_(factoryCatalog), targetPluginId_(targetPluginId) {}
+
+    [[nodiscard]] std::string_view fileExtension() const noexcept override {
+        return factoryCatalog_.fileExtension();
+    }
+
+    bool nativeUserLocation(std::string_view &) const noexcept override {
+        return false;
+    }
+
+    PresetResult enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept override {
+        for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
+            const auto definition = factoryCatalog_.at(i);
+            if (!definition.valid() || definition.targetPluginId != targetPluginId_)
+                return PresetResult::error("invalid bundled WASI factory preset definition");
+            if (!sink.beginPreset(definition.name, definition.loadKey))
+                return PresetResult::cancelled();
+            sink.setTargetPlugin(definition.targetPluginId);
+            sink.setFlags(CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+            sink.addCreator("webview-gui");
+            sink.setDescription(definition.description);
+            sink.addFeature("factory");
+            sink.addFeature(definition.category);
+            if (definition.targetPluginId == kGainFactoryTargetPluginId) {
+                sink.addFeature("audio-effect");
+                sink.addFeature("utility");
+            } else {
+                sink.addFeature("instrument");
+                sink.addFeature("synthesizer");
+            }
+        }
+        return PresetResult::success();
+    }
+
+    PresetResult metadataForFile(std::string_view,
+                                 PresetMetadataSink &) const noexcept override {
+        return PresetResult::unsupported("WASI does not advertise native FILE preset locations");
+    }
+
+    PresetResult loadFactory(std::string_view loadKey,
+                             PresetStateSink &sink) const noexcept override {
+        if (loadKey.empty())
+            return PresetResult::error("factory preset load key is empty");
+        const auto definition = factoryCatalog_.find(loadKey);
+        if (!definition.valid())
+            return PresetResult::notFound("factory preset load key was not found");
+        if (definition.targetPluginId != targetPluginId_)
+            return PresetResult::error("preset targets a different plug-in");
+        if (!sink.beginCandidate(definition.targetPluginId))
+            return PresetResult::error("preset state candidate could not start");
+        for (std::size_t i = 0u; i < definition.valueCount; ++i) {
+            if (!sink.setParameter(definition.firstStableParameterId +
+                                       static_cast<std::uint32_t>(i),
+                                   definition.values[i]))
+                return PresetResult::error("preset state candidate rejected a parameter");
+        }
+        if (!sink.endCandidate())
+            return PresetResult::error("preset state candidate could not complete");
+        return PresetResult::success();
+    }
+
+    PresetResult loadFile(std::string_view,
+                          PresetStateSink &) const noexcept override {
+        return PresetResult::unsupported("WASI does not support native FILE preset loading");
+    }
+
+private:
+    const FactoryPresetCatalog &factoryCatalog_;
+    std::string_view targetPluginId_;
+};
+
 template <typename = void>
 [[nodiscard]] inline std::unique_ptr<PresetCatalog> makeDefaultProductionPresetCatalog(
-    const FactoryPresetCatalog &,
-    std::string_view) noexcept {
-    return {};
+    const FactoryPresetCatalog &factoryCatalog,
+    std::string_view targetPluginId) noexcept {
+    if (targetPluginId.empty() || factoryCatalog.targetPluginId() != targetPluginId)
+        return {};
+    return std::unique_ptr<PresetCatalog>{
+        new (std::nothrow) WasiFactoryPresetCatalog(factoryCatalog, targetPluginId)};
 }
 
 } // namespace webview_gui::examples::presets
