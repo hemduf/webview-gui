@@ -319,6 +319,94 @@ int main() {
         return 24;
     }
 
+    // RP-015 Reset All Controllers is not a power-on reset. In the subset this
+    // adapter models it resets bend/pressure/expression/sustain and the RPN
+    // selector while preserving Channel Volume, Pan, Brightness and the stored
+    // pitch-bend sensitivity value.
+    NoteEventScheduler resetScheduler;
+    if (!resetScheduler.configure(1))
+        return 31;
+    InputEvents resetInput;
+    if (!resetInput.pushMidi(0, 0, 0xb2u, 7u, 64u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 10u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 74u, 127u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 101u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 100u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 6u, 12u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 38u, 127u) ||
+        !resetInput.pushMidi(1, 0, 0xe2u, 0x7fu, 0x7fu) ||
+        !resetInput.pushMidi(1, 0, 0xd2u, 80u, 0u) ||
+        !resetInput.pushMidi(1, 0, 0xb2u, 11u, 32u) ||
+        !resetInput.pushMidi(2, 0, 0xb2u, 121u, 0u) ||
+        !resetInput.pushMidi(3, 0, 0xe2u, 0x7fu, 0x7fu) ||
+        !resetInput.pushMidi(4, 0, 0x92u, 60u, 100u))
+        return 32;
+
+    bool resetBendCentered = false;
+    bool resetPressureCleared = false;
+    bool resetExpressionUsesPreservedVolume = false;
+    bool resetTouchedPanOrBrightness = false;
+    bool rangePreservedAfterReset = false;
+    bool replayPreservedPan = false;
+    bool replayPreservedBrightness = false;
+    bool replayPreservedVolume = false;
+    bool replayPreservedRange = false;
+    std::size_t resetNoteOns = 0;
+    const auto preservedVolume = 64.0 / 127.0;
+    auto resetCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type != CLAP_EVENT_NOTE_EXPRESSION ||
+            header.size < sizeof(clap_event_note_expression_t))
+            return true;
+        const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+        if (event.header.time == 2) {
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+                std::fabs(event.value) <= 1.0e-12)
+                resetBendCentered = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PRESSURE &&
+                std::fabs(event.value) <= 1.0e-12)
+                resetPressureCleared = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_EXPRESSION &&
+                std::fabs(event.value - preservedVolume) <= 1.0e-12)
+                resetExpressionUsesPreservedVolume = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN ||
+                event.expression_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS)
+                resetTouchedPanOrBrightness = true;
+        }
+        if (event.header.time == 3 && event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+            std::fabs(event.value - 13.27) <= 1.0e-12)
+            rangePreservedAfterReset = true;
+        if (event.header.time == 4 && event.key == 60) {
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+                std::fabs(event.value - 13.27) <= 1.0e-12)
+                replayPreservedRange = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_EXPRESSION &&
+                std::fabs(event.value - preservedVolume) <= 1.0e-12)
+                replayPreservedVolume = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN &&
+                std::fabs(event.value) <= 1.0e-12)
+                replayPreservedPan = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS &&
+                std::fabs(event.value - 1.0) <= 1.0e-12)
+                replayPreservedBrightness = true;
+        }
+        return true;
+    };
+    Capture resetCapture;
+    auto resetNote = [&](const ScheduledNoteEvent &event) noexcept {
+        resetCapture(event);
+        if (event.kind == ScheduledNoteKind::NoteOn)
+            ++resetNoteOns;
+    };
+    if (!resetScheduler.processWithBoundariesAndEvents(
+            &resetInput.input, 5, boundary, resetCore, resetNote) ||
+        resetNoteOns != 1 || !resetBendCentered || !resetPressureCleared ||
+        !resetExpressionUsesPreservedVolume || resetTouchedPanOrBrightness ||
+        !rangePreservedAfterReset || !replayPreservedPan ||
+        !replayPreservedBrightness || !replayPreservedVolume || !replayPreservedRange) {
+        std::cerr << "MIDI Reset All Controllers violated RP-015 preservation/reset rules\n";
+        return 33;
+    }
+
     NoteEventScheduler panScheduler;
     if (!panScheduler.configure(1))
         return 25;
