@@ -3,6 +3,7 @@
 
 #include <clap/clap.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
