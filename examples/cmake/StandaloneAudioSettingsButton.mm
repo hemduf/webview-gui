@@ -21,7 +21,7 @@ constexpr CGFloat kHorizontalPadding = 6.0;
 + (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
     (void)notification;
-    [self performSelector:@selector(installButton) withObject:nil afterDelay:0.0];
+    [self installButton];
 }
 
 + (void)installButton
@@ -31,8 +31,14 @@ constexpr CGFloat kHorizontalPadding = 6.0;
         return;
 
     NSWindow *window = nil;
-    if ([delegate respondsToSelector:@selector(window)])
-        window = [delegate window];
+    @try
+    {
+        window = [delegate valueForKey:@"window"];
+    }
+    @catch (NSException *)
+    {
+        return;
+    }
     if (window == nil)
         return;
 
