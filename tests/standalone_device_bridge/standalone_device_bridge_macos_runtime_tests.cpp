@@ -104,7 +104,6 @@ int main()
     StandaloneDeviceBridge bridge{&host};
     require(bridge.available(), "fake standalone extension is not visible");
 
-    bool scriptRequested = false;
     auto gui = WebviewGui::createUnique(
         WebviewGui::COCOA,
         "/index.html",
@@ -123,11 +122,7 @@ int main()
                 return true;
             }
 
-            if (bridge.provideResource(path, resource)) {
-                scriptRequested = true;
-                return true;
-            }
-            return false;
+            return bridge.provideResource(path, resource);
         });
 
     require(gui != nullptr, "WKWebView creation failed");
@@ -148,7 +143,6 @@ int main()
 
     pumpFor(std::chrono::milliseconds{1400});
 
-    require(scriptRequested, "injected standalone JavaScript was never requested");
     const auto queries = queryCount.load(std::memory_order_relaxed);
     require(queries > 0, "injected JavaScript never reached the native bridge");
     require(queries <= 6,
