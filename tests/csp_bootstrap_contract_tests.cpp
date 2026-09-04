@@ -17,20 +17,23 @@ int main()
     assert(initScript.find("window['_WebviewGui_send_'+token]") != std::string::npos);
 
     // Native pages use window.parent.postMessage for the same binary bridge API
-    // as host-owned WCLAP pages. The document-start shim must forward those
-    // binary self-posts directly instead of relying on MessageEvent.source,
-    // whose WindowProxy identity is not stable across all embedded WebViews.
+    // as host-owned WCLAP pages. The document-start shim forwards accepted
+    // binary self-posts directly instead of relying solely on MessageEvent.source.
     assert(initScript.find("const nativePostMessage=window.postMessage.bind(window)") !=
            std::string::npos);
-    assert(initScript.find("window.postMessage=function(data,targetOrigin,transfer)") !=
+    assert(initScript.find("const bridgeTargetAllowed=") != std::string::npos);
+    assert(initScript.find("bridgeTargetAllowed(targetOrigin)&&forwardToNative(data)") !=
            std::string::npos);
-    assert(initScript.find("if(forwardToNative(data))return") != std::string::npos);
 
-    // Native-to-page delivery must bypass the inbound capture bridge. Otherwise
-    // a C++ UI snapshot is immediately reflected back to native and stopped
-    // before the plug-in's ordinary window.message listener can observe it.
-    assert(initScript.find("source:null") != std::string::npos);
-    assert(initScript.find("data:d.buffer,source:window") == std::string::npos);
+    // Native-to-page delivery remains an ordinary self message for editor code,
+    // but a private WeakSet marker prevents the capture bridge from reflecting
+    // that exact synthetic event back to C++ before page listeners observe it.
+    assert(initScript.find("const nativeEvents=new WeakSet()") != std::string::npos);
+    assert(initScript.find("nativeEvents.has(e)||e.source!==window") != std::string::npos);
+    assert(initScript.find("data:d.buffer,source:window") != std::string::npos);
+    assert(initScript.find("nativeEvents.add(e);window.dispatchEvent(e)") !=
+           std::string::npos);
+    assert(initScript.find("source:null") == std::string::npos);
 
     const std::string source =
         "<!-- <head>decoy</head> -->"
