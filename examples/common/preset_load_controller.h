@@ -1,6 +1,50 @@
 #pragma once
 
 #include "preset_clap_contract.h"
+
+#if defined(__wasi__)
+
+namespace webview_gui::examples::presets {
+
+inline void notifyPresetLoadFailure(const clap_host_t *host,
+                                    const clap_host_preset_load_t *hostPresetLoad,
+                                    std::uint32_t locationKind,
+                                    const char *location,
+                                    const char *loadKey,
+                                    const PresetResult &result) noexcept {
+    if (host && hostPresetLoad && hostPresetLoad->on_error) {
+        hostPresetLoad->on_error(host,
+                                 locationKind,
+                                 location,
+                                 loadKey,
+                                 result.osError,
+                                 "WCLAP preset loading is deferred to #94");
+    }
+}
+
+template <typename CommitFn>
+[[nodiscard]] bool loadPresetFromLocation(PresetCatalog &,
+                                          std::uint32_t locationKind,
+                                          const char *location,
+                                          const char *loadKey,
+                                          const clap_host_t *host,
+                                          const clap_host_preset_load_t *hostPresetLoad,
+                                          CommitFn &&) noexcept {
+    const auto result = PresetResult::unsupported(
+        "WCLAP preset loading is deferred to #94");
+    notifyPresetLoadFailure(host,
+                            hostPresetLoad,
+                            locationKind,
+                            location,
+                            loadKey,
+                            result);
+    return false;
+}
+
+} // namespace webview_gui::examples::presets
+
+#else
+
 #include "presets/preset_document.h"
 
 #include <clap/factory/preset-discovery.h>
@@ -207,3 +251,5 @@ template <typename CommitFn>
 }
 
 } // namespace webview_gui::examples::presets
+
+#endif
