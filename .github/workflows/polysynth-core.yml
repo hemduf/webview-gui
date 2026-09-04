@@ -9,6 +9,9 @@ on:
   pull_request:
     paths:
       - 'examples/polysynth/**'
+      - 'examples/common/preset_*.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
       - 'examples/tests/polysynth_voice_allocator_tests.cpp'
       - 'examples/tests/polysynth_note_scheduler_tests.cpp'
       - 'examples/tests/polysynth_voice_lifecycle_tests.cpp'
