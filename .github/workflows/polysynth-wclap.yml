@@ -110,7 +110,13 @@ jobs:
           python3 .github/scripts/apply_wclap_preset_discovery_upstream.py \
             --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
             --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
-            --loader-source .ci/clap-trap/src/plugin-loader.cpp
+            --loader-source .ci/clap-trap/src/plugin-loader.cpp \
+            --emit-patch "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
+          test -s .ci/wclap-preset-discovery.patch
+          git -C .ci/clap-trap/wclap-bridge checkout -- source/_generic/wclap-module.h
+          git -C .ci/clap-trap/wclap-bridge apply --check "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
+          git -C .ci/clap-trap/wclap-bridge apply "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
+          git -C .ci/clap-trap/wclap-bridge diff --check
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVS1 \
