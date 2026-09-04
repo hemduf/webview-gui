@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 
 DISCOVERY_HELPERS = r'''
+static constexpr const char kWclapExpectedPluginId[] = __PLUGIN_ID__;
+
 struct WclapPresetDiscoverySmokeState {
     bool filetypeDeclared = false;
     bool pluginLocationDeclared = false;
@@ -83,7 +86,8 @@ static void CLAP_ABI wclapDiscoveryAddPluginId(
     auto *state = receiver ? wclapDiscoveryState(receiver->receiver_data) : nullptr;
     if (!state || !pluginId || !pluginId->abi || !pluginId->id)
         return;
-    if (std::strcmp(pluginId->abi, "clap") == 0 && pluginId->id[0] != '\0')
+    if (std::strcmp(pluginId->abi, "clap") == 0 &&
+        std::strcmp(pluginId->id, kWclapExpectedPluginId) == 0)
         state->sawTargetPlugin = true;
 }
 
@@ -181,7 +185,7 @@ static bool runWclapPresetDiscoverySmoke(PluginLoader &loader) {
         !state.sawTargetPlugin || !state.sawExpectedLoadKey) {
         fprintf(stderr,
                 "✗ WCLAP Preset Discovery: metadata mismatch "
-                "(ok=%d errors=%d presets=%u plugin-id=%d expected-key=%d)\n",
+                "(ok=%d errors=%d presets=%u exact-plugin-id=%d expected-key=%d)\n",
                 metadataOk ? 1 : 0,
                 state.metadataError ? 1 : 0,
                 state.presetCount,
@@ -190,8 +194,9 @@ static bool runWclapPresetDiscoverySmoke(PluginLoader &loader) {
         return false;
     }
 
-    printf("✓ WCLAP Preset Discovery bridge smoke (%u presets, load_key %s discovered)\n",
+    printf("✓ WCLAP Preset Discovery bridge smoke (%u presets, plugin %s, load_key %s discovered)\n",
            state.presetCount,
+           kWclapExpectedPluginId,
            kWclapPresetLoadKey);
     return true;
 }
@@ -210,7 +215,11 @@ def replace_once(text: str, needle: str, replacement: str, description: str) -> 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
+    parser.add_argument("--expected-plugin-id", required=True)
     args = parser.parse_args()
+
+    if not args.expected_plugin_id or "\x00" in args.expected_plugin_id:
+        raise SystemExit("--expected-plugin-id must be a non-empty C string")
 
     path = Path(args.source)
     text = path.read_text()
@@ -224,10 +233,11 @@ def main() -> None:
     )
 
     helper_anchor = "static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {\n"
+    helpers = DISCOVERY_HELPERS.replace("__PLUGIN_ID__", json.dumps(args.expected_plugin_id))
     text = replace_once(
         text,
         helper_anchor,
-        DISCOVERY_HELPERS + helper_anchor,
+        helpers + helper_anchor,
         "Preset Discovery helper insertion",
     )
 
@@ -241,7 +251,10 @@ def main() -> None:
     )
 
     path.write_text(text)
-    print("patched clap-trap: real WCLAP Preset Discovery provider/indexer/metadata smoke")
+    print(
+        "patched clap-trap: real WCLAP Preset Discovery provider/indexer/metadata smoke "
+        f"for {args.expected_plugin_id}"
+    )
 
 
 if __name__ == "__main__":
