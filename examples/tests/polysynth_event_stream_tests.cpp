@@ -1,3 +1,4 @@
+#include "polysynth_parameter_voice_engine.h"
 #include "polysynth_voice_lifecycle.h"
 
 #include <clap/clap.h>
@@ -9,6 +10,7 @@
 
 namespace {
 using webview_gui::examples::polysynth::NoteEventScheduler;
+using webview_gui::examples::polysynth::ParameterVoiceEngine;
 using webview_gui::examples::polysynth::ScheduledNoteEvent;
 using webview_gui::examples::polysynth::ScheduledNoteKind;
 using webview_gui::examples::polysynth::VoiceLifecycle;
@@ -122,8 +124,66 @@ struct ExpressionEntry {
     double value = 0.0;
 };
 
+struct NullNoteEndSink {
+    void operator()(const clap_event_note_t &) noexcept {}
+};
+
 bool near(double a, double b, double tolerance = 1.0e-12) noexcept {
     return std::fabs(a - b) <= tolerance;
+}
+
+template <std::size_t Frames>
+bool render(ParameterVoiceEngine &engine,
+            InputEvents &events,
+            std::array<float, Frames> &left,
+            std::array<float, Frames> &right) noexcept {
+    NullNoteEndSink noteEnd;
+    return engine.process(&events.input,
+                          static_cast<std::uint32_t>(Frames),
+                          left.data(),
+                          right.data(),
+                          noteEnd);
+}
+
+template <std::size_t Frames>
+double blockDelta(const std::array<float, Frames> &aLeft,
+                  const std::array<float, Frames> &aRight,
+                  const std::array<float, Frames> &bLeft,
+                  const std::array<float, Frames> &bRight) noexcept {
+    double delta = 0.0;
+    for (std::size_t i = 0; i < Frames; ++i)
+        delta += std::fabs(static_cast<double>(aLeft[i] - bLeft[i])) +
+                 std::fabs(static_cast<double>(aRight[i] - bRight[i]));
+    return delta;
+}
+
+template <std::size_t Frames>
+float peak(const std::array<float, Frames> &samples) noexcept {
+    float value = 0.0f;
+    for (const auto sample : samples)
+        value = std::max(value, std::fabs(sample));
+    return value;
+}
+
+bool prepareEnginePair(ParameterVoiceEngine &subject,
+                       ParameterVoiceEngine &reference) noexcept {
+    return subject.configure(4u, 48000.0, 64u) &&
+           reference.configure(4u, 48000.0, 64u);
+}
+
+bool primeMidiVoice(ParameterVoiceEngine &subject,
+                    ParameterVoiceEngine &reference) noexcept {
+    InputEvents subjectOn;
+    InputEvents referenceOn;
+    subjectOn.midi(0u, 0x92u, 60u, 127u);
+    referenceOn.midi(0u, 0x92u, 60u, 127u);
+    std::array<float, 64> subjectLeft{};
+    std::array<float, 64> subjectRight{};
+    std::array<float, 64> referenceLeft{};
+    std::array<float, 64> referenceRight{};
+    return render(subject, subjectOn, subjectLeft, subjectRight) &&
+           render(reference, referenceOn, referenceLeft, referenceRight) &&
+           blockDelta(subjectLeft, subjectRight, referenceLeft, referenceRight) < 1.0e-7;
 }
 }
 
@@ -441,6 +501,89 @@ int main() {
     if (noteOffAtOne != 2 || chokeAtThree != 3) {
         std::cerr << "MIDI panic-controller lifecycle failed\n";
         return 23;
+    }
+
+    // End-to-end DSP validation: raw MIDI must not merely translate structurally;
+    // expressive messages have to change a sounding voice in the production engine.
+    {
+        ParameterVoiceEngine subject;
+        ParameterVoiceEngine reference;
+        if (!prepareEnginePair(subject, reference) || !primeMidiVoice(subject, reference))
+            return 24;
+        InputEvents bend;
+        InputEvents none;
+        bend.midi(0u, 0xe2u, 0x7fu, 0x7fu);
+        std::array<float, 64> sl{}, sr{}, rl{}, rr{};
+        if (!render(subject, bend, sl, sr) || !render(reference, none, rl, rr) ||
+            blockDelta(sl, sr, rl, rr) <= 1.0e-3) {
+            std::cerr << "pitch bend did not affect DSP output\n";
+            return 25;
+        }
+    }
+
+    {
+        ParameterVoiceEngine subject;
+        ParameterVoiceEngine reference;
+        if (!prepareEnginePair(subject, reference) || !primeMidiVoice(subject, reference))
+            return 26;
+        InputEvents pressure;
+        InputEvents none;
+        pressure.midi(0u, 0xa2u, 60u, 127u);
+        std::array<float, 64> sl{}, sr{}, rl{}, rr{};
+        if (!render(subject, pressure, sl, sr) || !render(reference, none, rl, rr) ||
+            blockDelta(sl, sr, rl, rr) <= 1.0e-3) {
+            std::cerr << "poly aftertouch did not affect DSP output\n";
+            return 27;
+        }
+    }
+
+    {
+        ParameterVoiceEngine subject;
+        ParameterVoiceEngine reference;
+        if (!prepareEnginePair(subject, reference) || !primeMidiVoice(subject, reference))
+            return 28;
+        InputEvents pan;
+        InputEvents none;
+        pan.midi(0u, 0xb2u, 10u, 0u);
+        std::array<float, 64> sl{}, sr{}, rl{}, rr{};
+        if (!render(subject, pan, sl, sr) || !render(reference, none, rl, rr) ||
+            peak(sr) > 1.0e-6f || peak(sl) <= 1.0e-4f) {
+            std::cerr << "CC10 pan did not reach DSP\n";
+            return 29;
+        }
+    }
+
+    {
+        ParameterVoiceEngine subject;
+        ParameterVoiceEngine reference;
+        if (!prepareEnginePair(subject, reference) || !primeMidiVoice(subject, reference))
+            return 30;
+        InputEvents expression;
+        InputEvents none;
+        expression.midi(0u, 0xb2u, 11u, 0u);
+        std::array<float, 64> sl{}, sr{}, rl{}, rr{};
+        if (!render(subject, expression, sl, sr) || !render(reference, none, rl, rr) ||
+            peak(sl) > 1.0e-6f || peak(sr) > 1.0e-6f) {
+            std::cerr << "CC11 expression did not reach DSP\n";
+            return 31;
+        }
+    }
+
+    {
+        ParameterVoiceEngine subject;
+        ParameterVoiceEngine reference;
+        if (!prepareEnginePair(subject, reference) || !primeMidiVoice(subject, reference))
+            return 32;
+        InputEvents harmless;
+        InputEvents none;
+        harmless.midi(0u, 0xc2u, 9u, 0u);
+        harmless.midi(0u, 0xb2u, 1u, 100u);
+        std::array<float, 64> sl{}, sr{}, rl{}, rr{};
+        if (!render(subject, harmless, sl, sr) || !render(reference, none, rl, rr) ||
+            blockDelta(sl, sr, rl, rr) > 1.0e-7) {
+            std::cerr << "Program Change/unmapped CC changed DSP state\n";
+            return 33;
+        }
     }
 
     VoiceLifecycle lifecycle;
