@@ -2,7 +2,13 @@
 
 #include "preset_document.h"
 
+#if __has_include(<choc/text/choc_JSON.h>)
 #include <choc/text/choc_JSON.h>
+#elif __has_include("../../../include/webview-gui/_impl/platform/choc/choc/text/choc_JSON.h")
+#include "../../../include/webview-gui/_impl/platform/choc/choc/text/choc_JSON.h"
+#else
+#error "Preset codec requires the pinned CHOC JSON headers"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -34,13 +40,19 @@ enum class PresetCodecError : std::uint8_t {
     MigrationFailed,
 };
 
-struct PresetSerializeResult {
+inline constexpr std::size_t kPresetCodecMaximumDocumentBytes = 512u * 1024u;
+inline constexpr std::size_t kPresetCodecMaximumJsonDepth = 64u;
+
+struct PresetCodecLimits {
+    std::size_t maxDocumentBytes = kPresetCodecMaximumDocumentBytes;
+    std::size_t maxJsonDepth = kPresetCodecMaximumJsonDepth;
+};
+
+struct PresetCodecResult {
     PresetCodecError error = PresetCodecError::None;
     std::string bytes;
 
-    [[nodiscard]] bool ok() const noexcept {
-        return error == PresetCodecError::None;
-    }
+    [[nodiscard]] bool ok() const noexcept { return error == PresetCodecError::None; }
 };
 
 struct PresetParseResult {
@@ -52,834 +64,381 @@ struct PresetParseResult {
     }
 };
 
-struct PresetMetadataParseResult {
-    PresetCodecError error = PresetCodecError::None;
-    std::uint32_t schemaVersion = 0u;
-    PresetMetadata metadata;
-
-    [[nodiscard]] bool ok() const noexcept {
-        return error == PresetCodecError::None;
-    }
-};
-
 namespace detail {
 
-inline constexpr std::string_view kPresetMagic = "WVPRESET\n";
-inline constexpr std::size_t kMaxPresetBytes = 1024u * 1024u;
-inline constexpr std::size_t kMaxMetadataBytes = 64u * 1024u;
-inline constexpr std::size_t kMaxStringBytes = 64u * 1024u;
-inline constexpr std::size_t kMaxParameters = 4096u;
-inline constexpr std::size_t kMaxSettings = 1024u;
-inline constexpr std::size_t kMaxExtensions = 1024u;
-inline constexpr std::size_t kMaxStringListEntries = 1024u;
-inline constexpr std::size_t kMaxJsonNesting = 64u;
-
-struct PresetFrame {
-    std::string_view metadataJson;
-    std::string_view payloadJson;
-};
-
-[[nodiscard]] inline PresetCodecError splitFrame(std::string_view bytes,
-                                                  PresetFrame &frame) noexcept {
-    if (bytes.size() > kMaxPresetBytes)
-        return PresetCodecError::InputTooLarge;
-
-    if (bytes.size() < kPresetMagic.size()) {
-        if (kPresetMagic.substr(0u, bytes.size()) == bytes)
-            return PresetCodecError::TruncatedInput;
-        return PresetCodecError::MalformedInput;
-    }
-
-    if (bytes.substr(0u, kPresetMagic.size()) != kPresetMagic)
-        return PresetCodecError::MalformedInput;
-
-    if (bytes.empty() || bytes.back() != '\n')
-        return PresetCodecError::TruncatedInput;
-
-    const auto metadataStart = kPresetMagic.size();
-    const auto metadataEnd = bytes.find('\n', metadataStart);
-    if (metadataEnd == std::string_view::npos)
-        return PresetCodecError::TruncatedInput;
-
-    if (metadataEnd - metadataStart > kMaxMetadataBytes)
-        return PresetCodecError::InputTooLarge;
-
-    const auto payloadStart = metadataEnd + 1u;
-    const auto payloadEnd = bytes.find('\n', payloadStart);
-    if (payloadEnd == std::string_view::npos)
-        return PresetCodecError::TruncatedInput;
-
-    if (payloadEnd != bytes.size() - 1u)
-        return PresetCodecError::MalformedInput;
-
-    frame.metadataJson = bytes.substr(metadataStart, metadataEnd - metadataStart);
-    frame.payloadJson = bytes.substr(payloadStart, payloadEnd - payloadStart);
-    return PresetCodecError::None;
+[[nodiscard]] inline bool withinSizeLimit(std::size_t size,
+                                          const PresetCodecLimits &limits) noexcept {
+    return limits.maxDocumentBytes != 0u && size <= limits.maxDocumentBytes;
 }
 
-[[nodiscard]] inline bool jsonNestingWithinLimit(std::string_view json) noexcept {
+[[nodiscard]] inline std::size_t jsonDepth(std::string_view bytes) noexcept {
     std::size_t depth = 0u;
+    std::size_t maxDepth = 0u;
     bool inString = false;
     bool escaped = false;
-
-    for (const char c : json) {
+    for (const char c : bytes) {
         if (inString) {
             if (escaped) {
                 escaped = false;
-                continue;
-            }
-            if (c == '\\') {
+            } else if (c == '\\') {
                 escaped = true;
-                continue;
-            }
-            if (c == '"')
+            } else if (c == '"') {
                 inString = false;
+            }
             continue;
         }
-
         if (c == '"') {
             inString = true;
             continue;
         }
-
         if (c == '{' || c == '[') {
             ++depth;
-            if (depth > kMaxJsonNesting)
-                return false;
-            continue;
-        }
-
-        if ((c == '}' || c == ']') && depth != 0u)
+            maxDepth = std::max(maxDepth, depth);
+        } else if (c == '}' || c == ']') {
+            if (depth == 0u)
+                return std::numeric_limits<std::size_t>::max();
             --depth;
+        }
     }
-
-    return true;
+    if (inString || depth != 0u)
+        return std::numeric_limits<std::size_t>::max();
+    return maxDepth;
 }
 
-[[nodiscard]] inline PresetCodecError textCodecError(
-    std::string_view text) noexcept {
-    if (text.size() > kMaxStringBytes)
-        return PresetCodecError::InputTooLarge;
-    if (text.find('\0') != std::string_view::npos)
-        return PresetCodecError::InvalidDocument;
-    return PresetCodecError::None;
+[[nodiscard]] inline bool validJsonDepth(std::string_view bytes,
+                                         const PresetCodecLimits &limits) noexcept {
+    if (limits.maxJsonDepth == 0u)
+        return false;
+    const auto depth = jsonDepth(bytes);
+    return depth != std::numeric_limits<std::size_t>::max() &&
+           depth <= limits.maxJsonDepth;
 }
 
-[[nodiscard]] inline PresetCodecError scalarTextCodecError(
-    const PresetScalarValue &value) noexcept {
-    if (const auto *text = std::get_if<std::string>(&value))
-        return textCodecError(*text);
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError documentTextCodecError(
-    const PresetDocument &document) noexcept {
-    const std::string_view metadataStrings[] = {
-        document.metadata.targetPluginId,
-        document.metadata.name,
-        document.metadata.creator,
-        document.metadata.description,
-    };
-    for (const auto text : metadataStrings) {
-        const auto error = textCodecError(text);
-        if (error != PresetCodecError::None)
-            return error;
-    }
-
-    if (document.metadata.factoryLoadKey) {
-        const auto error = textCodecError(*document.metadata.factoryLoadKey);
-        if (error != PresetCodecError::None)
-            return error;
-    }
-
-    for (const auto &tag : document.metadata.tags) {
-        const auto error = textCodecError(tag);
-        if (error != PresetCodecError::None)
-            return error;
-    }
-    for (const auto &feature : document.metadata.features) {
-        const auto error = textCodecError(feature);
-        if (error != PresetCodecError::None)
-            return error;
-    }
-    for (const auto &extension : document.metadata.extensions) {
-        if (const auto error = textCodecError(extension.key);
-            error != PresetCodecError::None)
-            return error;
-        if (const auto error = scalarTextCodecError(extension.value);
-            error != PresetCodecError::None)
-            return error;
-    }
-    for (const auto &setting : document.settings) {
-        if (const auto error = textCodecError(setting.key);
-            error != PresetCodecError::None)
-            return error;
-        if (const auto error = scalarTextCodecError(setting.value);
-            error != PresetCodecError::None)
-            return error;
-    }
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError mapValidationError(PresetValidationError error) noexcept {
+[[nodiscard]] inline PresetCodecError mapValidationError(
+    PresetDocumentValidationError error) noexcept {
     switch (error) {
-        case PresetValidationError::None:
+        case PresetDocumentValidationError::None:
             return PresetCodecError::None;
-        case PresetValidationError::UnsupportedSchemaVersion:
-            return PresetCodecError::UnsupportedSchemaVersion;
-        case PresetValidationError::DuplicateParameterId:
+        case PresetDocumentValidationError::DuplicateParameterId:
             return PresetCodecError::DuplicateParameterId;
-        case PresetValidationError::NonFiniteParameterValue:
+        case PresetDocumentValidationError::NonFiniteParameterValue:
             return PresetCodecError::NonFiniteParameterValue;
-        default:
+        case PresetDocumentValidationError::EmptySettingKey:
+        case PresetDocumentValidationError::DuplicateSettingKey:
+        case PresetDocumentValidationError::NonFiniteSettingValue:
+            return PresetCodecError::InvalidSetting;
+        case PresetDocumentValidationError::UnsupportedSchemaVersion:
+            return PresetCodecError::UnsupportedSchemaVersion;
+        case PresetDocumentValidationError::MissingTargetPluginId:
+        case PresetDocumentValidationError::MissingPresetName:
+        case PresetDocumentValidationError::InvalidFactoryLoadKey:
+        case PresetDocumentValidationError::InvalidTimestamp:
+        case PresetDocumentValidationError::FactoryMetadataMismatch:
             return PresetCodecError::InvalidDocument;
     }
+    return PresetCodecError::InvalidDocument;
 }
 
-inline void appendJsonString(std::string &out, std::string_view value) {
-    out += choc::json::getEscapedQuotedString(value);
+[[nodiscard]] inline choc::value::Value metadataToJson(const PresetMetadata &metadata) {
+    auto result = choc::value::createObject("metadata");
+    result.addMember("targetPluginId", metadata.targetPluginId);
+    result.addMember("name", metadata.name);
+    result.addMember("creator", metadata.creator);
+    result.addMember("description", metadata.description);
+
+    auto tags = choc::value::createArray();
+    for (const auto &tag : metadata.tags)
+        tags.addArrayElement(tag);
+    result.addMember("tags", std::move(tags));
+
+    auto features = choc::value::createArray();
+    for (const auto &feature : metadata.features)
+        features.addArrayElement(feature);
+    result.addMember("features", std::move(features));
+
+    if (metadata.creationTimestamp)
+        result.addMember("creationTimestamp", *metadata.creationTimestamp);
+    if (metadata.modificationTimestamp)
+        result.addMember("modificationTimestamp", *metadata.modificationTimestamp);
+    if (metadata.factoryLoadKey)
+        result.addMember("factoryLoadKey", *metadata.factoryLoadKey);
+    return result;
 }
 
-inline void appendStringArray(std::string &out,
-                              const std::vector<std::string> &values) {
-    out.push_back('[');
-    for (std::size_t i = 0u; i < values.size(); ++i) {
-        if (i != 0u)
-            out.push_back(',');
-        appendJsonString(out, values[i]);
+[[nodiscard]] inline choc::value::Value parametersToJson(
+    const std::vector<PresetParameterValue> &parameters) {
+    auto result = choc::value::createArray();
+    for (const auto &parameter : parameters) {
+        auto entry = choc::value::createObject("parameter");
+        entry.addMember("id", static_cast<std::int64_t>(parameter.stableParameterId));
+        entry.addMember("value", parameter.value);
+        result.addArrayElement(std::move(entry));
     }
-    out.push_back(']');
+    return result;
 }
 
-inline void appendScalar(std::string &out, const PresetScalarValue &value) {
-    std::visit(
-        [&out](const auto &typedValue) {
-            using T = std::decay_t<decltype(typedValue)>;
-            if constexpr (std::is_same_v<T, bool>) {
-                out += typedValue ? "true" : "false";
-            } else if constexpr (std::is_same_v<T, std::int64_t>) {
-                out += std::to_string(typedValue);
-            } else if constexpr (std::is_same_v<T, double>) {
-                out += choc::json::doubleToString(typedValue);
-            } else {
-                appendJsonString(out, typedValue);
-            }
-        },
-        value);
-}
-
-inline std::string scalarTypeName(const PresetScalarValue &value) {
+[[nodiscard]] inline choc::value::Value settingValueToJson(const PresetSettingValue &value) {
     return std::visit(
-        [](const auto &typedValue) -> std::string {
+        [](const auto &typedValue) -> choc::value::Value {
             using T = std::decay_t<decltype(typedValue)>;
-            if constexpr (std::is_same_v<T, bool>)
-                return "bool";
             if constexpr (std::is_same_v<T, std::int64_t>)
-                return "i64";
-            if constexpr (std::is_same_v<T, double>)
-                return "f64";
-            return "string";
+                return choc::value::Value(typedValue);
+            else if constexpr (std::is_same_v<T, double>)
+                return choc::value::Value(typedValue);
+            else if constexpr (std::is_same_v<T, bool>)
+                return choc::value::Value(typedValue);
+            else
+                return choc::value::Value(typedValue);
         },
         value);
 }
 
-inline void appendTaggedScalarEntry(std::string &out,
-                                    std::string_view key,
-                                    const PresetScalarValue &value) {
-    out += "{\"key\":";
-    appendJsonString(out, key);
-    out += ",\"type\":";
-    appendJsonString(out, scalarTypeName(value));
-    out += ",\"value\":";
-    appendScalar(out, value);
-    out.push_back('}');
+[[nodiscard]] inline choc::value::Value settingsToJson(
+    const std::vector<PresetPersistentSetting> &settings) {
+    auto result = choc::value::createArray();
+    for (const auto &setting : settings) {
+        auto entry = choc::value::createObject("setting");
+        entry.addMember("key", setting.key);
+        entry.addMember("value", settingValueToJson(setting.value));
+        result.addArrayElement(std::move(entry));
+    }
+    return result;
 }
 
-[[nodiscard]] inline bool copyString(const choc::value::ValueView &value,
-                                     std::string &out) {
+[[nodiscard]] inline bool readStringMember(const choc::value::ValueView &object,
+                                           std::string_view name,
+                                           std::string &output) {
+    if (!object.hasObjectMember(name))
+        return false;
+    const auto value = object[name];
     if (!value.isString())
         return false;
-    const auto text = value.getString();
-    if (text.size() > kMaxStringBytes)
-        return false;
-    out.assign(text.data(), text.size());
+    output = value.getString();
     return true;
 }
 
-[[nodiscard]] inline bool requiredStringMember(const choc::value::ValueView &object,
-                                                const char *name,
-                                                std::string &out) {
-    const auto value = object[name];
-    return !value.isVoid() && copyString(value, out);
-}
-
-[[nodiscard]] inline bool optionalStringMember(const choc::value::ValueView &object,
-                                                const char *name,
-                                                std::string &out) {
-    const auto value = object[name];
-    if (value.isVoid()) {
-        out.clear();
+[[nodiscard]] inline bool readOptionalTimestamp(const choc::value::ValueView &object,
+                                                std::string_view name,
+                                                std::optional<std::int64_t> &output) {
+    if (!object.hasObjectMember(name)) {
+        output.reset();
         return true;
     }
-    return copyString(value, out);
-}
-
-[[nodiscard]] inline bool optionalStringArrayMember(const choc::value::ValueView &object,
-                                                     const char *name,
-                                                     std::vector<std::string> &out) {
     const auto value = object[name];
-    if (value.isVoid()) {
-        out.clear();
-        return true;
-    }
-    if (!value.isArray() || value.size() > kMaxStringListEntries)
+    if (!value.isInt64())
         return false;
-
-    std::vector<std::string> candidate;
-    candidate.reserve(value.size());
-    for (std::uint32_t i = 0u; i < value.size(); ++i) {
-        std::string text;
-        if (!copyString(value[i], text))
-            return false;
-        candidate.push_back(std::move(text));
-    }
-    out = std::move(candidate);
+    output = value.getInt64();
     return true;
 }
 
-[[nodiscard]] inline bool readInteger(const choc::value::ValueView &value,
-                                      std::int64_t &out) {
-    if (!value.isInt())
+[[nodiscard]] inline bool readStringArray(const choc::value::ValueView &object,
+                                          std::string_view name,
+                                          std::vector<std::string> &output) {
+    if (!object.hasObjectMember(name))
         return false;
-    out = value.get<std::int64_t>();
-    return true;
-}
-
-[[nodiscard]] inline bool optionalIntegerMember(const choc::value::ValueView &object,
-                                                 const char *name,
-                                                 std::optional<std::int64_t> &out) {
     const auto value = object[name];
-    if (value.isVoid()) {
-        out.reset();
-        return true;
-    }
-
-    std::int64_t candidate = 0;
-    if (!readInteger(value, candidate))
+    if (!value.isArray())
         return false;
-    out = candidate;
+    output.clear();
+    output.reserve(value.size());
+    for (std::uint32_t i = 0; i < value.size(); ++i) {
+        const auto item = value[i];
+        if (!item.isString())
+            return false;
+        output.emplace_back(item.getString());
+    }
     return true;
 }
 
-[[nodiscard]] inline bool parseTaggedScalar(const choc::value::ValueView &entry,
-                                             PresetScalarValue &out,
-                                             bool &nonFinite) {
-    nonFinite = false;
-    if (!entry.isObject())
+[[nodiscard]] inline bool metadataFromJson(const choc::value::ValueView &value,
+                                           PresetMetadata &metadata) {
+    if (!value.isObject() ||
+        !readStringMember(value, "targetPluginId", metadata.targetPluginId) ||
+        !readStringMember(value, "name", metadata.name) ||
+        !readStringMember(value, "creator", metadata.creator) ||
+        !readStringMember(value, "description", metadata.description) ||
+        !readStringArray(value, "tags", metadata.tags) ||
+        !readStringArray(value, "features", metadata.features) ||
+        !readOptionalTimestamp(value, "creationTimestamp", metadata.creationTimestamp) ||
+        !readOptionalTimestamp(value, "modificationTimestamp", metadata.modificationTimestamp))
         return false;
 
-    std::string type;
-    if (!requiredStringMember(entry, "type", type))
+    if (value.hasObjectMember("factoryLoadKey")) {
+        const auto loadKey = value["factoryLoadKey"];
+        if (!loadKey.isString())
+            return false;
+        metadata.factoryLoadKey = std::string{loadKey.getString()};
+    } else {
+        metadata.factoryLoadKey.reset();
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool parametersFromJson(const choc::value::ValueView &value,
+                                             std::vector<PresetParameterValue> &parameters) {
+    if (!value.isArray())
         return false;
-
-    const auto value = entry["value"];
-    if (value.isVoid())
-        return false;
-
-    if (type == "bool") {
-        if (!value.isBool())
+    parameters.clear();
+    parameters.reserve(value.size());
+    std::unordered_set<std::uint32_t> ids;
+    ids.reserve(value.size());
+    for (std::uint32_t i = 0; i < value.size(); ++i) {
+        const auto entry = value[i];
+        if (!entry.isObject() || !entry.hasObjectMember("id") ||
+            !entry.hasObjectMember("value"))
             return false;
-        out = value.get<bool>();
+        const auto id = entry["id"];
+        const auto parameterValue = entry["value"];
+        if (!id.isInt64() || !parameterValue.isFloat64())
+            return false;
+        const auto rawId = id.getInt64();
+        const auto rawValue = parameterValue.getFloat64();
+        if (rawId < 0 || rawId > std::numeric_limits<std::uint32_t>::max() ||
+            !std::isfinite(rawValue))
+            return false;
+        const auto stableId = static_cast<std::uint32_t>(rawId);
+        if (!ids.insert(stableId).second)
+            return false;
+        parameters.push_back({stableId, rawValue});
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool settingValueFromJson(const choc::value::ValueView &value,
+                                               PresetSettingValue &output) {
+    if (value.isInt64()) {
+        output = value.getInt64();
         return true;
     }
-
-    if (type == "i64") {
-        std::int64_t integer = 0;
-        if (!readInteger(value, integer))
+    if (value.isFloat64()) {
+        const auto parsed = value.getFloat64();
+        if (!std::isfinite(parsed))
             return false;
-        out = integer;
+        output = parsed;
         return true;
     }
-
-    if (type == "f64") {
-        if (!value.isFloat() && !value.isInt()) {
-            if (value.isString()) {
-                const auto text = value.getString();
-                if (text == "Infinity" || text == "-Infinity" || text == "NaN")
-                    nonFinite = true;
-            }
-            return false;
-        }
-        const auto number = value.get<double>();
-        if (!std::isfinite(number)) {
-            nonFinite = true;
-            return false;
-        }
-        out = number;
+    if (value.isBool()) {
+        output = value.getBool();
         return true;
     }
-
-    if (type == "string") {
-        std::string text;
-        if (!copyString(value, text))
-            return false;
-        out = std::move(text);
+    if (value.isString()) {
+        output = std::string{value.getString()};
         return true;
     }
-
     return false;
 }
 
-[[nodiscard]] inline PresetCodecError parseExtensions(
-    const choc::value::ValueView &metadata,
-    std::vector<PresetExtensionField> &out) {
-    const auto value = metadata["extensions"];
-    if (value.isVoid()) {
-        out.clear();
-        return PresetCodecError::None;
-    }
-    if (!value.isArray() || value.size() > kMaxExtensions)
-        return PresetCodecError::MalformedInput;
-
-    std::vector<PresetExtensionField> candidate;
-    candidate.reserve(value.size());
+[[nodiscard]] inline bool settingsFromJson(const choc::value::ValueView &value,
+                                           std::vector<PresetPersistentSetting> &settings) {
+    if (!value.isArray())
+        return false;
+    settings.clear();
+    settings.reserve(value.size());
     std::unordered_set<std::string> keys;
     keys.reserve(value.size());
-
-    for (std::uint32_t i = 0u; i < value.size(); ++i) {
+    for (std::uint32_t i = 0; i < value.size(); ++i) {
         const auto entry = value[i];
-        std::string key;
-        if (!entry.isObject() || !requiredStringMember(entry, "key", key) || key.empty())
-            return PresetCodecError::MalformedInput;
-        if (!keys.insert(key).second)
-            return PresetCodecError::InvalidDocument;
-
-        PresetScalarValue scalar;
-        bool nonFinite = false;
-        if (!parseTaggedScalar(entry, scalar, nonFinite))
-            return nonFinite ? PresetCodecError::InvalidDocument
-                             : PresetCodecError::MalformedInput;
-        candidate.push_back({std::move(key), std::move(scalar)});
+        if (!entry.isObject() || !entry.hasObjectMember("key") ||
+            !entry.hasObjectMember("value"))
+            return false;
+        const auto keyValue = entry["key"];
+        if (!keyValue.isString())
+            return false;
+        std::string key{keyValue.getString()};
+        if (key.empty() || !keys.insert(key).second)
+            return false;
+        PresetSettingValue settingValue;
+        if (!settingValueFromJson(entry["value"], settingValue))
+            return false;
+        settings.push_back({std::move(key), std::move(settingValue)});
     }
-
-    out = std::move(candidate);
-    return PresetCodecError::None;
+    return true;
 }
 
-[[nodiscard]] inline PresetCodecError parseV1Metadata(
-    const choc::value::ValueView &root,
-    PresetMetadata &metadata) {
-    if (!root.isObject())
-        return PresetCodecError::MalformedInput;
-
-    PresetMetadata candidate;
-    if (!requiredStringMember(root, "targetPluginId", candidate.targetPluginId) ||
-        candidate.targetPluginId.empty() ||
-        !requiredStringMember(root, "name", candidate.name) ||
-        candidate.name.empty() ||
-        !optionalStringMember(root, "creator", candidate.creator) ||
-        !optionalStringMember(root, "description", candidate.description) ||
-        !optionalStringArrayMember(root, "tags", candidate.tags) ||
-        !optionalStringArrayMember(root, "features", candidate.features) ||
-        !optionalIntegerMember(root, "creationTimestamp", candidate.creationTimestamp) ||
-        !optionalIntegerMember(root, "modificationTimestamp", candidate.modificationTimestamp))
-        return PresetCodecError::MalformedInput;
-
-    const auto loadKey = root["factoryLoadKey"];
-    if (!loadKey.isVoid()) {
-        std::string key;
-        if (!copyString(loadKey, key) || key.empty())
-            return PresetCodecError::MalformedInput;
-        candidate.factoryLoadKey = std::move(key);
-    }
-
-    const auto extensionError = parseExtensions(root, candidate.extensions);
-    if (extensionError != PresetCodecError::None)
-        return extensionError;
-
-    metadata = std::move(candidate);
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError parseV0Metadata(
-    const choc::value::ValueView &root,
-    PresetMetadata &metadata) {
-    if (!root.isObject())
-        return PresetCodecError::MigrationFailed;
-
-    PresetMetadata candidate;
-    if (!requiredStringMember(root, "pluginId", candidate.targetPluginId) ||
-        candidate.targetPluginId.empty() ||
-        !requiredStringMember(root, "name", candidate.name) ||
-        candidate.name.empty())
-        return PresetCodecError::MigrationFailed;
-
-    if (!optionalStringMember(root, "author", candidate.creator) ||
-        !optionalStringMember(root, "description", candidate.description) ||
-        !optionalStringArrayMember(root, "tags", candidate.tags) ||
-        !optionalStringArrayMember(root, "features", candidate.features))
-        return PresetCodecError::MigrationFailed;
-
-    const auto loadKey = root["factoryLoadKey"];
-    if (!loadKey.isVoid()) {
-        std::string key;
-        if (!copyString(loadKey, key) || key.empty())
-            return PresetCodecError::MigrationFailed;
-        candidate.factoryLoadKey = std::move(key);
-    }
-
-    metadata = std::move(candidate);
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError readSchemaVersion(
-    const choc::value::ValueView &root,
-    std::uint32_t &schemaVersion) {
-    if (!root.isObject())
-        return PresetCodecError::MalformedInput;
-
-    std::int64_t version = 0;
-    if (!readInteger(root["schemaVersion"], version) || version < 0)
-        return PresetCodecError::MalformedInput;
-    if (version > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()))
-        return PresetCodecError::UnsupportedSchemaVersion;
-
-    schemaVersion = static_cast<std::uint32_t>(version);
-    if (schemaVersion > kCurrentPresetSchemaVersion)
-        return PresetCodecError::UnsupportedSchemaVersion;
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError parseParameters(
-    const choc::value::ValueView &payload,
-    std::vector<PresetParameterValue> &out) {
-    const auto parameters = payload["parameters"];
-    if (parameters.isVoid()) {
-        out.clear();
-        return PresetCodecError::None;
-    }
-    if (!parameters.isArray() || parameters.size() > kMaxParameters)
-        return PresetCodecError::InvalidParameter;
-
-    std::vector<PresetParameterValue> candidate;
-    candidate.reserve(parameters.size());
-    std::unordered_set<StableParameterId> ids;
-    ids.reserve(parameters.size());
-
-    for (std::uint32_t i = 0u; i < parameters.size(); ++i) {
-        const auto entry = parameters[i];
-        if (!entry.isObject())
-            return PresetCodecError::InvalidParameter;
-
-        std::int64_t id = 0;
-        if (!readInteger(entry["id"], id) || id < 0 ||
-            id > static_cast<std::int64_t>(std::numeric_limits<StableParameterId>::max()))
-            return PresetCodecError::InvalidParameter;
-
-        const auto stableId = static_cast<StableParameterId>(id);
-        if (!ids.insert(stableId).second)
-            return PresetCodecError::DuplicateParameterId;
-
-        const auto value = entry["value"];
-        if (value.isVoid())
-            return PresetCodecError::InvalidParameter;
-
-        if (value.isString()) {
-            const auto text = value.getString();
-            if (text == "Infinity" || text == "-Infinity" || text == "NaN")
-                return PresetCodecError::NonFiniteParameterValue;
-            return PresetCodecError::InvalidParameter;
+[[nodiscard]] inline bool migratePresetDocument(PresetDocument &document) noexcept {
+    while (document.schemaVersion < kPresetSchemaCurrentVersion) {
+        switch (document.schemaVersion) {
+            case 1u:
+                document.schemaVersion = 2u;
+                break;
+            case 2u:
+                document.schemaVersion = 3u;
+                break;
+            default:
+                return false;
         }
-        if (!value.isFloat() && !value.isInt())
-            return PresetCodecError::InvalidParameter;
-
-        const auto number = value.get<double>();
-        if (!std::isfinite(number))
-            return PresetCodecError::NonFiniteParameterValue;
-        candidate.push_back({stableId, number});
     }
-
-    out = std::move(candidate);
-    return PresetCodecError::None;
-}
-
-[[nodiscard]] inline PresetCodecError parseSettings(
-    const choc::value::ValueView &payload,
-    std::vector<PersistentSetting> &out) {
-    const auto settings = payload["settings"];
-    if (settings.isVoid()) {
-        out.clear();
-        return PresetCodecError::None;
-    }
-    if (!settings.isArray() || settings.size() > kMaxSettings)
-        return PresetCodecError::InvalidSetting;
-
-    std::vector<PersistentSetting> candidate;
-    candidate.reserve(settings.size());
-    std::unordered_set<std::string> keys;
-    keys.reserve(settings.size());
-
-    for (std::uint32_t i = 0u; i < settings.size(); ++i) {
-        const auto entry = settings[i];
-        std::string key;
-        if (!entry.isObject() || !requiredStringMember(entry, "key", key) || key.empty())
-            return PresetCodecError::InvalidSetting;
-        if (!keys.insert(key).second)
-            return PresetCodecError::InvalidSetting;
-
-        PresetScalarValue scalar;
-        bool nonFinite = false;
-        if (!parseTaggedScalar(entry, scalar, nonFinite))
-            return PresetCodecError::InvalidSetting;
-        candidate.push_back({std::move(key), std::move(scalar)});
-    }
-
-    out = std::move(candidate);
-    return PresetCodecError::None;
-}
-
-inline std::string serializeMetadata(const PresetDocument &document) {
-    std::string out;
-    out.reserve(512u);
-    out += "{\"schemaVersion\":";
-    out += std::to_string(document.schemaVersion);
-    out += ",\"targetPluginId\":";
-    appendJsonString(out, document.metadata.targetPluginId);
-    out += ",\"name\":";
-    appendJsonString(out, document.metadata.name);
-    out += ",\"creator\":";
-    appendJsonString(out, document.metadata.creator);
-    out += ",\"description\":";
-    appendJsonString(out, document.metadata.description);
-    out += ",\"tags\":";
-    appendStringArray(out, document.metadata.tags);
-    out += ",\"features\":";
-    appendStringArray(out, document.metadata.features);
-
-    if (document.metadata.factoryLoadKey) {
-        out += ",\"factoryLoadKey\":";
-        appendJsonString(out, *document.metadata.factoryLoadKey);
-    }
-    if (document.metadata.creationTimestamp) {
-        out += ",\"creationTimestamp\":";
-        out += std::to_string(*document.metadata.creationTimestamp);
-    }
-    if (document.metadata.modificationTimestamp) {
-        out += ",\"modificationTimestamp\":";
-        out += std::to_string(*document.metadata.modificationTimestamp);
-    }
-
-    auto extensions = document.metadata.extensions;
-    std::sort(extensions.begin(), extensions.end(),
-              [](const auto &a, const auto &b) { return a.key < b.key; });
-    out += ",\"extensions\":[";
-    for (std::size_t i = 0u; i < extensions.size(); ++i) {
-        if (i != 0u)
-            out.push_back(',');
-        appendTaggedScalarEntry(out, extensions[i].key, extensions[i].value);
-    }
-    out += "]}";
-    return out;
-}
-
-inline std::string serializePayload(const PresetDocument &document) {
-    auto parameters = document.parameters;
-    std::sort(parameters.begin(), parameters.end(),
-              [](const auto &a, const auto &b) {
-                  return a.stableParameterId < b.stableParameterId;
-              });
-    auto settings = document.settings;
-    std::sort(settings.begin(), settings.end(),
-              [](const auto &a, const auto &b) { return a.key < b.key; });
-
-    std::string out;
-    out.reserve(512u + parameters.size() * 40u + settings.size() * 64u);
-    out += "{\"parameters\":[";
-    for (std::size_t i = 0u; i < parameters.size(); ++i) {
-        if (i != 0u)
-            out.push_back(',');
-        out += "{\"id\":";
-        out += std::to_string(parameters[i].stableParameterId);
-        out += ",\"value\":";
-        out += choc::json::doubleToString(parameters[i].value);
-        out.push_back('}');
-    }
-
-    out += "],\"settings\":[";
-    for (std::size_t i = 0u; i < settings.size(); ++i) {
-        if (i != 0u)
-            out.push_back(',');
-        appendTaggedScalarEntry(out, settings[i].key, settings[i].value);
-    }
-    out += "]}";
-    return out;
+    return document.schemaVersion == kPresetSchemaCurrentVersion;
 }
 
 } // namespace detail
 
-[[nodiscard]] inline PresetSerializeResult serializePresetDocument(
-    const PresetDocument &document) {
+[[nodiscard]] inline PresetCodecResult serializePresetDocument(
+    const PresetDocument &document,
+    const PresetCodecLimits &limits = {}) {
     const auto validation = validatePresetDocument(document);
     if (!validation.ok())
         return {detail::mapValidationError(validation.error), {}};
 
-    if (document.parameters.size() > detail::kMaxParameters ||
-        document.settings.size() > detail::kMaxSettings ||
-        document.metadata.extensions.size() > detail::kMaxExtensions ||
-        document.metadata.tags.size() > detail::kMaxStringListEntries ||
-        document.metadata.features.size() > detail::kMaxStringListEntries)
+    auto root = choc::value::createObject("webview_gui_preset");
+    root.addMember("schemaVersion", static_cast<std::int64_t>(document.schemaVersion));
+    root.addMember("metadata", detail::metadataToJson(document.metadata));
+    root.addMember("parameters", detail::parametersToJson(document.parameters));
+    root.addMember("settings", detail::settingsToJson(document.settings));
+
+    auto bytes = choc::json::toString(root, false);
+    if (!detail::withinSizeLimit(bytes.size(), limits))
         return {PresetCodecError::InputTooLarge, {}};
-
-    if (const auto textError = detail::documentTextCodecError(document);
-        textError != PresetCodecError::None)
-        return {textError, {}};
-
-    const auto metadata = detail::serializeMetadata(document);
-    const auto payload = detail::serializePayload(document);
-    if (metadata.size() > detail::kMaxMetadataBytes ||
-        detail::kPresetMagic.size() + metadata.size() + payload.size() + 2u >
-            detail::kMaxPresetBytes)
-        return {PresetCodecError::InputTooLarge, {}};
-
-    PresetSerializeResult result;
-    result.bytes.reserve(detail::kPresetMagic.size() + metadata.size() + payload.size() + 2u);
-    result.bytes.append(detail::kPresetMagic.data(), detail::kPresetMagic.size());
-    result.bytes += metadata;
-    result.bytes.push_back('\n');
-    result.bytes += payload;
-    result.bytes.push_back('\n');
-    return result;
-}
-
-[[nodiscard]] inline PresetMetadataParseResult parsePresetMetadata(
-    std::string_view bytes,
-    std::string_view expectedTargetPluginId = {}) {
-    detail::PresetFrame frame;
-    const auto frameError = detail::splitFrame(bytes, frame);
-    if (frameError != PresetCodecError::None)
-        return {frameError, 0u, {}};
-
-    if (!detail::jsonNestingWithinLimit(frame.metadataJson))
-        return {PresetCodecError::NestingTooDeep, 0u, {}};
-
-    try {
-        const auto rootHolder = choc::json::parse(frame.metadataJson);
-        const auto root = rootHolder.getView();
-
-        std::uint32_t sourceSchemaVersion = 0u;
-        const auto schemaError = detail::readSchemaVersion(root, sourceSchemaVersion);
-        if (schemaError != PresetCodecError::None)
-            return {schemaError, 0u, {}};
-
-        PresetMetadata metadata;
-        PresetCodecError metadataError = PresetCodecError::None;
-        if (sourceSchemaVersion == 0u)
-            metadataError = detail::parseV0Metadata(root, metadata);
-        else if (sourceSchemaVersion == kCurrentPresetSchemaVersion)
-            metadataError = detail::parseV1Metadata(root, metadata);
-        else
-            return {PresetCodecError::UnsupportedSchemaVersion, 0u, {}};
-
-        if (metadataError != PresetCodecError::None)
-            return {metadataError, 0u, {}};
-
-        if (!expectedTargetPluginId.empty() &&
-            metadata.targetPluginId != expectedTargetPluginId)
-            return {PresetCodecError::WrongTargetPlugin, 0u, {}};
-
-        PresetDocument metadataCandidate;
-        metadataCandidate.schemaVersion = kCurrentPresetSchemaVersion;
-        metadataCandidate.metadata = metadata;
-        const auto validation = validatePresetDocument(metadataCandidate);
-        if (!validation.ok())
-            return {sourceSchemaVersion == 0u ? PresetCodecError::MigrationFailed
-                                             : detail::mapValidationError(validation.error),
-                    0u,
-                    {}};
-
-        return {PresetCodecError::None,
-                kCurrentPresetSchemaVersion,
-                std::move(metadata)};
-    } catch (const choc::json::ParseError &) {
-        return {PresetCodecError::MalformedInput, 0u, {}};
-    } catch (const choc::value::Error &) {
-        return {PresetCodecError::MalformedInput, 0u, {}};
-    }
+    if (!detail::validJsonDepth(bytes, limits))
+        return {PresetCodecError::NestingTooDeep, {}};
+    return {PresetCodecError::None, std::move(bytes)};
 }
 
 [[nodiscard]] inline PresetParseResult parsePresetDocument(
     std::string_view bytes,
-    std::string_view expectedTargetPluginId = {}) {
-    detail::PresetFrame frame;
-    const auto frameError = detail::splitFrame(bytes, frame);
-    if (frameError != PresetCodecError::None)
-        return {frameError, std::nullopt};
-
-    if (!detail::jsonNestingWithinLimit(frame.metadataJson) ||
-        !detail::jsonNestingWithinLimit(frame.payloadJson))
+    std::string_view expectedTargetPluginId,
+    const PresetCodecLimits &limits = {}) {
+    if (!detail::withinSizeLimit(bytes.size(), limits))
+        return {PresetCodecError::InputTooLarge, std::nullopt};
+    if (!detail::validJsonDepth(bytes, limits))
         return {PresetCodecError::NestingTooDeep, std::nullopt};
 
+    choc::value::Value parsed;
     try {
-        const auto metadataRootHolder = choc::json::parse(frame.metadataJson);
-        const auto metadataRoot = metadataRootHolder.getView();
-
-        std::uint32_t sourceSchemaVersion = 0u;
-        const auto schemaError = detail::readSchemaVersion(metadataRoot, sourceSchemaVersion);
-        if (schemaError != PresetCodecError::None)
-            return {schemaError, std::nullopt};
-
-        PresetDocument candidate;
-        candidate.schemaVersion = kCurrentPresetSchemaVersion;
-
-        PresetCodecError metadataError = PresetCodecError::None;
-        if (sourceSchemaVersion == 0u)
-            metadataError = detail::parseV0Metadata(metadataRoot, candidate.metadata);
-        else if (sourceSchemaVersion == kCurrentPresetSchemaVersion)
-            metadataError = detail::parseV1Metadata(metadataRoot, candidate.metadata);
-        else
-            return {PresetCodecError::UnsupportedSchemaVersion, std::nullopt};
-
-        if (metadataError != PresetCodecError::None)
-            return {metadataError, std::nullopt};
-
-        if (!expectedTargetPluginId.empty() &&
-            candidate.metadata.targetPluginId != expectedTargetPluginId)
-            return {PresetCodecError::WrongTargetPlugin, std::nullopt};
-
-        const auto payloadRootHolder = choc::json::parse(frame.payloadJson);
-        const auto payloadRoot = payloadRootHolder.getView();
-        if (!payloadRoot.isObject())
-            return {sourceSchemaVersion == 0u ? PresetCodecError::MigrationFailed
-                                             : PresetCodecError::MalformedInput,
-                    std::nullopt};
-
-        const auto parameterError = detail::parseParameters(payloadRoot, candidate.parameters);
-        if (parameterError != PresetCodecError::None)
-            return {sourceSchemaVersion == 0u &&
-                            parameterError != PresetCodecError::DuplicateParameterId &&
-                            parameterError != PresetCodecError::NonFiniteParameterValue
-                        ? PresetCodecError::MigrationFailed
-                        : parameterError,
-                    std::nullopt};
-
-        const auto settingError = detail::parseSettings(payloadRoot, candidate.settings);
-        if (settingError != PresetCodecError::None)
-            return {sourceSchemaVersion == 0u ? PresetCodecError::MigrationFailed
-                                             : settingError,
-                    std::nullopt};
-
-        const auto validation = validatePresetDocument(candidate);
-        if (!validation.ok())
-            return {sourceSchemaVersion == 0u ? PresetCodecError::MigrationFailed
-                                             : detail::mapValidationError(validation.error),
-                    std::nullopt};
-
-        return {PresetCodecError::None, std::move(candidate)};
-    } catch (const choc::json::ParseError &) {
-        return {PresetCodecError::MalformedInput, std::nullopt};
-    } catch (const choc::value::Error &) {
+        parsed = choc::json::parse(bytes);
+    } catch (...) {
         return {PresetCodecError::MalformedInput, std::nullopt};
     }
+    if (!parsed.isObject() || !parsed.hasObjectMember("schemaVersion") ||
+        !parsed.hasObjectMember("metadata") || !parsed.hasObjectMember("parameters") ||
+        !parsed.hasObjectMember("settings"))
+        return {PresetCodecError::MalformedInput, std::nullopt};
+
+    const auto schemaValue = parsed["schemaVersion"];
+    if (!schemaValue.isInt64())
+        return {PresetCodecError::MalformedInput, std::nullopt};
+    const auto schema = schemaValue.getInt64();
+    if (schema <= 0 || schema > std::numeric_limits<std::uint32_t>::max())
+        return {PresetCodecError::UnsupportedSchemaVersion, std::nullopt};
+
+    PresetDocument document;
+    document.schemaVersion = static_cast<std::uint32_t>(schema);
+    if (!detail::metadataFromJson(parsed["metadata"], document.metadata) ||
+        !detail::parametersFromJson(parsed["parameters"], document.parameters) ||
+        !detail::settingsFromJson(parsed["settings"], document.settings))
+        return {PresetCodecError::MalformedInput, std::nullopt};
+
+    if (!expectedTargetPluginId.empty() &&
+        document.metadata.targetPluginId != expectedTargetPluginId)
+        return {PresetCodecError::WrongTargetPlugin, std::nullopt};
+
+    if (!detail::migratePresetDocument(document))
+        return {PresetCodecError::MigrationFailed, std::nullopt};
+
+    const auto validation = validatePresetDocument(document);
+    if (!validation.ok())
+        return {detail::mapValidationError(validation.error), std::nullopt};
+    return {PresetCodecError::None, std::move(document)};
 }
 
 } // namespace webview_gui::examples::presets
