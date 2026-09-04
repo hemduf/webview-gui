@@ -16,6 +16,22 @@ int main()
     assert(initScript.find("_WebviewGui_receive64(token") != std::string::npos);
     assert(initScript.find("window['_WebviewGui_send_'+token]") != std::string::npos);
 
+    // Native pages use window.parent.postMessage for the same binary bridge API
+    // as host-owned WCLAP pages. The document-start shim must forward those
+    // binary self-posts directly instead of relying on MessageEvent.source,
+    // whose WindowProxy identity is not stable across all embedded WebViews.
+    assert(initScript.find("const nativePostMessage=window.postMessage.bind(window)") !=
+           std::string::npos);
+    assert(initScript.find("window.postMessage=function(data,targetOrigin,transfer)") !=
+           std::string::npos);
+    assert(initScript.find("if(forwardToNative(data))return") != std::string::npos);
+
+    // Native-to-page delivery must bypass the inbound capture bridge. Otherwise
+    // a C++ UI snapshot is immediately reflected back to native and stopped
+    // before the plug-in's ordinary window.message listener can observe it.
+    assert(initScript.find("source:null") != std::string::npos);
+    assert(initScript.find("data:d.buffer,source:window") == std::string::npos);
+
     const std::string source =
         "<!-- <head>decoy</head> -->"
         "<!doctype html><html><head><title>UI</title></head><body></body></html>";
