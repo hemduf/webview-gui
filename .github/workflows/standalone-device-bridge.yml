@@ -1,0 +1,32 @@
+name: Standalone device bridge runtime contract
+
+on:
+  pull_request:
+    paths:
+      - "include/webview-gui/_impl/standalone_device_bridge.h"
+      - "include/webview-gui/standalone-device-control.h"
+      - "tests/standalone_device_bridge/**"
+      - ".github/workflows/standalone-device-bridge.yml"
+  push:
+    branches: [main]
+    paths:
+      - "include/webview-gui/_impl/standalone_device_bridge.h"
+      - "include/webview-gui/standalone-device-control.h"
+      - "tests/standalone_device_bridge/**"
+      - ".github/workflows/standalone-device-bridge.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-runtime-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure
+        run: cmake -S tests/standalone_device_bridge -B build/standalone-device-bridge -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/standalone-device-bridge --config Release --parallel 2
+      - name: Run protocol contract
+        run: ctest --test-dir build/standalone-device-bridge -C Release --output-on-failure
