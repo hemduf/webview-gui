@@ -14,38 +14,26 @@ static constexpr double kWclapExpectedPresetParamValue = __PARAM_VALUE__;
 static uint32_t wclapPresetLoadedCalls = 0;
 static uint32_t wclapPresetErrorCalls = 0;
 static uint32_t wclapPresetValueRescanCalls = 0;
-static uint32_t wclapPresetBridgeNormalizedNullLocations = 0;
 
 static void CLAP_ABI wclapHostPresetError(const clap_host_t *,
-                                          uint32_t,
-                                          const char *,
-                                          const char *,
+                                          uint32_t locationKind,
+                                          const char *location,
+                                          const char *loadKey,
                                           int32_t,
                                           const char *) {
-    ++wclapPresetErrorCalls;
+    if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN &&
+        location == nullptr && loadKey != nullptr)
+        ++wclapPresetErrorCalls;
 }
 
 static void CLAP_ABI wclapHostPresetLoaded(const clap_host_t *,
                                            uint32_t locationKind,
                                            const char *location,
                                            const char *loadKey) {
-    if (locationKind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || !loadKey ||
-        std::strcmp(loadKey, kWclapPresetLoadKey) != 0)
-        return;
-
-    // The plug-in calls loaded() with the same nullptr location supplied to
-    // from_location(). WebCLAP/wclap-bridge@cd11d22 currently serializes that
-    // null pointer through std::string and reconstructs it as "" on the native
-    // host side. Accept that known transport normalization in this bridge smoke
-    // while still requiring the callback, kind and load_key to cross intact.
-    if (location == nullptr) {
+    if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN &&
+        location == nullptr && loadKey &&
+        std::strcmp(loadKey, kWclapPresetLoadKey) == 0)
         ++wclapPresetLoadedCalls;
-        return;
-    }
-    if (location[0] == '\0') {
-        ++wclapPresetLoadedCalls;
-        ++wclapPresetBridgeNormalizedNullLocations;
-    }
 }
 
 static void CLAP_ABI wclapHostParamsRescan(const clap_host_t *,
@@ -91,7 +79,6 @@ static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {
     wclapPresetLoadedCalls = 0;
     wclapPresetErrorCalls = 0;
     wclapPresetValueRescanCalls = 0;
-    wclapPresetBridgeNormalizedNullLocations = 0;
 
     if (!presetLoad->from_location(plugin,
                                    CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
@@ -103,7 +90,7 @@ static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {
     if (wclapPresetErrorCalls != 0 || wclapPresetLoadedCalls != 1 ||
         wclapPresetValueRescanCalls == 0) {
         fprintf(stderr,
-                "  ✗ WCLAP preset smoke: host notification mismatch "
+                "  ✗ WCLAP preset smoke: host notification/null-semantics mismatch "
                 "(loaded=%u errors=%u rescans=%u)\n",
                 wclapPresetLoadedCalls,
                 wclapPresetErrorCalls,
@@ -133,7 +120,7 @@ static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {
     }
     if (wclapPresetErrorCalls != errorsBeforeInvalidLoad + 1 ||
         wclapPresetLoadedCalls != 1) {
-        fprintf(stderr, "  ✗ WCLAP preset smoke: failed load notification mismatch\n");
+        fprintf(stderr, "  ✗ WCLAP preset smoke: failed load notification/null-semantics mismatch\n");
         return false;
     }
 
@@ -144,11 +131,8 @@ static bool runWclapPresetLoadSmoke(const clap_plugin_t *plugin) {
         return false;
     }
 
-    printf("  ✓ WCLAP factory preset load/notify/atomic-failure smoke (%s)",
+    printf("  ✓ WCLAP factory preset load/notify/null-semantics/atomic-failure smoke (%s)\n",
            kWclapPresetLoadKey);
-    if (wclapPresetBridgeNormalizedNullLocations != 0)
-        printf(" [bridge normalized nullptr location to empty string]");
-    printf("\n");
     return true;
 }
 '''
