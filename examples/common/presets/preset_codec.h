@@ -1,6 +1,7 @@
 #pragma once
 
 #include "preset_document.h"
+#include "preset_exception_boundary.h"
 
 #if __has_include(<choc/text/choc_JSON.h>)
 #include <choc/text/choc_JSON.h>
@@ -404,11 +405,15 @@ namespace detail {
         return {PresetCodecError::NestingTooDeep, std::nullopt};
 
     choc::value::Value parsed;
-    try {
-        parsed = choc::json::parse(bytes);
-    } catch (...) {
+    const bool parsedOk = detail::exceptionBoundary(
+        [&]() -> bool {
+            parsed = choc::json::parse(bytes);
+            return true;
+        },
+        []() -> bool { return false; });
+    if (!parsedOk)
         return {PresetCodecError::MalformedInput, std::nullopt};
-    }
+
     if (!parsed.isObject() || !parsed.hasObjectMember("schemaVersion") ||
         !parsed.hasObjectMember("metadata") || !parsed.hasObjectMember("parameters") ||
         !parsed.hasObjectMember("settings"))
