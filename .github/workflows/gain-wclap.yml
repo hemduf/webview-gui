@@ -7,6 +7,9 @@ on:
   pull_request:
     paths:
       - 'examples/gain/**'
+      - 'examples/common/presets/**'
+      - 'examples/tests/preset_portability/**'
+      - 'examples/cmake/PresetResources.cmake'
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
@@ -59,10 +62,13 @@ jobs:
       - name: Build current Gain WCLAP
         run: cmake --build build-gain-wclap --target webview_gui_example_gain_wclap --parallel
 
-      - name: Verify bundle layout and WASM ABI
+      - name: Verify bundle layout, preset bank and WASM ABI
         run: |
           test -f build-gain-wclap/WebviewGuiGain.wclap/module.wasm
           test -f build-gain-wclap/WebviewGuiGain.wclap.tar.gz
+          python3 examples/tests/preset_portability/verify_packaged_presets.py \
+            --artifact build-gain-wclap/WebviewGuiGain.wclap \
+            --canonical examples/common/presets/bundled
           node - <<'NODE'
           const fs = require('fs');
           const bytes = fs.readFileSync('build-gain-wclap/WebviewGuiGain.wclap/module.wasm');
@@ -78,6 +84,7 @@ jobs:
           }
           NODE
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
+          test "$(tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
       - name: Build pinned WCLAP lifecycle and WebView smoke host
         run: |

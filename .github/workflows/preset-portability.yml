@@ -1,0 +1,66 @@
+name: Preset portability contract
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'examples/common/presets/**'
+      - 'examples/tests/preset_portability/**'
+      - 'examples/gain/wclap/**'
+      - 'examples/polysynth/wclap/**'
+      - 'examples/CMakeLists.txt'
+      - 'examples/cmake/ExampleFormats.cmake'
+      - 'examples/cmake/PresetResources.cmake'
+      - '.github/workflows/preset-portability.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: preset-portability-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storage-api:
+    name: portable storage API contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+
+      - name: Configure contract
+        run: cmake -S examples/tests/preset_portability -B build-preset-portability -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build contract
+        run: cmake --build build-preset-portability --parallel
+
+      - name: Run contract
+        run: ctest --test-dir build-preset-portability --output-on-failure
+
+  packaging-wiring:
+    name: canonical package wiring contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify WCLAP, native CLAP and wrapper resource wiring
+        run: >-
+          cmake
+          -DWEBVIEW_GUI_ROOT="${GITHUB_WORKSPACE}"
+          -P examples/tests/preset_portability/wclap_packaging_contract.cmake
+
+  rt-boundary:
+    name: preset RT boundary contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify audio-process source isolation
+        run: >-
+          cmake
+          -DWEBVIEW_GUI_ROOT="${GITHUB_WORKSPACE}"
+          -P examples/tests/preset_portability/preset_rt_contract.cmake

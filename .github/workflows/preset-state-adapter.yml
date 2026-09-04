@@ -1,0 +1,56 @@
+name: Preset state adapter contract
+
+on:
+  pull_request:
+    paths:
+      - 'examples/common/example_plugin_ids.h'
+      - 'examples/common/presets/**'
+      - 'examples/gain/gain_preset_state.h'
+      - 'examples/gain/gain_persistent_state.h'
+      - 'examples/gain/gain_event_processor.h'
+      - 'examples/polysynth/polysynth_preset_state.h'
+      - 'examples/polysynth/polysynth_parameter_snapshot.h'
+      - 'examples/polysynth/polysynth_parameters.h'
+      - 'examples/tests/preset_state_adapter/**'
+      - '.github/workflows/preset-state-adapter.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'examples/common/example_plugin_ids.h'
+      - 'examples/common/presets/**'
+      - 'examples/gain/gain_preset_state.h'
+      - 'examples/gain/gain_persistent_state.h'
+      - 'examples/gain/gain_event_processor.h'
+      - 'examples/polysynth/polysynth_preset_state.h'
+      - 'examples/polysynth/polysynth_parameter_snapshot.h'
+      - 'examples/polysynth/polysynth_parameters.h'
+      - 'examples/tests/preset_state_adapter/**'
+      - '.github/workflows/preset-state-adapter.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: preset-state-adapter-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preset-state-adapter:
+    name: ${{ matrix.os }} preset state adapter
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configure preset state adapters
+        run: cmake -S examples/tests/preset_state_adapter -B build-preset-state-adapter
+
+      - name: Build preset state adapters
+        run: cmake --build build-preset-state-adapter --config Debug --parallel
+
+      - name: Run preset state adapters
+        run: ctest --test-dir build-preset-state-adapter -C Debug --output-on-failure --no-tests=error
