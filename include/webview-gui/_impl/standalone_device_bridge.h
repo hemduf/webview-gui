@@ -322,7 +322,7 @@ function installNativeReceiver(){ if(nativeReceiverInstalled)return true;const t
 function probe(){ if(state||probeAttempts++>=20)return;const receiverReady=installNativeReceiver();if(receiverReady)request();if(!state)setTimeout(probe,50); }
 ensureUi();
 probe();
-})());)js";
+})();)js";
 };
 
 } // namespace webview_gui::detail
