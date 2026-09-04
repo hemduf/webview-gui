@@ -1,7 +1,9 @@
 #include "../gain_plugin.h"
+#include "../gain_preset_discovery.h"
 #include "webview-gui/wclap-legacy-webview-proxy.h"
 
 #include <clap/clap.h>
+#include <clap/factory/preset-discovery.h>
 
 #include <cstring>
 
@@ -37,19 +39,10 @@ const clap_plugin_t *CLAP_ABI wclapFactoryCreatePlugin(
     if (!inner)
         return nullptr;
 
-    // WebCLAP/wclap-bridge@cd11d22 embeds
-    // geraintluff/webview-gui@172164b5, whose native helper queries the wrapper
-    // plug-in's clap.webview/3 extension before it calls the module's
-    // clap_plugin.init(). Keep the CLAP core strict and adapt only this WCLAP
-    // factory boundary. The proxy returns a fail-closed WebView table pre-init and
-    // resolves the real extension once the normal Gain init has completed.
     const auto *wrapped = ::webview_gui::wrapLegacyWclapWebviewPlugin(inner);
     if (wrapped)
         return wrapped;
 
-    // Factory creation transfers ownership to the host. If the compatibility
-    // allocation fails before an instance is returned, release the inner instance
-    // through its mandatory destroy callback just as a failed init path would.
     if (inner->destroy)
         inner->destroy(inner);
     return nullptr;
@@ -65,8 +58,13 @@ bool CLAP_ABI gainWclapEntryInit(const char *) { return true; }
 void CLAP_ABI gainWclapEntryDeinit() {}
 
 const void *CLAP_ABI gainWclapEntryGetFactory(const char *factoryId) {
-    if (factoryId && std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
+    if (!factoryId)
+        return nullptr;
+    if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
         return &kWclapFactory;
+    if (std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID) == 0 ||
+        std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT) == 0)
+        return gainPresetDiscoveryFactory();
     return nullptr;
 }
 
