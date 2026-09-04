@@ -1,50 +1,6 @@
 #pragma once
 
 #include "preset_clap_contract.h"
-
-#if defined(__wasi__)
-
-namespace webview_gui::examples::presets {
-
-inline void notifyPresetLoadFailure(const clap_host_t *host,
-                                    const clap_host_preset_load_t *hostPresetLoad,
-                                    std::uint32_t locationKind,
-                                    const char *location,
-                                    const char *loadKey,
-                                    const PresetResult &result) noexcept {
-    if (host && hostPresetLoad && hostPresetLoad->on_error) {
-        hostPresetLoad->on_error(host,
-                                 locationKind,
-                                 location,
-                                 loadKey,
-                                 result.osError,
-                                 "WCLAP preset loading is deferred to #94");
-    }
-}
-
-template <typename CommitFn>
-[[nodiscard]] bool loadPresetFromLocation(PresetCatalog &,
-                                          std::uint32_t locationKind,
-                                          const char *location,
-                                          const char *loadKey,
-                                          const clap_host_t *host,
-                                          const clap_host_preset_load_t *hostPresetLoad,
-                                          CommitFn &&) noexcept {
-    const auto result = PresetResult::unsupported(
-        "WCLAP preset loading is deferred to #94");
-    notifyPresetLoadFailure(host,
-                            hostPresetLoad,
-                            locationKind,
-                            location,
-                            loadKey,
-                            result);
-    return false;
-}
-
-} // namespace webview_gui::examples::presets
-
-#else
-
 #include "presets/preset_document.h"
 
 #include <clap/ext/params.h>
@@ -62,6 +18,14 @@ public:
     bool beginCandidate(std::string_view targetPluginId) noexcept override {
         if (building_ || targetPluginId.empty())
             return false;
+#if defined(__wasi__)
+        document_ = {};
+        document_.metadata.targetPluginId.assign(targetPluginId.data(), targetPluginId.size());
+        document_.metadata.name = "CLAP preset load candidate";
+        building_ = true;
+        completed_ = false;
+        return true;
+#else
         try {
             document_ = {};
             document_.metadata.targetPluginId.assign(targetPluginId.data(), targetPluginId.size());
@@ -75,17 +39,23 @@ public:
             completed_ = false;
             return false;
         }
+#endif
     }
 
     bool setParameter(std::uint32_t stableParameterId, double value) noexcept override {
         if (!building_)
             return false;
+#if defined(__wasi__)
+        document_.parameters.push_back({stableParameterId, value});
+        return true;
+#else
         try {
             document_.parameters.push_back({stableParameterId, value});
             return true;
         } catch (...) {
             return false;
         }
+#endif
     }
 
     bool endCandidate() noexcept override {
@@ -117,7 +87,17 @@ inline void notifyLoadError(const clap_host_t *host,
                             const PresetResult &result) noexcept {
     if (!host || !hostPresetLoad || !hostPresetLoad->on_error)
         return;
-
+#if defined(__wasi__)
+    std::string message = result.message.empty()
+                              ? std::string{"preset load failed"}
+                              : std::string{result.message};
+    hostPresetLoad->on_error(host,
+                             locationKind,
+                             location,
+                             loadKey,
+                             result.osError,
+                             message.c_str());
+#else
     try {
         const std::string message = result.message.empty()
                                         ? std::string{"preset load failed"}
@@ -136,6 +116,7 @@ inline void notifyLoadError(const clap_host_t *host,
                                  result.osError,
                                  "preset load failed");
     }
+#endif
 }
 
 inline void notifyHostParameterValuesChanged(const clap_host_t *host) noexcept {
@@ -159,11 +140,18 @@ inline void notifyHostParameterValuesChanged(const clap_host_t *host) noexcept {
     }
 
     if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE) {
+#if defined(__wasi__)
+        (void)location;
+        (void)loadKey;
+        return PresetResult::unsupported(
+            "WCLAP native FILE preset loading is unavailable");
+#else
         if (!location || location[0] == '\0')
             return PresetResult::error("FILE preset location is required");
         if (loadKey != nullptr)
             return PresetResult::error("FILE preset load key must be null");
         return PresetResult::success();
+#endif
     }
 
     return PresetResult::unsupported("unsupported preset location kind");
@@ -207,6 +195,12 @@ template <typename CommitFn>
 
     PresetDocumentStateSink sink;
     PresetResult loadResult = PresetResult::error("preset load failed");
+#if defined(__wasi__)
+    if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
+        loadResult = catalog.loadFactory(loadKey, sink);
+    else
+        loadResult = catalog.loadFile(location, sink);
+#else
     try {
         if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
             loadResult = catalog.loadFactory(loadKey, sink);
@@ -215,6 +209,7 @@ template <typename CommitFn>
     } catch (...) {
         loadResult = PresetResult::error("preset catalog load threw an exception");
     }
+#endif
 
     if (!loadResult.succeeded()) {
         notifyPresetLoadFailure(host,
@@ -239,11 +234,15 @@ template <typename CommitFn>
     }
 
     PresetResult commitResult = PresetResult::error("preset state commit failed");
+#if defined(__wasi__)
+    commitResult = std::forward<CommitFn>(commit)(*document);
+#else
     try {
         commitResult = std::forward<CommitFn>(commit)(*document);
     } catch (...) {
         commitResult = PresetResult::error("preset state commit threw an exception");
     }
+#endif
 
     if (!commitResult.succeeded()) {
         notifyPresetLoadFailure(host,
@@ -265,5 +264,3 @@ template <typename CommitFn>
 }
 
 } // namespace webview_gui::examples::presets
-
-#endif
