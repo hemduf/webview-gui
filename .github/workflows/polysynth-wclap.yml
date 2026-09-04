@@ -17,7 +17,9 @@ on:
       - '.github/scripts/patch_clap_trap_wclap.py'
       - '.github/scripts/patch_clap_trap_wclap_presets.py'
       - '.github/scripts/patch_clap_trap_wclap_discovery_smoke.py'
+      - '.github/scripts/patch_clap_trap_wclap_discovery_concurrency.py'
       - '.github/scripts/patch_wclap_preset_discovery_bridge.py'
+      - '.github/scripts/patch_wclap_preset_discovery_thread_safety.py'
       - '.github/scripts/patch_wclap_preset_null_semantics.py'
       - '.github/workflows/polysynth-wclap.yml'
   workflow_dispatch:
@@ -108,6 +110,8 @@ jobs:
             --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
             --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
             --loader-source .ci/clap-trap/src/plugin-loader.cpp
+          python3 .github/scripts/patch_wclap_preset_discovery_thread_safety.py \
+            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h
           python3 .github/scripts/patch_wclap_preset_null_semantics.py \
             --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h
           python3 .github/scripts/patch_clap_trap_wclap.py \
@@ -122,6 +126,8 @@ jobs:
           python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --expected-plugin-id com.webview-gui.example.polysynth
+          python3 .github/scripts/patch_clap_trap_wclap_discovery_concurrency.py \
+            --source .ci/clap-trap/examples/cli.cpp
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
