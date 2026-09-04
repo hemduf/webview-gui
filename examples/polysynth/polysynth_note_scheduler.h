@@ -4,6 +4,7 @@
 
 #include <clap/events.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -183,8 +184,6 @@ public:
     }
 
 private:
-    static constexpr double kDefaultMidiPitchBendRangeSemitones = 2.0;
-
     struct MidiChannelState {
         std::uint16_t pitchBend = 8192u;
         std::uint8_t pitchBendRangeCoarse = 2u;
@@ -226,8 +225,9 @@ private:
     }
 
     static double pitchBendRange(const MidiChannelState &state) noexcept {
-        return static_cast<double>(state.pitchBendRangeCoarse) +
-               static_cast<double>(state.pitchBendRangeFine) / 100.0;
+        const auto configured = static_cast<double>(state.pitchBendRangeCoarse) +
+                                static_cast<double>(state.pitchBendRangeFine) / 100.0;
+        return std::min(configured, 120.0);
     }
 
     static double pitchBendSemitones(const MidiChannelState &state) noexcept {
