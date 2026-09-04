@@ -13,16 +13,26 @@ FetchContent_Declare(webview_gui_preset_contract_clap
 )
 FetchContent_MakeAvailable(webview_gui_preset_contract_clap)
 
-# The #36 codec uses the repository-pinned CHOC submodule, while this focused
-# standalone test project intentionally does not configure the repository root.
-# Fetch the exact gitlink revision so #91 tests exercise the same JSON parser.
-FetchContent_Declare(webview_gui_preset_contract_choc
-    GIT_REPOSITORY https://github.com/Tracktion/choc.git
-    GIT_TAG 9606a6615b592605993d92733cdfd6ca6ecbd825
+set(WEBVIEW_GUI_PRESET_TEST_CHOC_DIR
+    ${CMAKE_CURRENT_LIST_DIR}/../../../include/webview-gui/_impl/platform/choc)
+if(NOT EXISTS "${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}/choc/text/choc_JSON.h")
+    message(FATAL_ERROR
+        "Preset contract tests require the repository-pinned CHOC submodule; checkout submodules before configuring")
+endif()
+
+add_library(webview_gui_preset_contract_native_support STATIC
+    ${CMAKE_CURRENT_LIST_DIR}/../../common/preset_production_catalog.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../common/presets/native_preset_storage.cpp
 )
-FetchContent_GetProperties(webview_gui_preset_contract_choc)
-if(NOT webview_gui_preset_contract_choc_POPULATED)
-    FetchContent_Populate(webview_gui_preset_contract_choc)
+target_include_directories(webview_gui_preset_contract_native_support PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../../common/presets
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_contract_native_support PUBLIC clap)
+target_compile_features(webview_gui_preset_contract_native_support PUBLIC cxx_std_17)
+if(WIN32)
+    target_link_libraries(webview_gui_preset_contract_native_support PRIVATE shell32 ole32)
 endif()
 
 add_executable(webview_gui_preset_contract_tests
@@ -41,11 +51,12 @@ add_executable(webview_gui_preset_discovery_factory_tests
 target_include_directories(webview_gui_preset_discovery_factory_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../common
     ${CMAKE_CURRENT_LIST_DIR}/../..
-    ${webview_gui_preset_contract_choc_SOURCE_DIR}
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
 )
 target_link_libraries(webview_gui_preset_discovery_factory_tests PRIVATE
     clap
     Threads::Threads
+    webview_gui_preset_contract_native_support
 )
 target_compile_features(webview_gui_preset_discovery_factory_tests PRIVATE cxx_std_17)
 
@@ -55,11 +66,12 @@ add_executable(webview_gui_preset_metadata_tests
 target_include_directories(webview_gui_preset_metadata_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../common
     ${CMAKE_CURRENT_LIST_DIR}/../..
-    ${webview_gui_preset_contract_choc_SOURCE_DIR}
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
 )
 target_link_libraries(webview_gui_preset_metadata_tests PRIVATE
     clap
     Threads::Threads
+    webview_gui_preset_contract_native_support
 )
 target_compile_features(webview_gui_preset_metadata_tests PRIVATE cxx_std_17)
 
