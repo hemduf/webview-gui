@@ -45,9 +45,13 @@ public:
         if (html.find(kInjectionMarker) != std::string::npos)
             return;
 
+        // WKWebView custom-scheme subresources are not a reliable execution path
+        // for injected JavaScript. The editor response already carries the
+        // webview-gui CSP, which explicitly permits inline scripts, so inject the
+        // small standalone controller directly into the trusted local document.
         const std::string injection = std::string{"\n"} + kStyle +
-                                      "\n<script id=\"" + kInjectionMarker +
-                                      "\" src=\"" + kScriptPath + "\" defer></script>\n";
+                                      "\n<script id=\"" + kInjectionMarker + "\">\n" +
+                                      kScript + "\n</script>\n";
         const auto body = html.rfind("</body>");
         if (body == std::string::npos)
             html += injection;
