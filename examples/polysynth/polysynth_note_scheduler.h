@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace webview_gui::examples::polysynth {
@@ -85,6 +86,12 @@ public:
     // already guarantees sample-sorted input; equal-time order is significant and
     // is forwarded exactly as received.
     //
+    // The pinned clap-wrapper standalone currently sends raw CLAP_EVENT_MIDI even
+    // when an instrument advertises only the native CLAP note dialect. Translate
+    // MIDI 1.0 Note On/Off here as a narrow compatibility path so the standalone
+    // host can drive the same deterministic voice allocator without weakening the
+    // native note-event path. Other MIDI messages remain ordinary core events.
+    //
     // An adapter may additionally expose
     // `noteOnDispatched(const ScheduledNoteEvent&)` on its core-event sink. The
     // scheduler invokes that optional hook only after a valid NOTE_ON has been
@@ -141,6 +148,27 @@ public:
             if (header->space_id != CLAP_CORE_EVENT_SPACE_ID)
                 continue;
 
+            if (header->type == CLAP_EVENT_MIDI) {
+                if (header->size < sizeof(clap_event_midi_t))
+                    return false;
+
+                const auto &midi = *reinterpret_cast<const clap_event_midi_t *>(header);
+                clap_event_note_t note{};
+                if (translateMidiNote(midi, note)) {
+                    if (note.header.type == CLAP_EVENT_NOTE_ON) {
+                        if (!dispatchNoteOn(note, coreEventSink, sink))
+                            return false;
+                    } else {
+                        dispatchMatching(note, ScheduledNoteKind::NoteOff, sink);
+                    }
+                    continue;
+                }
+
+                if (!coreEventSink(*header))
+                    return false;
+                continue;
+            }
+
             if (header->type != CLAP_EVENT_NOTE_ON &&
                 header->type != CLAP_EVENT_NOTE_OFF &&
                 header->type != CLAP_EVENT_NOTE_CHOKE) {
@@ -172,6 +200,30 @@ public:
     }
 
 private:
+    static bool translateMidiNote(const clap_event_midi_t &midi,
+                                  clap_event_note_t &note) noexcept {
+        const auto status = static_cast<std::uint8_t>(midi.data[0] & 0xf0u);
+        if (status != 0x80u && status != 0x90u)
+            return false;
+        if (midi.data[1] > 0x7fu || midi.data[2] > 0x7fu ||
+            midi.port_index > static_cast<std::uint16_t>(
+                                  std::numeric_limits<std::int16_t>::max()))
+            return false;
+
+        note = {};
+        note.header = midi.header;
+        note.header.size = sizeof(note);
+        note.header.type = status == 0x90u && midi.data[2] != 0u
+                               ? CLAP_EVENT_NOTE_ON
+                               : CLAP_EVENT_NOTE_OFF;
+        note.note_id = -1;
+        note.port_index = static_cast<std::int16_t>(midi.port_index);
+        note.channel = static_cast<std::int16_t>(midi.data[0] & 0x0fu);
+        note.key = static_cast<std::int16_t>(midi.data[1]);
+        note.velocity = static_cast<double>(midi.data[2]) / 127.0;
+        return true;
+    }
+
     static bool validNoteOn(const clap_event_note_t &event) noexcept {
         return event.note_id >= -1 &&
                event.port_index >= 0 &&
