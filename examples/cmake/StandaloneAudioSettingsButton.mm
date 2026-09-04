@@ -35,8 +35,9 @@ constexpr CGFloat kHorizontalPadding = 6.0;
     {
         window = [delegate valueForKey:@"window"];
     }
-    @catch (NSException *)
+    @catch (NSException *exception)
     {
+        (void)exception;
         return;
     }
     if (window == nil)
