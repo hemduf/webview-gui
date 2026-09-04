@@ -47,6 +47,7 @@ template <typename CommitFn>
 
 #include "presets/preset_document.h"
 
+#include <clap/ext/params.h>
 #include <clap/factory/preset-discovery.h>
 
 #include <cstdint>
@@ -135,6 +136,15 @@ inline void notifyLoadError(const clap_host_t *host,
                                  result.osError,
                                  "preset load failed");
     }
+}
+
+inline void notifyHostParameterValuesChanged(const clap_host_t *host) noexcept {
+    if (!host || !host->get_extension)
+        return;
+    const auto *hostParams = static_cast<const clap_host_params_t *>(
+        host->get_extension(host, CLAP_EXT_PARAMS));
+    if (hostParams && hostParams->rescan)
+        hostParams->rescan(host, CLAP_PARAM_RESCAN_VALUES);
 }
 
 [[nodiscard]] inline PresetResult validateLocationShape(std::uint32_t locationKind,
@@ -245,6 +255,10 @@ template <typename CommitFn>
         return false;
     }
 
+    // A preset load is an out-of-band base-state replacement, not automation.
+    // Publish the complete candidate first, then invalidate host-visible values,
+    // and only then report the successful preset-load transaction.
+    preset_load_detail::notifyHostParameterValuesChanged(host);
     if (host && hostPresetLoad && hostPresetLoad->loaded)
         hostPresetLoad->loaded(host, locationKind, location, loadKey);
     return true;
