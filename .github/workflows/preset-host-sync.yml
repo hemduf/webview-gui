@@ -52,7 +52,10 @@ jobs:
         run: cmake -S examples/tests/preset_host_sync -B build-preset-host-sync
 
       - name: Build preset host/UI sync contract
-        run: cmake --build build-preset-host-sync --config Debug --target webview_gui_preset_host_sync_tests --parallel
+        run: >-
+          cmake --build build-preset-host-sync --config Debug --parallel --target
+          webview_gui_preset_host_sync_tests
+          webview_gui_preset_notification_tests
 
       - name: Run preset host/UI sync contract
         run: ctest --test-dir build-preset-host-sync -C Debug --output-on-failure --no-tests=error
