@@ -358,10 +358,12 @@ if(!Uint8Array.prototype.toBase64){Uint8Array.prototype.toBase64=function(){let 
 if(!Uint8Array.fromBase64){Uint8Array.fromBase64=b64=>{const s=atob(b64);const a=new Uint8Array(s.length);for(let i=0;i<s.length;++i)a[i]=s.charCodeAt(i);return a;};}
 const bridgeBytes=d=>d instanceof ArrayBuffer?new Uint8Array(d):d instanceof Uint8Array?d:null;
 const forwardToNative=d=>{const b=bridgeBytes(d);if(!b||b.byteLength>maxBytes)return false;window._WebviewGui_receive64(token,b.toBase64());return true;};
+const nativeEvents=new WeakSet();
 const nativePostMessage=window.postMessage.bind(window);
-window.postMessage=function(data,targetOrigin,transfer){if(forwardToNative(data))return;if(arguments.length>2)return nativePostMessage(data,targetOrigin,transfer);return nativePostMessage(data,targetOrigin);};
-window.addEventListener('message',e=>{if(e.source!==window)return;if(!forwardToNative(e.data))return;e.stopImmediatePropagation();},{capture:true});
-window['_WebviewGui_send_'+token]=b64=>{const d=Uint8Array.fromBase64(b64);if(d.byteLength<=maxBytes)window.dispatchEvent(new MessageEvent('message',{data:d.buffer,source:null}));};
+const bridgeTargetAllowed=t=>{if(t===undefined||t==='*'||t==='/')return true;if(t&&typeof t==='object')t=t.targetOrigin;if(typeof t!=='string')return false;try{return new URL(t,location.href).origin===location.origin;}catch(_){return false;}};
+window.postMessage=function(data,targetOrigin,transfer){if(bridgeTargetAllowed(targetOrigin)&&forwardToNative(data))return;if(arguments.length>2)return nativePostMessage(data,targetOrigin,transfer);return nativePostMessage(data,targetOrigin);};
+window.addEventListener('message',e=>{if(nativeEvents.has(e)||e.source!==window)return;if(!forwardToNative(e.data))return;e.stopImmediatePropagation();},{capture:true});
+window['_WebviewGui_send_'+token]=b64=>{const d=Uint8Array.fromBase64(b64);if(d.byteLength>maxBytes)return;const e=new MessageEvent('message',{data:d.buffer,source:window});nativeEvents.add(e);window.dispatchEvent(e);};
 if(typeof window._WebviewGui_ready==='function')window._WebviewGui_ready(token);
 })();)";
 }
