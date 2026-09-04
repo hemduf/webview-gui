@@ -45,6 +45,14 @@ def main() -> None:
     )
     parser.add_argument("--bridge-module", required=True)
     parser.add_argument(
+        "--loader-header",
+        help="optional clap-trap PluginLoader header used by the qualification host",
+    )
+    parser.add_argument(
+        "--loader-source",
+        help="optional clap-trap PluginLoader source used by the qualification host",
+    )
+    parser.add_argument(
         "--allow-unverified-base",
         action="store_true",
         help=(
@@ -53,6 +61,9 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    if bool(args.loader_header) != bool(args.loader_source):
+        raise SystemExit("--loader-header and --loader-source must be provided together")
 
     bridge_module = Path(args.bridge_module).resolve()
     if not bridge_module.is_file():
@@ -74,13 +85,23 @@ def main() -> None:
         if not script.is_file():
             raise SystemExit(f"missing qualified patch helper: {script}")
 
-    # The bridge qualification script also contains clap-trap adapter helpers,
-    # but the upstream patch needs only the bridge transport itself.
     bridge_patcher = load_module(bridge_script, "wclap_preset_bridge_transport")
     patch_bridge = getattr(bridge_patcher, "patch_bridge", None)
     if patch_bridge is None:
         raise SystemExit("qualified bridge helper no longer exposes patch_bridge()")
     patch_bridge(bridge_module)
+
+    if args.loader_header:
+        loader_header = Path(args.loader_header).resolve()
+        loader_source = Path(args.loader_source).resolve()
+        if not loader_header.is_file() or not loader_source.is_file():
+            raise SystemExit("qualification PluginLoader header/source must exist")
+        patch_loader_header = getattr(bridge_patcher, "patch_loader_header", None)
+        patch_loader_source = getattr(bridge_patcher, "patch_loader_source", None)
+        if patch_loader_header is None or patch_loader_source is None:
+            raise SystemExit("qualified bridge helper no longer exposes loader patch helpers")
+        patch_loader_header(loader_header)
+        patch_loader_source(loader_source)
 
     run_helper(thread_script, bridge_module)
     run_helper(null_script, bridge_module)
@@ -102,7 +123,8 @@ def main() -> None:
 
     print(
         "applied qualified WCLAP Preset Discovery upstream patch: "
-        f"base={base_blob}, patched_git_blob={git_blob_sha1(bridge_module)}"
+        f"base={base_blob}, patched_git_blob={git_blob_sha1(bridge_module)}, "
+        f"qualification_loader={'yes' if args.loader_header else 'no'}"
     )
 
 
