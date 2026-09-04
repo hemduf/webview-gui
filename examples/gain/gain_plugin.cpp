@@ -1,4 +1,6 @@
 #include "gain_plugin.h"
+#include "gain_persistent_state.h"
+#include "gain_preset_state.h"
 #include "gain_webview_parameter_bridge.h"
 #include "webview-gui/clap-webview-gui.h"
 
@@ -541,9 +543,9 @@ protected:
     bool implementsState() const noexcept override { return true; }
 
     bool stateSave(const clap_ostream_t *stream) noexcept override {
-        const auto bytes = encodeState(
-            static_cast<double>(gainDbSnapshot_.load(std::memory_order_relaxed)),
-            bypassSnapshot_.load(std::memory_order_relaxed));
+        const auto snapshot = readEffectiveGainParameterSnapshot();
+        const auto bytes = encodeState(static_cast<double>(snapshot.gainDb),
+                                       snapshot.bypassed);
         return writeAll(stream, bytes.data(), bytes.size());
     }
 
@@ -562,23 +564,8 @@ protected:
         if (!decodeState(bytes, gainDb, bypassed))
             return false;
 
-        const auto gain = static_cast<float>(gainDb);
-        const bool parameterValuesChanged =
-            gainDbSnapshot_.load(std::memory_order_relaxed) != gain ||
-            bypassSnapshot_.load(std::memory_order_relaxed) != bypassed;
-
-        pendingLoadedGainDb_.store(gain, std::memory_order_relaxed);
-        pendingLoadedBypass_.store(bypassed, std::memory_order_relaxed);
-        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
-        gainDbSnapshot_.store(gain, std::memory_order_relaxed);
-        bypassSnapshot_.store(bypassed, std::memory_order_relaxed);
-
-        if (parameterValuesChanged) {
-            const auto *hostParams = resolveHostParams();
-            if (hostParams && hostParams->rescan)
-                hostParams->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
-        }
-        return true;
+        const GainParameterSnapshot loaded{static_cast<float>(gainDb), bypassed};
+        return commitPersistentParameterSnapshot(loaded, true);
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
@@ -718,6 +705,45 @@ protected:
     }
 
 private:
+    [[nodiscard]] GainParameterSnapshot readEffectiveGainParameterSnapshot() const noexcept {
+        return {gainDbSnapshot_.load(std::memory_order_relaxed),
+                bypassSnapshot_.load(std::memory_order_relaxed)};
+    }
+
+    bool commitPersistentParameterSnapshot(const GainParameterSnapshot &snapshot,
+                                           bool notifyHostParams) noexcept {
+        const bool parameterValuesChanged =
+            gainDbSnapshot_.load(std::memory_order_relaxed) != snapshot.gainDb ||
+            bypassSnapshot_.load(std::memory_order_relaxed) != snapshot.bypassed;
+
+        pendingLoadedGainDb_.store(snapshot.gainDb, std::memory_order_relaxed);
+        pendingLoadedBypass_.store(snapshot.bypassed, std::memory_order_relaxed);
+        loadedStateRevision_.fetch_add(1u, std::memory_order_release);
+        gainDbSnapshot_.store(snapshot.gainDb, std::memory_order_relaxed);
+        bypassSnapshot_.store(snapshot.bypassed, std::memory_order_relaxed);
+
+        if (notifyHostParams && parameterValuesChanged) {
+            const auto *hostParams = resolveHostParams();
+            if (hostParams && hostParams->rescan)
+                hostParams->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        }
+        return true;
+    }
+
+    [[nodiscard]] presets::PresetDocument captureGainPresetDocument(
+        presets::PresetMetadata metadata) const {
+        return captureGainPreset(readEffectiveGainParameterSnapshot(), metadata);
+    }
+
+    presets::PresetStateAdapterError applyGainPresetDocument(
+        const presets::PresetDocument &document) noexcept {
+        const auto mapped = makeGainPresetCandidate(document);
+        if (!mapped.ok())
+            return mapped.error;
+        (void)commitPersistentParameterSnapshot(*mapped.candidate, false);
+        return presets::PresetStateAdapterError::None;
+    }
+
     const clap_host_params_t *resolveHostParams() noexcept {
         if (!hostParamsResolved_) {
             hostParamsResolved_ = true;

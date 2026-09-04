@@ -64,6 +64,7 @@ endif()
 
 set(WEBVIEW_GUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
     "Path to the webview-gui repository root")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/PresetResources.cmake")
 
 if(NOT TARGET webview-gui)
     add_subdirectory("${WEBVIEW_GUI_SOURCE_DIR}"
@@ -203,6 +204,8 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     elseif(WIN32 OR UNIX)
         set_target_properties(webview_gui_example_gain PROPERTIES SUFFIX ".clap")
     endif()
+    webview_gui_package_native_clap_preset_resources(
+        webview_gui_example_gain WebviewGuiGain)
 
     if(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_ROOT)
         find_program(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_EXECUTABLE
@@ -344,6 +347,8 @@ endif()
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
+    webview_gui_package_native_clap_preset_resources(
+        webview_gui_example_polysynth WebviewGuiPolySynth)
 endif()
 
 # #28 prepares the pinned native wrapper integration point. #34 projects the

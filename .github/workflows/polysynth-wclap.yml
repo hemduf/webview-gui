@@ -7,6 +7,9 @@ on:
   pull_request:
     paths:
       - 'examples/polysynth/**'
+      - 'examples/common/presets/**'
+      - 'examples/tests/preset_portability/**'
+      - 'examples/cmake/PresetResources.cmake'
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
@@ -59,10 +62,13 @@ jobs:
       - name: Build current PolySynth WCLAP
         run: cmake --build build-polysynth-wclap --target webview_gui_example_polysynth_wclap --parallel
 
-      - name: Verify bundle layout and WASM ABI
+      - name: Verify bundle layout, preset bank and WASM ABI
         run: |
           test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap/module.wasm
           test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz
+          python3 examples/tests/preset_portability/verify_packaged_presets.py \
+            --artifact build-polysynth-wclap/WebviewGuiPolySynth.wclap \
+            --canonical examples/common/presets/bundled
           node - <<'NODE'
           const fs = require('fs');
           const bytes = fs.readFileSync('build-polysynth-wclap/WebviewGuiPolySynth.wclap/module.wasm');
@@ -78,6 +84,7 @@ jobs:
           }
           NODE
           tar tzf build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz | grep -F 'WebviewGuiPolySynth.wclap/module.wasm'
+          test "$(tar tzf build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
       - name: Build pinned WCLAP lifecycle and WebView smoke host
         run: |

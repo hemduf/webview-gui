@@ -43,11 +43,6 @@ def find_named(root: Path, name: str) -> Path:
     matches = sorted(root.rglob(name), key=lambda path: (len(path.parts), str(path)))
     if not matches:
         raise RuntimeError(f"missing expected native artifact {name!r} under {root}")
-
-    # A Windows VST3 bundle can legitimately contain its PE binary under the same
-    # filename as the outer bundle, e.g. Foo.vst3/Contents/x86_64-win/Foo.vst3.
-    # Treat nested same-name matches as implementation details of the outer product,
-    # while still failing closed if multiple independent product roots exist.
     product_roots = [
         candidate
         for candidate in matches
@@ -105,6 +100,35 @@ def required_product_markers(product: Path) -> tuple[bytes, ...]:
     raise RuntimeError(f"no embedded resource contract is defined for {product.name}")
 
 
+def canonical_factory_bank(workspace: Path) -> dict[str, bytes]:
+    root = workspace / "examples" / "common" / "presets" / "bundled" / "factory"
+    files = {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}
+    if len(files) != 9 or any(not name.endswith(".wvpreset") for name in files):
+        raise RuntimeError(f"invalid canonical factory bank at {root}: {sorted(files)}")
+    return files
+
+
+def product_factory_dir(product: Path) -> Path:
+    if product.is_dir():
+        return product / "Contents" / "Resources" / "presets" / "factory"
+    return product.parent / f"{product.stem}.resources" / "presets" / "factory"
+
+
+def qualify_preset_bank(product: Path, workspace: Path) -> None:
+    expected = canonical_factory_bank(workspace)
+    factory = product_factory_dir(product)
+    if not factory.is_dir():
+        raise RuntimeError(f"missing packaged preset factory directory for {product}: {factory}")
+    actual = {path.name: path.read_bytes() for path in factory.iterdir() if path.is_file()}
+    if actual != expected:
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        changed = sorted(name for name in set(expected) & set(actual) if expected[name] != actual[name])
+        raise RuntimeError(
+            f"packaged factory bank differs for {product}: missing={missing}, extra={extra}, changed={changed}"
+        )
+
+
 def symbol_audit_command(
     binary: Path,
     *,
@@ -116,9 +140,6 @@ def symbol_audit_command(
     os_name = os.name if os_name is None else os_name
 
     if os_name == "nt":
-        # `nm --defined-only` on PE/COFF reports implementation symbols that are
-        # not actually exported by the DLL. Audit the export table instead so the
-        # Windows gate measures the same ABI boundary as `nm -D` / `nm -gU`.
         dumpbin = which("dumpbin")
         if dumpbin:
             return [dumpbin, "/EXPORTS", str(binary)]
@@ -200,6 +221,7 @@ def qualify_product(product: Path, workspace: Path) -> None:
             f"unexpected implementation symbols exported by {binary}: {', '.join(leaked)}"
         )
 
+    qualify_preset_bank(product, workspace)
     print(f"qualified {product.name}: {binary}")
 
 
@@ -231,7 +253,7 @@ def main() -> int:
         standalone = find_named(root, name)
         qualify_product(standalone, workspace)
 
-    print("native example artifact hygiene is clean")
+    print("native example artifact hygiene and canonical preset packaging are clean")
     return 0
 
 

@@ -4,6 +4,8 @@ if(NOT WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
     return()
 endif()
 
+include("${WEBVIEW_GUI_SOURCE_DIR}/examples/cmake/PresetResources.cmake")
+
 set(WEBVIEW_GUI_EXAMPLES_ASSET_OUTPUT_DIRECTORY
     "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH
     "Predictable build-tree directory for wrapped example products")
@@ -112,6 +114,8 @@ function(webview_gui_add_example_wrappers)
     add_custom_target(${all_target})
 
     if(WEBVIEW_GUI_EXAMPLES_FORMAT_CLAP)
+        webview_gui_package_native_clap_preset_resources(
+            ${FMT_CLAP_TARGET} "${FMT_OUTPUT_NAME}")
         add_dependencies(${all_target} ${FMT_CLAP_TARGET})
     endif()
 
@@ -134,6 +138,7 @@ function(webview_gui_add_example_wrappers)
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.vst3"
             BUNDLE_VERSION "0.1.0"
             WINDOWS_FOLDER_VST3 TRUE)
+        webview_gui_package_vst3_preset_resources(${target})
 
         # Linux VST3 is a shared module assembled from clap-wrapper and Steinberg
         # static archives. clap-wrapper 0.16.0 does not mark those archives PIC,
@@ -175,7 +180,8 @@ function(webview_gui_add_example_wrappers)
             BUNDLE_VERSION "0.1.0"
             STATICALLY_LINKED_CLAP_ENTRY TRUE
             PLUGIN_ID "${FMT_PLUGIN_ID}"
-            RESOURCE_DIRECTORY "")
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}")
+        webview_gui_track_preset_resources(${target})
         webview_gui_apply_standalone_artifact_hygiene(${target})
 
         # The pinned Windows standalone still includes MSVC's deprecated
@@ -215,11 +221,12 @@ function(webview_gui_add_example_wrappers)
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.auv2"
             BUNDLE_VERSION "0.1.0"
-            RESOURCE_DIRECTORY ""
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
             MANUFACTURER_NAME "webview-gui"
             MANUFACTURER_CODE "WvGu"
             SUBTYPE_CODE "${FMT_AU_SUBTYPE}"
             INSTRUMENT_TYPE "${FMT_AU_TYPE}")
+        webview_gui_track_preset_resources(${target})
         set_target_properties(${target} PROPERTIES
             LIBRARY_OUTPUT_DIRECTORY "${asset_root}")
         add_dependencies(${all_target} ${target})
@@ -249,11 +256,12 @@ function(webview_gui_add_example_wrappers)
             OUTPUT_NAME "${FMT_OUTPUT_NAME}"
             BUNDLE_IDENTIFIER "${FMT_BUNDLE_IDENTIFIER}.auv3"
             BUNDLE_VERSION "0.1.0"
-            RESOURCE_DIRECTORY ""
+            RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
             MANUFACTURER_NAME "webview-gui"
             MANUFACTURER_CODE "WvGu"
             SUBTYPE_CODE "${FMT_AU_SUBTYPE}"
             INSTRUMENT_TYPE "${FMT_AU_TYPE}")
+        webview_gui_track_preset_resources(${target})
         set_target_properties(${target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${asset_root}")
         add_dependencies(${all_target} ${target})

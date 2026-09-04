@@ -1,0 +1,3 @@
+WVPRESET
+{"schemaVersion":1,"targetPluginId":"com.webview-gui.example.gain","name":"-6 dB Trim","creator":"webview-gui","description":"Clean six-decibel attenuation for gain staging.","tags":["factory","gain"],"features":["audio-effect","utility"],"factoryLoadKey":"gain:trim-minus-6db","extensions":[]}
+{"parameters":[{"id":4096,"value":-6},{"id":4097,"value":0}],"settings":[]}

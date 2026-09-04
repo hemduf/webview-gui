@@ -1,5 +1,7 @@
 #include "polysynth_plugin.h"
+#include "polysynth_parameter_snapshot.h"
 #include "polysynth_parameter_voice_engine.h"
+#include "polysynth_preset_state.h"
 
 #include <clap/ext/note-name.h>
 #include <clap/ext/remote-controls.h>
@@ -145,73 +147,6 @@ constexpr std::size_t kStateV7Size = 44u;
 constexpr std::size_t kStateV8Size = 48u;
 constexpr std::size_t kStateV9Size = 52u;
 constexpr std::size_t kStateSize = 68u;
-
-struct ParameterSnapshot {
-    float fineTuneCents = 0.0f;
-    float masterGainDb = 0.0f;
-    std::uint32_t waveform = 0u;
-    std::int32_t coarseTuneSemitones = 0;
-    float pan = 0.0f;
-    float filterCutoffHz = 6000.0f;
-    float filterResonance = 0.0f;
-    float filterEnvelopeAmount = 0.0f;
-    float ampLevel = 1.0f;
-    float ampAttackSeconds = 0.01f;
-    float ampDecaySeconds = 0.1f;
-    float ampSustain = 0.8f;
-    float ampReleaseSeconds = 0.25f;
-};
-
-bool parameterSnapshotsEqual(const ParameterSnapshot &a,
-                             const ParameterSnapshot &b) noexcept {
-    return a.fineTuneCents == b.fineTuneCents &&
-           a.masterGainDb == b.masterGainDb &&
-           a.waveform == b.waveform &&
-           a.coarseTuneSemitones == b.coarseTuneSemitones &&
-           a.pan == b.pan &&
-           a.filterCutoffHz == b.filterCutoffHz &&
-           a.filterResonance == b.filterResonance &&
-           a.filterEnvelopeAmount == b.filterEnvelopeAmount &&
-           a.ampLevel == b.ampLevel &&
-           a.ampAttackSeconds == b.ampAttackSeconds &&
-           a.ampDecaySeconds == b.ampDecaySeconds &&
-           a.ampSustain == b.ampSustain &&
-           a.ampReleaseSeconds == b.ampReleaseSeconds;
-}
-
-bool parameterSnapshotValue(const ParameterSnapshot &snapshot,
-                            clap_id paramId,
-                            double &value) noexcept {
-    if (paramId == kHostFineTuneParameterId)
-        value = snapshot.fineTuneCents;
-    else if (paramId == kHostMasterGainParameterId)
-        value = snapshot.masterGainDb;
-    else if (paramId == kHostWaveformParameterId)
-        value = snapshot.waveform;
-    else if (paramId == kHostCoarseTuneParameterId)
-        value = snapshot.coarseTuneSemitones;
-    else if (paramId == kHostPanParameterId)
-        value = snapshot.pan;
-    else if (paramId == kHostFilterCutoffParameterId)
-        value = snapshot.filterCutoffHz;
-    else if (paramId == kHostFilterResonanceParameterId)
-        value = snapshot.filterResonance;
-    else if (paramId == kHostFilterEnvelopeAmountParameterId)
-        value = snapshot.filterEnvelopeAmount;
-    else if (paramId == kHostAmpLevelParameterId)
-        value = snapshot.ampLevel;
-    else if (paramId == kHostAmpAttackParameterId)
-        value = snapshot.ampAttackSeconds;
-    else if (paramId == kHostAmpDecayParameterId)
-        value = snapshot.ampDecaySeconds;
-    else if (paramId == kHostAmpSustainParameterId)
-        value = snapshot.ampSustain;
-    else if (paramId == kHostAmpReleaseParameterId)
-        value = snapshot.ampReleaseSeconds;
-    else
-        return false;
-    return true;
-}
 
 bool copyName(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || capacity == 0 || !text)
@@ -952,44 +887,7 @@ protected:
             return false;
         loaded.fineTuneCents = static_cast<float>(fineTuneCents);
 
-        ParameterSnapshot current{};
-        const bool haveCurrent = readEffectiveParameterSnapshot(current);
-        const bool parameterValueChanged =
-            !haveCurrent || !parameterSnapshotsEqual(current, loaded);
-
-        if (active_) {
-            std::uint32_t loadedTailSamples = 0u;
-            if (!releaseSecondsToTailSamples(loaded.ampReleaseSeconds,
-                                             activeSampleRate_,
-                                             loadedTailSamples))
-                return false;
-            const auto loadedRevisionBefore =
-                loadedStateRevision_.load(std::memory_order_acquire);
-            const auto tailRevision =
-                tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
-            if (loadedRevisionBefore != tailRevision) {
-                loadedTailSamples = std::max(
-                    loadedTailSamples,
-                    pendingLoadedTailSamples_.load(std::memory_order_acquire));
-            }
-            pendingLoadedTailSamples_.store(loadedTailSamples,
-                                            std::memory_order_release);
-        }
-
-        publishPendingParameterSnapshot(loaded);
-        const auto loadedRevision =
-            loadedStateRevision_.fetch_add(1u, std::memory_order_release) + 1u;
-
-        if (!active_) {
-            publishHostParameterSnapshot(loaded);
-            appliedLoadedStateRevision_ = loadedRevision;
-            appliedLoadedStateRevisionPublished_.store(loadedRevision,
-                                                       std::memory_order_release);
-        }
-
-        if (parameterValueChanged && hostParams_ && hostParams_->rescan)
-            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
-        return true;
+        return commitPersistentParameterSnapshot(loaded, true);
     }
 
     bool implementsStateContext() const noexcept override { return true; }
@@ -1244,6 +1142,66 @@ protected:
     }
 
 private:
+    bool commitPersistentParameterSnapshot(const ParameterSnapshot &loaded,
+                                           bool notifyHostParams) noexcept {
+        ParameterSnapshot current{};
+        const bool haveCurrent = readEffectiveParameterSnapshot(current);
+        const bool parameterValueChanged =
+            !haveCurrent || !parameterSnapshotsEqual(current, loaded);
+
+        if (active_) {
+            std::uint32_t loadedTailSamples = 0u;
+            if (!releaseSecondsToTailSamples(loaded.ampReleaseSeconds,
+                                             activeSampleRate_,
+                                             loadedTailSamples))
+                return false;
+            const auto loadedRevisionBefore =
+                loadedStateRevision_.load(std::memory_order_acquire);
+            const auto tailRevision =
+                tailLoadedStateRevisionPublished_.load(std::memory_order_acquire);
+            if (loadedRevisionBefore != tailRevision) {
+                loadedTailSamples = std::max(
+                    loadedTailSamples,
+                    pendingLoadedTailSamples_.load(std::memory_order_acquire));
+            }
+            pendingLoadedTailSamples_.store(loadedTailSamples,
+                                            std::memory_order_release);
+        }
+
+        publishPendingParameterSnapshot(loaded);
+        const auto loadedRevision =
+            loadedStateRevision_.fetch_add(1u, std::memory_order_release) + 1u;
+
+        if (!active_) {
+            publishHostParameterSnapshot(loaded);
+            appliedLoadedStateRevision_ = loadedRevision;
+            appliedLoadedStateRevisionPublished_.store(loadedRevision,
+                                                       std::memory_order_release);
+        }
+
+        if (notifyHostParams && parameterValueChanged && hostParams_ && hostParams_->rescan)
+            hostParams_->rescan(host_, CLAP_PARAM_RESCAN_VALUES);
+        return true;
+    }
+
+    [[nodiscard]] presets::PresetDocument capturePolySynthPresetDocument(
+        presets::PresetMetadata metadata) const {
+        ParameterSnapshot snapshot{};
+        if (!readEffectiveParameterSnapshot(snapshot))
+            return {};
+        return capturePolySynthPreset(snapshot, metadata);
+    }
+
+    presets::PresetStateAdapterError applyPolySynthPresetDocument(
+        const presets::PresetDocument &document) noexcept {
+        const auto mapped = makePolySynthPresetCandidate(document);
+        if (!mapped.ok())
+            return mapped.error;
+        if (!commitPersistentParameterSnapshot(*mapped.candidate, false))
+            return presets::PresetStateAdapterError::InvalidKnownParameter;
+        return presets::PresetStateAdapterError::None;
+    }
+
     ParameterSnapshot loadHostParameterSnapshotRelaxed() const noexcept {
         ParameterSnapshot snapshot{};
         snapshot.fineTuneCents = hostFineTuneCents_.load(std::memory_order_relaxed);

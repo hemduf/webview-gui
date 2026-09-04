@@ -1,0 +1,68 @@
+if(NOT DEFINED WEBVIEW_GUI_ROOT OR "${WEBVIEW_GUI_ROOT}" STREQUAL "")
+    message(FATAL_ERROR "WEBVIEW_GUI_ROOT is required")
+endif()
+
+function(read_required relative_path out_var)
+    set(path "${WEBVIEW_GUI_ROOT}/${relative_path}")
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "missing required file: ${relative_path}")
+    endif()
+    file(READ "${path}" content)
+    set(${out_var} "${content}" PARENT_SCOPE)
+endfunction()
+
+read_required("examples/CMakeLists.txt" examples_root)
+read_required("examples/gain/wclap/CMakeLists.txt" gain_wclap)
+read_required("examples/polysynth/wclap/CMakeLists.txt" poly_wclap)
+read_required("examples/cmake/ExampleFormats.cmake" wrappers)
+read_required("examples/cmake/PresetResources.cmake" resource_helpers)
+
+string(FIND "${examples_root}" "PresetResources.cmake" root_helper)
+string(FIND "${examples_root}" "webview_gui_package_native_clap_preset_resources" native_clap_packaging)
+if(root_helper EQUAL -1 OR native_clap_packaging EQUAL -1)
+    message(FATAL_ERROR "#104: native CLAP builds must package the canonical preset bank without wrappers")
+endif()
+
+foreach(wclap IN ITEMS gain_wclap poly_wclap)
+    string(FIND "${${wclap}}" "PresetResources.cmake" helper_index)
+    string(FIND "${${wclap}}" "WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY" resource_index)
+    if(helper_index EQUAL -1 OR resource_index EQUAL -1)
+        message(FATAL_ERROR "#104: ${wclap} must use the canonical clean preset resource root")
+    endif()
+    string(FIND "${${wclap}}" "examples/common/presets\"" source_tree_index)
+    if(NOT source_tree_index EQUAL -1)
+        message(FATAL_ERROR "#104: ${wclap} still packages the preset implementation source tree")
+    endif()
+endforeach()
+
+foreach(required_token IN ITEMS
+        "webview_gui_package_native_clap_preset_resources"
+        "webview_gui_package_vst3_preset_resources"
+        "RESOURCE_DIRECTORY \"\${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}\""
+        "webview_gui_track_preset_resources")
+    string(FIND "${wrappers}" "${required_token}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "#104: wrapper packaging is missing '${required_token}'")
+    endif()
+endforeach()
+
+string(FIND "${resource_helpers}" "examples/common/presets/bundled" clean_root)
+string(FIND "${resource_helpers}" "LINK_DEPENDS" rebuild_dependency)
+string(FIND "${resource_helpers}" "../Resources/presets" bundle_resource_path)
+if(clean_root EQUAL -1 OR rebuild_dependency EQUAL -1 OR bundle_resource_path EQUAL -1)
+    message(FATAL_ERROR "#104: resource helper must use clean bank, resource paths and resource-only rebuild dependencies")
+endif()
+
+set(bundle_root "${WEBVIEW_GUI_ROOT}/examples/common/presets/bundled")
+file(GLOB_RECURSE bundled_files LIST_DIRECTORIES FALSE "${bundle_root}/*")
+list(LENGTH bundled_files bundled_count)
+if(NOT bundled_count EQUAL 9)
+    message(FATAL_ERROR "#104: canonical package must contain exactly 9 files, got ${bundled_count}")
+endif()
+foreach(path IN LISTS bundled_files)
+    if(NOT path MATCHES "\\.wvpreset$")
+        message(FATAL_ERROR "#104: non-preset implementation artifact leaked into canonical bank: ${path}")
+    endif()
+endforeach()
+
+message(STATUS "#104 canonical clean preset packaging wiring contract satisfied")
