@@ -1,16 +1,15 @@
 name: Preset CLAP contract
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'examples/common/preset_clap_contract.h'
-      - 'examples/tests/preset_contract/**'
-      - '.github/workflows/preset-contract.yml'
   pull_request:
     paths:
       - 'examples/common/preset_clap_contract.h'
+      - 'examples/common/preset_discovery_factory.h'
+      - 'examples/common/preset_production_catalog.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
+      - 'examples/gain/gain_preset_discovery.h'
+      - 'examples/polysynth/polysynth_preset_discovery.h'
       - 'examples/tests/preset_contract/**'
       - '.github/workflows/preset-contract.yml'
   workflow_dispatch:

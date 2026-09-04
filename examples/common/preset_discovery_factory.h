@@ -6,17 +6,16 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
+#include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace webview_gui::examples::presets {
 
 namespace detail {
 
-// #90 owns only the CLAP declaration seam. #36 remains authoritative for
-// storage/root resolution. When #36 provides a genuine native filesystem root,
-// a production Tag can expose these two runtime functions. #90 test fakes use
-// the same seam; there is deliberately no compiled-in per-user-root fallback.
 template <typename Tag, typename = void>
 struct NativeUserPresetLocation {
     static bool available() noexcept { return false; }
@@ -39,8 +38,6 @@ struct NativeUserPresetLocation<
 
     static bool available() noexcept {
 #if defined(__wasi__)
-        // WCLAP/WASI browser storage must never be represented as a native OS
-        // FILE location. Factory content remains available via PLUGIN.
         return false;
 #else
         return static_cast<bool>(Tag::nativeUserPresetFilesAvailable());
@@ -50,25 +47,144 @@ struct NativeUserPresetLocation<
     static const char *root() noexcept { return Tag::nativeUserPresetRoot(); }
 };
 
+template <typename Tag, typename = void>
+struct ProductionCatalogFactory {
+    inline static constexpr bool available = false;
+    static std::unique_ptr<PresetCatalog> create() noexcept { return {}; }
+};
+
+template <typename Tag>
+struct ProductionCatalogFactory<Tag,
+                                std::void_t<decltype(Tag::createPresetCatalog())>> {
+    inline static constexpr bool available = true;
+    static_assert(noexcept(Tag::createPresetCatalog()),
+                  "production preset catalog factory must be noexcept");
+    static_assert(std::is_same_v<decltype(Tag::createPresetCatalog()),
+                                 std::unique_ptr<PresetCatalog>>,
+                  "production preset catalog factory must return unique_ptr<PresetCatalog>");
+
+    static std::unique_ptr<PresetCatalog> create() noexcept {
+        return Tag::createPresetCatalog();
+    }
+};
+
+class ClapMetadataSink final : public PresetMetadataSink {
+public:
+    explicit ClapMetadataSink(
+        const clap_preset_discovery_metadata_receiver_t *receiver) noexcept
+        : receiver_(receiver) {}
+
+    bool beginPreset(std::string_view name, std::string_view loadKey) noexcept override {
+        if (failed_ || cancelled_ || !receiver_ || !receiver_->begin_preset)
+            return false;
+        try {
+            std::string nameText{name};
+            std::string loadKeyText{loadKey};
+            const char *loadKeyPtr = loadKey.empty() ? nullptr : loadKeyText.c_str();
+            const bool accepted = receiver_->begin_preset(receiver_,
+                                                          nameText.c_str(),
+                                                          loadKeyPtr);
+            if (!accepted)
+                cancelled_ = true;
+            return accepted;
+        } catch (...) {
+            failed_ = true;
+            return false;
+        }
+    }
+
+    void setTargetPlugin(std::string_view pluginId) noexcept override {
+        if (failed_ || cancelled_ || !receiver_ || !receiver_->add_plugin_id)
+            return;
+        try {
+            std::string idText{pluginId};
+            const clap_universal_plugin_id_t universalId{"clap", idText.c_str()};
+            receiver_->add_plugin_id(receiver_, &universalId);
+        } catch (...) {
+            failed_ = true;
+        }
+    }
+
+    void setFlags(std::uint32_t flags) noexcept override {
+        if (failed_ || cancelled_ || !receiver_ || !receiver_->set_flags)
+            return;
+        try {
+            receiver_->set_flags(receiver_, flags);
+        } catch (...) {
+            failed_ = true;
+        }
+    }
+
+    void addCreator(std::string_view creator) noexcept override {
+        callString(receiver_ ? receiver_->add_creator : nullptr, creator);
+    }
+
+    void setDescription(std::string_view description) noexcept override {
+        callString(receiver_ ? receiver_->set_description : nullptr, description);
+    }
+
+    void addFeature(std::string_view feature) noexcept override {
+        callString(receiver_ ? receiver_->add_feature : nullptr, feature);
+    }
+
+    void setTimestamps(clap_timestamp creation,
+                       clap_timestamp modification) noexcept override {
+        if (failed_ || cancelled_ || !receiver_ || !receiver_->set_timestamps)
+            return;
+        try {
+            receiver_->set_timestamps(receiver_, creation, modification);
+        } catch (...) {
+            failed_ = true;
+        }
+    }
+
+    [[nodiscard]] bool failed() const noexcept { return failed_; }
+    [[nodiscard]] bool cancelled() const noexcept { return cancelled_; }
+
+private:
+    using StringCallback = void(CLAP_ABI *)(
+        const clap_preset_discovery_metadata_receiver_t *, const char *);
+
+    void callString(StringCallback callback, std::string_view text) noexcept {
+        if (failed_ || cancelled_ || !receiver_ || !callback)
+            return;
+        try {
+            std::string copy{text};
+            callback(receiver_, copy.c_str());
+        } catch (...) {
+            failed_ = true;
+        }
+    }
+
+    const clap_preset_discovery_metadata_receiver_t *receiver_ = nullptr;
+    bool failed_ = false;
+    bool cancelled_ = false;
+};
+
+inline void notifyMetadataError(
+    const clap_preset_discovery_metadata_receiver_t *receiver,
+    const PresetResult &result) noexcept {
+    if (!receiver || !receiver->on_error)
+        return;
+    try {
+        std::string message = result.message.empty()
+                                  ? std::string{"preset metadata extraction failed"}
+                                  : std::string{result.message};
+        receiver->on_error(receiver, result.osError, message.c_str());
+    } catch (...) {
+    }
+}
+
 } // namespace detail
 
-// Tag requirements:
-//   static constexpr const char *providerId;
-//   static constexpr const char *providerName;
-//   static constexpr const char *vendor;
-//   static constexpr const char *targetPluginId;
-// Optional #36 production integration seam for a genuine native user root:
-//   static bool nativeUserPresetFilesAvailable() noexcept;
-//   static const char *nativeUserPresetRoot() noexcept;
-//
-// The target plug-in ID is deliberately carried by the tag now so #91 can map
-// Preset Discovery metadata without introducing a registry or processor object.
 template <typename Tag>
 class PresetDiscoveryFactoryImpl {
     struct ProviderState {
         const clap_preset_discovery_indexer_t *indexer = nullptr;
         bool initAttempted = false;
         bool initialized = false;
+        std::unique_ptr<PresetCatalog> catalog;
+        std::string nativeUserRoot;
         clap_preset_discovery_provider_t provider{};
 
         explicit ProviderState(const clap_preset_discovery_indexer_t *indexerIn) noexcept
@@ -94,21 +210,39 @@ class PresetDiscoveryFactoryImpl {
         if (!state || !state->indexer || state->initAttempted)
             return false;
 
-        // init() is a single declaration transaction from the provider's point
-        // of view. A failed attempt is not retried, preventing duplicate indexer
-        // callbacks if a later declaration was rejected by the host.
         state->initAttempted = true;
         const auto *indexer = state->indexer;
         if (!indexer->declare_filetype || !indexer->declare_location)
             return false;
 
-        const bool userFilesAvailable = detail::NativeUserPresetLocation<Tag>::available();
-        const char *userRoot = userFilesAvailable
-                                   ? detail::NativeUserPresetLocation<Tag>::root()
-                                   : nullptr;
+        if constexpr (detail::ProductionCatalogFactory<Tag>::available) {
+            state->catalog = detail::ProductionCatalogFactory<Tag>::create();
+            if (!state->catalog || state->catalog->fileExtension() != presetFiletype.file_extension)
+                return false;
+        }
 
-        // Validate the optional #36 seam before any host callback so an invalid
-        // native backend cannot leave a partially advertised provider.
+        bool userFilesAvailable = false;
+        const char *userRoot = nullptr;
+        if (state->catalog) {
+            std::string_view location;
+            if (state->catalog->nativeUserLocation(location)) {
+#if !defined(__wasi__)
+                if (location.empty())
+                    return false;
+                try {
+                    state->nativeUserRoot.assign(location.data(), location.size());
+                } catch (...) {
+                    return false;
+                }
+                userFilesAvailable = true;
+                userRoot = state->nativeUserRoot.c_str();
+#endif
+            }
+        } else {
+            userFilesAvailable = detail::NativeUserPresetLocation<Tag>::available();
+            userRoot = userFilesAvailable ? detail::NativeUserPresetLocation<Tag>::root() : nullptr;
+        }
+
         if (userFilesAvailable && (!userRoot || userRoot[0] == '\0'))
             return false;
 
@@ -142,23 +276,47 @@ class PresetDiscoveryFactoryImpl {
 
     static bool CLAP_ABI providerGetMetadata(
         const clap_preset_discovery_provider_t *provider,
-        std::uint32_t,
-        const char *,
-        const clap_preset_discovery_metadata_receiver_t *) noexcept {
+        std::uint32_t locationKind,
+        const char *location,
+        const clap_preset_discovery_metadata_receiver_t *receiver) noexcept {
         auto *state = stateFrom(provider);
-        if (!state || !state->initialized)
+        if (!state || !state->initialized || !state->catalog || !receiver ||
+            !receiver->begin_preset || !receiver->add_plugin_id)
             return false;
-        // Metadata adaptation belongs to #91. Until then the provider fails
-        // closed without instantiating a processor, WebView or storage engine.
-        return false;
+
+        detail::ClapMetadataSink sink{receiver};
+        PresetResult result;
+        if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN) {
+            if (location != nullptr)
+                result = PresetResult::error("PLUGIN preset location must be null");
+            else
+                result = state->catalog->enumerateFactoryMetadata(sink);
+        } else if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE) {
+            if (!location || location[0] == '\0')
+                result = PresetResult::error("FILE preset location is missing");
+            else
+                result = state->catalog->metadataForFile(location, sink);
+        } else {
+            result = PresetResult::unsupported("unsupported preset discovery location kind");
+        }
+
+        if (result.status == PresetResultStatus::Cancelled || sink.cancelled())
+            return true;
+        if (sink.failed()) {
+            detail::notifyMetadataError(receiver,
+                PresetResult::error("metadata receiver adapter failed"));
+            return false;
+        }
+        if (!result.succeeded()) {
+            detail::notifyMetadataError(receiver, result);
+            return false;
+        }
+        return true;
     }
 
     static const void *CLAP_ABI providerGetExtension(
         const clap_preset_discovery_provider_t *,
         const char *) noexcept {
-        // #89 exposes no provider extension. Returning null is valid both for a
-        // normal post-init query and as a defensive response to an invalid early
-        // query, even though CLAP forbids hosts from calling this before init().
         return nullptr;
     }
 

@@ -23,6 +23,8 @@ public:
         targetPluginId = pluginId;
     }
 
+    void setFlags(std::uint32_t value) noexcept override { flags = value; }
+
     void addCreator(std::string_view creator) noexcept override {
         creatorName = creator;
     }
@@ -44,6 +46,7 @@ public:
     std::string_view presetName{};
     std::string_view presetLoadKey{};
     std::string_view targetPluginId{};
+    std::uint32_t flags = 0u;
     std::string_view creatorName{};
     std::string_view descriptionText{};
     std::string_view featureName{};
@@ -94,6 +97,7 @@ public:
         if (!sink.beginPreset("Init", "factory:init"))
             return presets::PresetResult::cancelled();
         sink.setTargetPlugin("com.webview-gui.example.fake");
+        sink.setFlags(CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
         sink.addCreator("webview-gui");
         sink.setDescription("Fake preset used to qualify the #36/#37 seam");
         sink.addFeature("init");
@@ -150,6 +154,7 @@ int main() {
     assert(metadata.presetName == "Init");
     assert(metadata.presetLoadKey == "factory:init");
     assert(metadata.targetPluginId == "com.webview-gui.example.fake");
+    assert(metadata.flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
     assert(metadata.creatorName == "webview-gui");
     assert(metadata.featureName == "init");
 

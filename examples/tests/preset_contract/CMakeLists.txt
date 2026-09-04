@@ -42,6 +42,7 @@ add_executable(webview_gui_preset_metadata_tests
 target_include_directories(webview_gui_preset_metadata_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../common
     ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${CMAKE_CURRENT_LIST_DIR}/../../../include/webview-gui/_impl/platform/choc
 )
 target_link_libraries(webview_gui_preset_metadata_tests PRIVATE
     clap
