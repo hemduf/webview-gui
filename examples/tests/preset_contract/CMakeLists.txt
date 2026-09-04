@@ -13,6 +13,18 @@ FetchContent_Declare(webview_gui_preset_contract_clap
 )
 FetchContent_MakeAvailable(webview_gui_preset_contract_clap)
 
+# The #36 codec uses the repository-pinned CHOC submodule, while this focused
+# standalone test project intentionally does not configure the repository root.
+# Fetch the exact gitlink revision so #91 tests exercise the same JSON parser.
+FetchContent_Declare(webview_gui_preset_contract_choc
+    GIT_REPOSITORY https://github.com/Tracktion/choc.git
+    GIT_TAG 9606a6615b592605993d92733cdfd6ca6ecbd825
+)
+FetchContent_GetProperties(webview_gui_preset_contract_choc)
+if(NOT webview_gui_preset_contract_choc_POPULATED)
+    FetchContent_Populate(webview_gui_preset_contract_choc)
+endif()
+
 add_executable(webview_gui_preset_contract_tests
     preset_contract_tests.cpp
 )
@@ -29,6 +41,7 @@ add_executable(webview_gui_preset_discovery_factory_tests
 target_include_directories(webview_gui_preset_discovery_factory_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../common
     ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${webview_gui_preset_contract_choc_SOURCE_DIR}
 )
 target_link_libraries(webview_gui_preset_discovery_factory_tests PRIVATE
     clap
@@ -42,7 +55,7 @@ add_executable(webview_gui_preset_metadata_tests
 target_include_directories(webview_gui_preset_metadata_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../common
     ${CMAKE_CURRENT_LIST_DIR}/../..
-    ${CMAKE_CURRENT_LIST_DIR}/../../../include/webview-gui/_impl/platform/choc
+    ${webview_gui_preset_contract_choc_SOURCE_DIR}
 )
 target_link_libraries(webview_gui_preset_metadata_tests PRIVATE
     clap
