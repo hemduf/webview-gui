@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import importlib.util
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 
 # Exact Git blob for WebCLAP/wclap-bridge@cd11d22.../source/_generic/wclap-module.h.
 EXPECTED_BASE_GIT_BLOB = "737ce825901a3d634693f1d2493905bbf7986868"
+UPSTREAM_MODULE_PATH = "source/_generic/wclap-module.h"
 
 
 def git_blob_sha1(path: Path) -> str:
@@ -35,6 +37,22 @@ def run_helper(script: Path, bridge_module: Path) -> None:
     )
 
 
+def emit_git_patch(original: str, patched: str, output: Path) -> None:
+    diff = "".join(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            patched.splitlines(keepends=True),
+            fromfile=f"a/{UPSTREAM_MODULE_PATH}",
+            tofile=f"b/{UPSTREAM_MODULE_PATH}",
+            lineterm="\n",
+        )
+    )
+    if not diff:
+        raise SystemExit("qualified upstream patch produced an empty Git diff")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(diff)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -51,6 +69,13 @@ def main() -> None:
     parser.add_argument(
         "--loader-source",
         help="optional clap-trap PluginLoader source used by the qualification host",
+    )
+    parser.add_argument(
+        "--emit-patch",
+        help=(
+            "optional output path for a standalone Git patch containing only the "
+            "qualified upstream wclap-module.h change"
+        ),
     )
     parser.add_argument(
         "--allow-unverified-base",
@@ -76,6 +101,8 @@ def main() -> None:
             f"{EXPECTED_BASE_GIT_BLOB}, got {base_blob}; use "
             "--allow-unverified-base only after reviewing upstream changes"
         )
+
+    original_bridge = bridge_module.read_text()
 
     scripts = Path(__file__).resolve().parent
     bridge_script = scripts / "patch_wclap_preset_discovery_bridge.py"
@@ -120,6 +147,11 @@ def main() -> None:
             "upstream patch completed without required qualified markers: "
             + ", ".join(missing)
         )
+
+    if args.emit_patch:
+        patch_path = Path(args.emit_patch).resolve()
+        emit_git_patch(original_bridge, patched, patch_path)
+        print(f"emitted standalone upstream Git patch: {patch_path}")
 
     print(
         "applied qualified WCLAP Preset Discovery upstream patch: "
