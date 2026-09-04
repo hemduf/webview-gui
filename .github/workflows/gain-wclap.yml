@@ -80,8 +80,11 @@ jobs:
           }
           const imports = WebAssembly.Module.imports(module);
           for (const entry of imports) {
-            if (/gtk|webkit|cocoa|user32|ole32|choc/i.test(`${entry.module}:${entry.name}`))
-              throw new Error(`native/CHOC import leaked into WCLAP: ${entry.module}:${entry.name}`);
+            const symbol = `${entry.module}:${entry.name}`;
+            if (/gtk|webkit|cocoa|user32|ole32/i.test(symbol))
+              throw new Error(`native GUI import leaked into WCLAP: ${symbol}`);
+            if (/choc/i.test(symbol))
+              throw new Error(`CHOC import leaked into WCLAP: ${symbol}`);
           }
           NODE
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
