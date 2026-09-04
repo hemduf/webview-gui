@@ -18,6 +18,7 @@ on:
       - '.github/scripts/patch_clap_trap_wclap_presets.py'
       - '.github/scripts/patch_clap_trap_wclap_discovery_smoke.py'
       - '.github/scripts/patch_wclap_preset_discovery_bridge.py'
+      - '.github/scripts/patch_wclap_preset_null_semantics.py'
       - '.github/workflows/gain-wclap.yml'
   workflow_dispatch:
 
@@ -107,6 +108,8 @@ jobs:
             --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
             --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
             --loader-source .ci/clap-trap/src/plugin-loader.cpp
+          python3 .github/scripts/patch_wclap_preset_null_semantics.py \
+            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVQ1
@@ -116,7 +119,8 @@ jobs:
             --expected-param-id 4096 \
             --expected-param-value -6
           python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
-            --source .ci/clap-trap/examples/cli.cpp
+            --source .ci/clap-trap/examples/cli.cpp \
+            --expected-plugin-id com.webview-gui.example.gain
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
