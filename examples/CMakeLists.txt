@@ -106,6 +106,26 @@ FetchContent_Declare(webview_gui_example_clap_helpers
 )
 FetchContent_MakeAvailable(webview_gui_example_clap_helpers)
 
+function(webview_gui_enable_native_preset_support target)
+    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        return()
+    endif()
+
+    target_sources(${target} PRIVATE
+        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/preset_production_catalog.cpp
+        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/presets/native_preset_storage.cpp
+    )
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common
+        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/common/presets
+        ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
+    )
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(${target} PRIVATE shell32 ole32)
+    endif()
+endfunction()
+
 add_library(webview_gui_example_skeleton_core STATIC
     common/skeleton_plugin.cpp
 )
@@ -164,9 +184,9 @@ if(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN)
     add_library(webview_gui_example_gain_clap_core STATIC
         gain/gain_plugin.cpp
     )
-    target_include_directories(webview_gui_example_gain_clap_core
-        PUBLIC ${CMAKE_CURRENT_LIST_DIR}/gain
-        PRIVATE ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
+    webview_gui_enable_native_preset_support(webview_gui_example_gain_clap_core)
+    target_include_directories(webview_gui_example_gain_clap_core PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/gain
     )
     target_link_libraries(webview_gui_example_gain_clap_core
         PUBLIC clap-helpers
@@ -350,9 +370,7 @@ endif()
 
 if(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH)
     add_subdirectory(polysynth)
-    target_include_directories(webview_gui_example_polysynth_clap_core PRIVATE
-        ${WEBVIEW_GUI_EXAMPLES_CHOC_INCLUDE_DIR}
-    )
+    webview_gui_enable_native_preset_support(webview_gui_example_polysynth_clap_core)
     webview_gui_package_native_clap_preset_resources(
         webview_gui_example_polysynth WebviewGuiPolySynth)
 endif()
