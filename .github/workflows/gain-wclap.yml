@@ -14,14 +14,11 @@ on:
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
-      - '.github/scripts/apply_wclap_preset_discovery_upstream.py'
+      - '.github/scripts/patch_clap_trap_factory_loader.py'
       - '.github/scripts/patch_clap_trap_wclap.py'
       - '.github/scripts/patch_clap_trap_wclap_presets.py'
       - '.github/scripts/patch_clap_trap_wclap_discovery_smoke.py'
       - '.github/scripts/patch_clap_trap_wclap_discovery_concurrency.py'
-      - '.github/scripts/patch_wclap_preset_discovery_bridge.py'
-      - '.github/scripts/patch_wclap_preset_discovery_thread_safety.py'
-      - '.github/scripts/patch_wclap_preset_null_semantics.py'
       - '.github/workflows/gain-wclap.yml'
   workflow_dispatch:
 
@@ -39,7 +36,7 @@ jobs:
       WASI_ARCHIVE: wasi-sdk-33.0-x86_64-linux.tar.gz
       WASI_SHA256: 0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
       CLAP_TRAP_REV: c75d353dc57140cfceebf96dcbea9c491bef4f10
-      WCLAP_BRIDGE_REV: cd11d22afbe2af350f24cd56e6e0536e5ca86452
+      WCLAP_BRIDGE_REV: 92fa28be64c59a6b815793b9dd752fc1d461d635
 
     steps:
       - name: Checkout
@@ -99,24 +96,19 @@ jobs:
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
           test "$(tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
-      - name: Build pinned WCLAP lifecycle, WebView and preset discovery/load smoke host
+      - name: Build adopted WCLAP lifecycle, WebView and preset discovery/load smoke host
         run: |
           git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
           git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
-          git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git .ci/clap-trap/wclap-bridge
+          git clone --filter=blob:none https://github.com/hemduf/wclap-bridge.git .ci/clap-trap/wclap-bridge
           git -C .ci/clap-trap/wclap-bridge checkout "${WCLAP_BRIDGE_REV}"
           git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+          test "$(git -C .ci/clap-trap/wclap-bridge hash-object source/_generic/wclap-module.h)" = 'e568c9a14fb75e07da4d417ad47d4582ce61ac05'
+          git -C .ci/clap-trap/wclap-bridge diff --exit-code
 
-          python3 .github/scripts/apply_wclap_preset_discovery_upstream.py \
-            --bridge-module .ci/clap-trap/wclap-bridge/source/_generic/wclap-module.h \
+          python3 .github/scripts/patch_clap_trap_factory_loader.py \
             --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
-            --loader-source .ci/clap-trap/src/plugin-loader.cpp \
-            --emit-patch "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
-          test -s .ci/wclap-preset-discovery.patch
-          git -C .ci/clap-trap/wclap-bridge checkout -- source/_generic/wclap-module.h
-          git -C .ci/clap-trap/wclap-bridge apply --check "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
-          git -C .ci/clap-trap/wclap-bridge apply "${GITHUB_WORKSPACE}/.ci/wclap-preset-discovery.patch"
-          git -C .ci/clap-trap/wclap-bridge diff --check
+            --loader-source .ci/clap-trap/src/plugin-loader.cpp
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVQ1
