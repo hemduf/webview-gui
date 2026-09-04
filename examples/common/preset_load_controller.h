@@ -2,6 +2,7 @@
 
 #include "preset_clap_contract.h"
 #include "presets/preset_document.h"
+#include "presets/preset_exception_boundary.h"
 
 #include <clap/factory/preset-discovery.h>
 
@@ -17,34 +18,36 @@ public:
     bool beginCandidate(std::string_view targetPluginId) noexcept override {
         if (building_ || targetPluginId.empty())
             return false;
-        try {
-            document_ = {};
-            document_.metadata.targetPluginId.assign(targetPluginId.data(), targetPluginId.size());
-            // PresetStateSink intentionally carries only persistent state, not presentation
-            // metadata. Give the temporary candidate a local non-user-visible name so it can
-            // pass the format-neutral document invariant before the plug-in-specific adapter
-            // validates and commits it.
-            document_.metadata.name = "CLAP preset load candidate";
-            building_ = true;
-            completed_ = false;
-            return true;
-        } catch (...) {
-            document_ = {};
-            building_ = false;
-            completed_ = false;
-            return false;
-        }
+        return detail::exceptionBoundary(
+            [&]() -> bool {
+                document_ = {};
+                document_.metadata.targetPluginId.assign(targetPluginId.data(), targetPluginId.size());
+                // PresetStateSink intentionally carries only persistent state, not presentation
+                // metadata. Give the temporary candidate a local non-user-visible name so it can
+                // pass the format-neutral document invariant before the plug-in-specific adapter
+                // validates and commits it.
+                document_.metadata.name = "CLAP preset load candidate";
+                building_ = true;
+                completed_ = false;
+                return true;
+            },
+            [&]() -> bool {
+                document_ = {};
+                building_ = false;
+                completed_ = false;
+                return false;
+            });
     }
 
     bool setParameter(std::uint32_t stableParameterId, double value) noexcept override {
         if (!building_)
             return false;
-        try {
-            document_.parameters.push_back({stableParameterId, value});
-            return true;
-        } catch (...) {
-            return false;
-        }
+        return detail::exceptionBoundary(
+            [&]() -> bool {
+                document_.parameters.push_back({stableParameterId, value});
+                return true;
+            },
+            []() -> bool { return false; });
     }
 
     bool endCandidate() noexcept override {
@@ -77,24 +80,28 @@ inline void notifyLoadError(const clap_host_t *host,
     if (!host || !hostPresetLoad || !hostPresetLoad->on_error)
         return;
 
-    try {
-        const std::string message = result.message.empty()
-                                        ? std::string{"preset load failed"}
-                                        : std::string{result.message};
-        hostPresetLoad->on_error(host,
-                                 locationKind,
-                                 location,
-                                 loadKey,
-                                 result.osError,
-                                 message.c_str());
-    } catch (...) {
-        hostPresetLoad->on_error(host,
-                                 locationKind,
-                                 location,
-                                 loadKey,
-                                 result.osError,
-                                 "preset load failed");
-    }
+    (void)detail::exceptionBoundary(
+        [&]() -> bool {
+            const std::string message = result.message.empty()
+                                            ? std::string{"preset load failed"}
+                                            : std::string{result.message};
+            hostPresetLoad->on_error(host,
+                                     locationKind,
+                                     location,
+                                     loadKey,
+                                     result.osError,
+                                     message.c_str());
+            return true;
+        },
+        [&]() -> bool {
+            hostPresetLoad->on_error(host,
+                                     locationKind,
+                                     location,
+                                     loadKey,
+                                     result.osError,
+                                     "preset load failed");
+            return false;
+        });
 }
 
 [[nodiscard]] inline PresetResult validateLocationShape(std::uint32_t locationKind,
@@ -156,15 +163,15 @@ template <typename CommitFn>
     }
 
     PresetDocumentStateSink sink;
-    PresetResult loadResult = PresetResult::error("preset load failed");
-    try {
-        if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
-            loadResult = catalog.loadFactory(loadKey, sink);
-        else
-            loadResult = catalog.loadFile(location, sink);
-    } catch (...) {
-        loadResult = PresetResult::error("preset catalog load threw an exception");
-    }
+    const auto loadResult = detail::exceptionBoundary(
+        [&]() -> PresetResult {
+            if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
+                return catalog.loadFactory(loadKey, sink);
+            return catalog.loadFile(location, sink);
+        },
+        []() -> PresetResult {
+            return PresetResult::error("preset catalog load threw an exception");
+        });
 
     if (!loadResult.succeeded()) {
         notifyPresetLoadFailure(host,
@@ -188,12 +195,13 @@ template <typename CommitFn>
         return false;
     }
 
-    PresetResult commitResult = PresetResult::error("preset state commit failed");
-    try {
-        commitResult = std::forward<CommitFn>(commit)(*document);
-    } catch (...) {
-        commitResult = PresetResult::error("preset state commit threw an exception");
-    }
+    const auto commitResult = detail::exceptionBoundary(
+        [&]() -> PresetResult {
+            return std::forward<CommitFn>(commit)(*document);
+        },
+        []() -> PresetResult {
+            return PresetResult::error("preset state commit threw an exception");
+        });
 
     if (!commitResult.succeeded()) {
         notifyPresetLoadFailure(host,
