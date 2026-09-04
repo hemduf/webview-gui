@@ -2,6 +2,9 @@
 #include "gain_persistent_state.h"
 #include "gain_preset_state.h"
 #include "gain_webview_parameter_bridge.h"
+#include "../common/preset_load_controller.h"
+#include "../common/preset_production_catalog.h"
+#include "../common/presets/preset_factory_catalog.h"
 #include "webview-gui/clap-webview-gui.h"
 
 #include <clap/helpers/plugin.hh>
@@ -566,6 +569,56 @@ protected:
 
         const GainParameterSnapshot loaded{static_cast<float>(gainDb), bypassed};
         return commitPersistentParameterSnapshot(loaded, true);
+    }
+
+    bool implementsPresetLoad() const noexcept override { return true; }
+
+    bool presetLoadFromLocation(uint32_t locationKind,
+                                const char *location,
+                                const char *loadKey) noexcept override {
+        const clap_host_preset_load_t *hostPresetLoad = nullptr;
+        if (host_ && host_->get_extension) {
+            hostPresetLoad = static_cast<const clap_host_preset_load_t *>(
+                host_->get_extension(host_, CLAP_EXT_PRESET_LOAD));
+            if (!hostPresetLoad) {
+                hostPresetLoad = static_cast<const clap_host_preset_load_t *>(
+                    host_->get_extension(host_, CLAP_EXT_PRESET_LOAD_COMPAT));
+            }
+        }
+
+        auto catalog = presets::makeDefaultProductionPresetCatalog(
+            presets::gainFactoryPresetCatalog(), kGainPluginId);
+        if (!catalog) {
+            const auto result = presets::PresetResult::error("Gain preset catalog is unavailable");
+            presets::notifyPresetLoadFailure(host_,
+                                             hostPresetLoad,
+                                             locationKind,
+                                             location,
+                                             loadKey,
+                                             result);
+            return false;
+        }
+
+        return presets::loadPresetFromLocation(
+            *catalog,
+            locationKind,
+            location,
+            loadKey,
+            host_,
+            hostPresetLoad,
+            [this](const presets::PresetDocument &document) noexcept -> presets::PresetResult {
+                switch (applyGainPresetDocument(document)) {
+                    case presets::PresetStateAdapterError::None:
+                        return presets::PresetResult::success();
+                    case presets::PresetStateAdapterError::WrongTargetPlugin:
+                        return presets::PresetResult::error("preset targets a different plug-in");
+                    case presets::PresetStateAdapterError::InvalidDocument:
+                        return presets::PresetResult::error("Gain preset document is invalid");
+                    case presets::PresetStateAdapterError::InvalidKnownParameter:
+                        return presets::PresetResult::error("Gain preset parameter is invalid");
+                }
+                return presets::PresetResult::error("unknown Gain preset state error");
+            });
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
