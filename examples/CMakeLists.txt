@@ -79,9 +79,12 @@ set(WEBVIEW_GUI_EXAMPLES_CLAP_REVISION
 set(WEBVIEW_GUI_EXAMPLES_CLAP_HELPERS_REVISION
     "c35dd4906bd8efbb900cb2b89e680fed463cc8b1" CACHE STRING
     "Pinned free-audio/clap-helpers revision")
+set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REPOSITORY
+    "https://github.com/hemduf/clap-wrapper.git" CACHE STRING
+    "clap-wrapper repository used by the native wrapper examples")
 set(WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION
-    "1cca996e96f29ab2be7ae9f8cfe532bbc92e1dd6" CACHE STRING
-    "Pinned free-audio/clap-wrapper revision")
+    "7569d90f7637563b0f78bc22174b80845e3745bc" CACHE STRING
+    "Pinned hemduf/clap-wrapper revision")
 set(WEBVIEW_GUI_EXAMPLES_CLAP_VALIDATOR_REVISION
     "152b9823e992d782c5c1fd33bca0295478b919aa" CACHE STRING
     "Pinned free-audio/clap-validator 0.4.1 revision")
@@ -358,10 +361,27 @@ endif()
 # on the repository-owned #30 packaging path.
 if(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS)
     FetchContent_Declare(webview_gui_example_clap_wrapper
-        GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
+        GIT_REPOSITORY ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REPOSITORY}
         GIT_TAG ${WEBVIEW_GUI_EXAMPLES_CLAP_WRAPPER_REVISION}
     )
     FetchContent_MakeAvailable(webview_gui_example_clap_wrapper)
+
+    set(_webview_gui_wrapper_device_control_header
+        "${webview_gui_example_clap_wrapper_SOURCE_DIR}/include/clapwrapper/standalone_device_control.h")
+    set(_webview_gui_device_control_header
+        "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/standalone-device-control.h")
+    if(NOT EXISTS "${_webview_gui_wrapper_device_control_header}")
+        message(FATAL_ERROR
+            "Pinned hemduf/clap-wrapper revision does not expose standalone_device_control.h")
+    endif()
+    file(SHA256 "${_webview_gui_wrapper_device_control_header}"
+        _webview_gui_wrapper_device_control_sha256)
+    file(SHA256 "${_webview_gui_device_control_header}"
+        _webview_gui_device_control_sha256)
+    if(NOT _webview_gui_wrapper_device_control_sha256 STREQUAL _webview_gui_device_control_sha256)
+        message(FATAL_ERROR
+            "webview-gui and clap-wrapper standalone device-control ABI headers have drifted")
+    endif()
 
     if(APPLE)
         include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiClapWrapperMacOSPatch.cmake")
