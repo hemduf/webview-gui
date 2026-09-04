@@ -51,10 +51,47 @@ function(webview_gui_add_preset_copy_command target destination)
     add_dependencies(${target} ${stage_target})
 endfunction()
 
+function(webview_gui_attach_native_preset_runtime target)
+    if(NOT TARGET ${target})
+        message(FATAL_ERROR "preset runtime: missing target ${target}")
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        return()
+    endif()
+
+    get_target_property(runtime_attached ${target} WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED)
+    if(runtime_attached)
+        return()
+    endif()
+    set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED TRUE)
+
+    target_sources(${target} PRIVATE
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
+    target_include_directories(${target} PRIVATE
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
+        "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+        )
+        target_link_libraries(${target} PRIVATE shell32 ole32)
+    endif()
+endfunction()
+
 function(webview_gui_track_preset_resources target)
     if(NOT TARGET ${target})
         message(FATAL_ERROR "preset resources: missing target ${target}")
     endif()
+
+    # Every native artifact compiling the shared CLAP entry also needs the #36
+    # production catalog/native storage runtime and the pinned CHOC include path.
+    # The target property makes this idempotent for the canonical CLAP target,
+    # while the WASI guard keeps native filesystem code out of WCLAP.
+    webview_gui_attach_native_preset_runtime(${target})
+
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
         ${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_FILES})
 
@@ -79,29 +116,6 @@ endfunction()
 function(webview_gui_copy_preset_resources target destination)
     webview_gui_track_preset_resources(${target})
     webview_gui_add_preset_copy_command(${target} "${destination}")
-endfunction()
-
-function(webview_gui_attach_native_preset_runtime target)
-    get_target_property(runtime_attached ${target} WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED)
-    if(runtime_attached)
-        return()
-    endif()
-    set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED TRUE)
-
-    target_sources(${target} PRIVATE
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
-    target_include_directories(${target} PRIVATE
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
-        "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
-    if(WIN32)
-        target_compile_definitions(${target} PRIVATE
-            NOMINMAX
-            WIN32_LEAN_AND_MEAN
-        )
-        target_link_libraries(${target} PRIVATE shell32 ole32)
-    endif()
 endfunction()
 
 function(webview_gui_package_native_clap_preset_resources target output_name)
