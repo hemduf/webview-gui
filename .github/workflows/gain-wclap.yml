@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - 'examples/gain/**'
+      - 'examples/common/preset*.h'
       - 'examples/common/presets/**'
       - 'examples/tests/preset_portability/**'
       - 'examples/cmake/PresetResources.cmake'
@@ -14,6 +15,7 @@ on:
       - 'cmake/WebviewGuiWclap.cmake'
       - 'include/webview-gui/**'
       - '.github/scripts/patch_clap_trap_wclap.py'
+      - '.github/scripts/patch_clap_trap_wclap_presets.py'
       - '.github/workflows/gain-wclap.yml'
   workflow_dispatch:
 
@@ -91,7 +93,7 @@ jobs:
           tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -F 'WebviewGuiGain.wclap/module.wasm'
           test "$(tar tzf build-gain-wclap/WebviewGuiGain.wclap.tar.gz | grep -c '\.wvpreset$')" -eq 9
 
-      - name: Build pinned WCLAP lifecycle and WebView smoke host
+      - name: Build pinned WCLAP lifecycle, WebView and preset smoke host
         run: |
           git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
           git -C .ci/clap-trap checkout "${CLAP_TRAP_REV}"
@@ -102,13 +104,18 @@ jobs:
           python3 .github/scripts/patch_clap_trap_wclap.py \
             --source .ci/clap-trap/examples/cli.cpp \
             --sync-magic WVQ1
+          python3 .github/scripts/patch_clap_trap_wclap_presets.py \
+            --source .ci/clap-trap/examples/cli.cpp \
+            --preset-load-key gain:trim-minus-6db \
+            --expected-param-id 4096 \
+            --expected-param-value -6
 
           cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_TRAP_BUILD_TESTS=OFF
           cmake --build build-clap-trap --target clap-trap-cli --parallel
 
-      - name: Execute real WCLAP lifecycle and WebView smoke twice
+      - name: Execute real WCLAP lifecycle, WebView and preset smoke twice
         run: |
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
           ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
