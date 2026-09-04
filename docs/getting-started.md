@@ -65,8 +65,7 @@ The repository contains two useful reference products:
 - CMake 3.24+
 - C++17 compiler
 - Python 3
-- recursive Git submodules
-- network access on first configure for pinned CLAP dependencies
+- network access on first configure for CPM-fetched CHOC and pinned CLAP dependencies
 
 Optional:
 
@@ -129,16 +128,14 @@ The qualified embedded Linux path is X11/XEmbed. Native Wayland embedding is not
 Clone normally:
 
 ```bash
-git clone --recurse-submodules https://github.com/hemduf/webview-gui.git
+git clone https://github.com/hemduf/webview-gui.git
 cd webview-gui
-git submodule update --init --recursive
 ```
 
 To test PR #86 with GitHub CLI:
 
 ```bash
 gh pr checkout 86
-git submodule update --init --recursive
 ```
 
 Without GitHub CLI:
@@ -146,7 +143,6 @@ Without GitHub CLI:
 ```bash
 git fetch origin refs/pull/86/head:pr-86
 git switch pr-86
-git submodule update --init --recursive
 ```
 
 If you already use its branch:
@@ -154,7 +150,6 @@ If you already use its branch:
 ```bash
 git switch feat/35-example-qualification
 git pull --ff-only
-git submodule update --init --recursive
 ```
 
 ---

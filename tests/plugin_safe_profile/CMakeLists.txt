@@ -9,64 +9,34 @@ find_package(Git REQUIRED)
 # default. The webview-gui implementation must still remain module-private.
 set(BUILD_SHARED_LIBS ON CACHE BOOL "Parent shared-library default" FORCE)
 
-# The pinned CHOC revision no longer contains the environment-option builder
-# that an earlier Windows build workaround tried to rewrite. Catch stale patch
-# machinery before adding the production project so a source/patch mismatch is
-# reported as the regression itself rather than as an opaque configure failure.
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(WEBVIEW_GUI_PINNED_CHOC_WEBVIEW
-        "${CMAKE_CURRENT_LIST_DIR}/../../include/webview-gui/_impl/platform/choc/choc/gui/choc_WebView.h")
-    file(READ "${WEBVIEW_GUI_PINNED_CHOC_WEBVIEW}" WEBVIEW_GUI_PINNED_CHOC_CONTENT)
-    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += L\" --\";"
-        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_PREFIX_OFFSET)
-    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += key;"
-        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_KEY_OFFSET)
-    string(FIND "${WEBVIEW_GUI_PINNED_CHOC_CONTENT}" "result += value;"
-        WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_VALUE_OFFSET)
-
-    if(WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_PREFIX_OFFSET EQUAL -1
-       AND WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_KEY_OFFSET EQUAL -1
-       AND WEBVIEW_GUI_PINNED_CHOC_ENVIRONMENT_VALUE_OFFSET EQUAL -1)
-        file(READ "${CMAKE_CURRENT_LIST_DIR}/../../CMakeLists.txt"
-            WEBVIEW_GUI_ROOT_CMAKE_CONTENT)
-        string(FIND "${WEBVIEW_GUI_ROOT_CMAKE_CONTENT}"
-            "WEBVIEW_GUI_CHOC_ENVIRONMENT_PREFIX_MATCHES"
-            WEBVIEW_GUI_STALE_ENVIRONMENT_PATCH_OFFSET)
-        if(NOT WEBVIEW_GUI_STALE_ENVIRONMENT_PATCH_OFFSET EQUAL -1)
-            message(FATAL_ERROR
-                "plugin-safe Windows profile found stale CHOC environment-option patch machinery for source patterns absent from the pinned WebView")
-        endif()
-    endif()
-endif()
-
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/webview-gui EXCLUDE_FROM_ALL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/WebviewGuiPluginSafe.cmake)
 
-# The Windows plug-in-safe build consumes a generated private CHOC copy. It must
-# be self-contained instead of compiling only because another translation unit
-# happened to include a standard-library header first. The pinned backend uses
-# std::wstring, so require the unconditional direct dependency in the generated
-# include prologue rather than accepting a platform-conditional include later.
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW
-        "${CMAKE_CURRENT_BINARY_DIR}/webview-gui/webview-gui-patched-choc/choc/gui/choc_WebView.h")
-    if(NOT EXISTS "${WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW}")
-        message(FATAL_ERROR
-            "plugin-safe Windows profile did not generate its private CHOC WebView copy")
-    endif()
+# The current profile must consume the maintained CHOC fork that the production
+# target fetched through CPM, not an in-tree generated/private source copy.
+set(WEBVIEW_GUI_FORK_CHOC_WEBVIEW
+    "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}/choc/gui/choc_WebView.h")
+if(NOT EXISTS "${WEBVIEW_GUI_FORK_CHOC_WEBVIEW}")
+    message(FATAL_ERROR
+        "plugin-safe profile cannot find the CPM-fetched CHOC WebView at ${WEBVIEW_GUI_FORK_CHOC_WEBVIEW}")
+endif()
 
-    file(READ "${WEBVIEW_GUI_PRIVATE_CHOC_WEBVIEW}" WEBVIEW_GUI_PRIVATE_CHOC_CONTENT)
-    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}" "std::wstring"
-        WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET)
-    set(WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE
+# The Windows backend uses std::wstring. Keep a direct-header contract so a
+# transitive include cannot accidentally make the fork compile only in some
+# translation units.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    file(READ "${WEBVIEW_GUI_FORK_CHOC_WEBVIEW}" WEBVIEW_GUI_FORK_CHOC_CONTENT)
+    string(FIND "${WEBVIEW_GUI_FORK_CHOC_CONTENT}" "std::wstring"
+        WEBVIEW_GUI_FORK_CHOC_WSTRING_OFFSET)
+    set(WEBVIEW_GUI_FORK_CHOC_STRING_PROLOGUE
         "#include \"../platform/choc_Platform.h\"\n#include <string>")
-    string(FIND "${WEBVIEW_GUI_PRIVATE_CHOC_CONTENT}"
-        "${WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE}"
-        WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE_OFFSET)
-    if(NOT WEBVIEW_GUI_PRIVATE_CHOC_WSTRING_OFFSET EQUAL -1
-       AND WEBVIEW_GUI_PRIVATE_CHOC_STRING_PROLOGUE_OFFSET EQUAL -1)
+    string(FIND "${WEBVIEW_GUI_FORK_CHOC_CONTENT}"
+        "${WEBVIEW_GUI_FORK_CHOC_STRING_PROLOGUE}"
+        WEBVIEW_GUI_FORK_CHOC_STRING_PROLOGUE_OFFSET)
+    if(NOT WEBVIEW_GUI_FORK_CHOC_WSTRING_OFFSET EQUAL -1
+       AND WEBVIEW_GUI_FORK_CHOC_STRING_PROLOGUE_OFFSET EQUAL -1)
         message(FATAL_ERROR
-            "plugin-safe private CHOC WebView uses std::wstring without an unconditional direct <string> include")
+            "forked CHOC WebView uses std::wstring without an unconditional direct <string> include")
     endif()
 endif()
 
@@ -92,10 +62,15 @@ function(webview_gui_read_git_revision output_variable repository_dir)
 endfunction()
 
 set(WEBVIEW_GUI_CURRENT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
-set(WEBVIEW_GUI_CURRENT_CHOC_ROOT
-    "${WEBVIEW_GUI_CURRENT_ROOT}/include/webview-gui/_impl/platform/choc")
+set(WEBVIEW_GUI_CURRENT_CHOC_ROOT "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}")
+set(WEBVIEW_GUI_EXPECTED_CHOC_REVISION "3e815bc19e37824fa9dc6a63c8955a36fa2449ae")
 webview_gui_read_git_revision(WEBVIEW_GUI_CURRENT_REVISION "${WEBVIEW_GUI_CURRENT_ROOT}")
 webview_gui_read_git_revision(WEBVIEW_GUI_CURRENT_CHOC_REVISION "${WEBVIEW_GUI_CURRENT_CHOC_ROOT}")
+
+if(NOT WEBVIEW_GUI_CURRENT_CHOC_REVISION STREQUAL WEBVIEW_GUI_EXPECTED_CHOC_REVISION)
+    message(FATAL_ERROR
+        "CPM CHOC fixture drifted: expected ${WEBVIEW_GUI_EXPECTED_CHOC_REVISION}, got ${WEBVIEW_GUI_CURRENT_CHOC_REVISION}")
+endif()
 
 # Pin a second, historical source tree rather than merely compiling the current
 # checkout with different flags. The exact webview-gui and CHOC SHAs are part of

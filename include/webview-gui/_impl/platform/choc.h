@@ -215,7 +215,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 	options.acceptsFirstMouseClick = false;
 	options.enableDefaultClipboardKeyShortcutsInSafari = false;
 	options.transparentBackground = true;
-	options.webviewGuiDeferInitialResourceNavigation = true;
+	options.deferInitialResourceNavigation = true;
 #	if CHOC_WINDOWS
 	options.customSchemeURI = "https://choc.localhost/";
 	const std::string trustedOrigin = "https://choc.localhost";

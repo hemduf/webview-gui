@@ -65,13 +65,19 @@ function(webview_gui_attach_native_preset_runtime target)
     endif()
     set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED TRUE)
 
+    if(NOT DEFINED WEBVIEW_GUI_CHOC_INCLUDE_DIRS
+       OR "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}" STREQUAL "")
+        message(FATAL_ERROR
+            "preset runtime requires the CPM-fetched CHOC include directory from webview-gui")
+    endif()
+
     target_sources(${target} PRIVATE
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
     target_include_directories(${target} PRIVATE
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
-        "${WEBVIEW_GUI_SOURCE_DIR}/include/webview-gui/_impl/platform/choc")
+        ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS})
     if(WIN32)
         # Keep wrapper-visible Win32 declarations intact. native_preset_storage.cpp
         # scopes its own lean Windows include configuration internally.

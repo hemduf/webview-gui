@@ -30,7 +30,7 @@ The goals are:
 - **Linux / X11:** CHOC/WebKitGTK embedding into a host-owned XEmbed `GtkSocket` is implemented, including resize, visibility and keyboard-focus qualification.
 - **Wayland:** not advertised as embedded CLAP GUI support.
 
-The CHOC revision used for qualification is pinned in the submodule and documented in `CHOC_PIN.md`.
+The qualified CHOC revision is pinned directly in `CMakeLists.txt` and fetched through CPM from the maintained [`hemduf/choc`](https://github.com/hemduf/choc) fork.
 
 ## How to use
 
@@ -69,7 +69,7 @@ struct MyPlugin {
 };
 ```
 
-Production plug-in integration must use the repository CMake target. Standalone `WEBVIEW_GUI_HEADER_ONLY` integration is intentionally unsupported by the plug-in-safe profile and fails at compile time with a clear diagnostic. The native backends require generated, private CHOC hardening on macOS, Windows and Linux; compiling directly from the repository headers would otherwise either fail platform-specifically or silently bypass qualified unload/lifetime and security patches.
+Production plug-in integration must use the repository CMake target. Standalone `WEBVIEW_GUI_HEADER_ONLY` integration is intentionally unsupported by the plug-in-safe profile and fails at compile time with a clear diagnostic. The target fetches the exact pinned `hemduf/choc` revision through CPM; native WebView lifetime hardening lives in that fork, while `webview-gui` opts into its plug-in-safe profile and supplies project-specific security policy hooks.
 
 ## Plug-in-safe build profile
 
@@ -84,7 +84,7 @@ target_link_libraries(MyPlugin PRIVATE webview-gui)
 
 For the stricter module-target helper, see [`PLUGIN_SAFE_CMAKE.md`](PLUGIN_SAFE_CMAKE.md).
 
-Do not install or link a shared `webview-gui`/CHOC runtime between unrelated audio plug-ins. Do not define `WEBVIEW_GUI_HEADER_ONLY` in a production plug-in. The supported CMake path generates the platform-specific private CHOC copy, applies drift-checked hardening, and puts that copy ahead of the immutable pinned submodule headers.
+Do not install or link a shared `webview-gui`/CHOC runtime between unrelated audio plug-ins. Do not define `WEBVIEW_GUI_HEADER_ONLY` in a production plug-in. The supported CMake path resolves the immutable CHOC fork revision through CPM and compiles it privately as part of the same plug-in image.
 
 For production builds, LTO/IPO and platform dead stripping are compatible with this private integration and are encouraged after the qualified Debug/sanitizer suite is green. Export only the ABI entry points required by the surrounding CLAP/VST3/AU wrapper; CHOC/webview-gui helpers are implementation details. WebKit, WebView2 and WebKitGTK remain OS/runtime dependencies rather than repository ABI exports.
 
