@@ -22,6 +22,15 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
+# WIN32_LEAN_AND_MEAN must remain local to the preset storage implementation.
+# Propagating it to wrapper targets hides Win32 declarations required by
+# clap-wrapper standalone code (notably CommandLineToArgvW).
+string(FIND "${resources}" "WIN32_LEAN_AND_MEAN" lean_position)
+if(NOT lean_position EQUAL -1)
+    message(FATAL_ERROR
+        "#91 wrapper runtime must not propagate WIN32_LEAN_AND_MEAN to wrapper targets")
+endif()
+
 # VST3, standalone, AUv2 and AUv3 all route through resource tracking/copying,
 # which must now also attach the runtime used by their shared *_entry.cpp.
 foreach(required IN ITEMS
