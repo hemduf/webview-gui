@@ -5,6 +5,16 @@
 #include "../origin_policy.h"
 #include "../resource_security.h"
 
+// Opt into the unloadable-plugin profile provided by hemduf/choc. Policy stays
+// in webview-gui and is supplied to CHOC through narrow compile-time hooks.
+#define CHOC_WEBVIEW_PLUGIN_SAFE 1
+#define CHOC_WEBVIEW_CONTENT_SECURITY_POLICY webview_gui::detail::pluginContentSecurityPolicy.data()
+#if CHOC_WINDOWS
+#define CHOC_WEBVIEW_RESOURCE_ALLOW_ORIGIN "https://choc.localhost"
+#else
+#define CHOC_WEBVIEW_RESOURCE_ALLOW_ORIGIN webview_gui::detail::appleLinuxPluginResourceAllowOrigin.data()
+#endif
+
 #if CHOC_APPLE
 
 // CHOC's macOS WebView normally creates a process-global Objective-C subclass
@@ -261,13 +271,24 @@ inline id getPluginSafeNSStringForWebviewGui(const std::string& value)
 #undef GetModuleHandle
 
 #define CoInitialize(...) webview_gui::detail::suppressedCHOCWebViewCoInitialize(nullptr)
+#define CHOC_WEBVIEW_WINDOWS_RESOURCE_CALLBACK_GUARD \
+    webview_gui::detail::ScopedCOMApartment resourceCallbackApartment; \
+    if (! resourceCallbackApartment.ok()) return E_FAIL;
+#define CHOC_WEBVIEW_WINDOWS_DISPATCH_MESSAGE(args, callback) \
+    webview_gui::detail::dispatchTrustedWindowsWebMessage((args), (callback))
+#define CHOC_WEBVIEW_WINDOWS_HANDLE_NAVIGATION(args) \
+    webview_gui::detail::handleWindowsPluginNavigation( \
+        (args), [] (LPCWSTR uri) { webview_gui::detail::openWindowsExternalURL(uri); })
+#define CHOC_WEBVIEW_WINDOWS_HANDLE_PERMISSION(args) \
+    webview_gui::detail::handleWindowsPluginPermission( \
+        (args), COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ, \
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY)
 #include "choc/gui/choc_WebView.h"
+#undef CHOC_WEBVIEW_WINDOWS_HANDLE_PERMISSION
+#undef CHOC_WEBVIEW_WINDOWS_HANDLE_NAVIGATION
+#undef CHOC_WEBVIEW_WINDOWS_DISPATCH_MESSAGE
+#undef CHOC_WEBVIEW_WINDOWS_RESOURCE_CALLBACK_GUARD
 #undef CoInitialize
-
-#ifndef WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD
-#error webview-gui requires its generated plugin-safe CHOC WebView2 bridge patch on Windows
-#endif
-#undef WEBVIEW_GUI_CHOC_WINDOWS_BRIDGE_GUARD
 
 #elif CHOC_LINUX
 
@@ -303,3 +324,7 @@ inline void appendPluginSafeSoupHeader(SoupMessageHeaders* headers,
 #include "choc/gui/choc_WebView.h"
 
 #endif
+
+#undef CHOC_WEBVIEW_RESOURCE_ALLOW_ORIGIN
+#undef CHOC_WEBVIEW_CONTENT_SECURITY_POLICY
+#undef CHOC_WEBVIEW_PLUGIN_SAFE

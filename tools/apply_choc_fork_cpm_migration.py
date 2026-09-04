@@ -225,9 +225,12 @@ needles = (
     "WEBVIEW_GUI_PATCHED_CHOC_DIR",
 )
 stale = []
-for path in ROOT.rglob("*"):
-    if not path.is_file() or ".git" in path.parts or path == Path(__file__):
-        continue
+scan_paths = [Path("CMakeLists.txt"), Path("PLUGIN_SAFE_CMAKE.md"), Path("README.md")]
+for root in (Path("include"), Path("cmake"), Path("docs")):
+    if root.exists():
+        scan_paths.extend(path for path in root.rglob("*") if path.is_file())
+
+for path in scan_paths:
     try:
         source = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
