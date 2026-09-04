@@ -1,6 +1,7 @@
 #pragma once
 
 #include "preset_clap_contract.h"
+#include "presets/preset_codec.h"
 #include "presets/preset_factory_catalog.h"
 #include "presets/preset_storage.h"
 
@@ -49,6 +50,64 @@ namespace production_catalog_detail {
     return PresetResult::error("unknown preset storage metadata error", osError);
 }
 
+[[nodiscard]] inline PresetResult storageLoadStatusResult(
+    const PresetStorageStatus &status) noexcept {
+    const auto osError = static_cast<std::int32_t>(status.systemErrorCode);
+    switch (status.error) {
+        case PresetStorageError::None:
+            return PresetResult::success();
+        case PresetStorageError::Unavailable:
+            return PresetResult::unsupported("native user preset storage unavailable");
+        case PresetStorageError::NotFound:
+            return PresetResult::notFound("user preset file not found");
+        case PresetStorageError::WrongTargetPlugin:
+            return PresetResult::error("preset targets a different plug-in", osError);
+        case PresetStorageError::ParseFailed:
+            return PresetResult::error("preset file parse failed", osError);
+        case PresetStorageError::InputTooLarge:
+            return PresetResult::error("preset file is too large", osError);
+        case PresetStorageError::OutsideRoot:
+            return PresetResult::error("preset path is outside the declared user root", osError);
+        case PresetStorageError::InvalidIdentity:
+            return PresetResult::error("preset file identity is invalid", osError);
+        case PresetStorageError::InvalidConfiguration:
+            return PresetResult::error("preset storage configuration is invalid", osError);
+        case PresetStorageError::IoFailure:
+            return PresetResult::error("preset file I/O failed", osError);
+        case PresetStorageError::AlreadyExists:
+        case PresetStorageError::SerializeFailed:
+            return PresetResult::error("preset storage load error", osError);
+    }
+    return PresetResult::error("unknown preset storage load error", osError);
+}
+
+[[nodiscard]] inline PresetResult codecLoadResult(PresetCodecError error) noexcept {
+    switch (error) {
+        case PresetCodecError::None:
+            return PresetResult::success();
+        case PresetCodecError::WrongTargetPlugin:
+            return PresetResult::error("preset targets a different plug-in");
+        case PresetCodecError::InputTooLarge:
+            return PresetResult::error("preset input is too large");
+        case PresetCodecError::UnsupportedSchemaVersion:
+            return PresetResult::unsupported("preset schema version is unsupported");
+        case PresetCodecError::MalformedInput:
+        case PresetCodecError::TruncatedInput:
+            return PresetResult::error("preset input is malformed or truncated");
+        case PresetCodecError::InvalidParameter:
+        case PresetCodecError::DuplicateParameterId:
+        case PresetCodecError::NonFiniteParameterValue:
+            return PresetResult::error("preset contains invalid parameter state");
+        case PresetCodecError::InvalidSetting:
+            return PresetResult::error("preset contains invalid persistent settings");
+        case PresetCodecError::MigrationFailed:
+            return PresetResult::error("preset migration failed");
+        case PresetCodecError::InvalidDocument:
+            return PresetResult::error("preset document is invalid");
+    }
+    return PresetResult::error("unknown preset codec error");
+}
+
 [[nodiscard]] inline std::string normalizePath(std::string_view path) {
     std::string result;
     result.reserve(path.size());
@@ -75,6 +134,36 @@ namespace production_catalog_detail {
     expected.push_back('/');
     expected.append(identity.data(), identity.size());
     return normalizedLocation == expected;
+}
+
+[[nodiscard]] inline std::optional<std::string> directChildIdentity(
+    std::string_view root,
+    std::string_view location) {
+    if (root.empty() || location.empty())
+        return std::nullopt;
+
+    auto normalizedRoot = normalizePath(root);
+    const auto normalizedLocation = normalizePath(location);
+    if (normalizedRoot.empty() || normalizedLocation.empty())
+        return std::nullopt;
+
+    std::string prefix = normalizedRoot;
+    if (prefix.back() != '/')
+        prefix.push_back('/');
+    if (normalizedLocation.size() <= prefix.size() ||
+        normalizedLocation.compare(0u, prefix.size(), prefix) != 0)
+        return std::nullopt;
+
+    auto identity = normalizedLocation.substr(prefix.size());
+    if (identity.empty() || identity == "." || identity == ".." ||
+        identity.find('/') != std::string::npos ||
+        identity.find('\\') != std::string::npos ||
+        identity.size() <= kPresetFileSuffix.size() ||
+        identity.compare(identity.size() - kPresetFileSuffix.size(),
+                         kPresetFileSuffix.size(),
+                         kPresetFileSuffix) != 0)
+        return std::nullopt;
+    return identity;
 }
 
 [[nodiscard]] inline bool diagnosticMatchesPath(const PresetStorageStatus &diagnostic,
@@ -189,14 +278,54 @@ public:
         }
     }
 
-    PresetResult loadFactory(std::string_view,
-                             PresetStateSink &) const noexcept override {
-        return PresetResult::unsupported("preset loading belongs to #92");
+    PresetResult loadFactory(std::string_view loadKey,
+                             PresetStateSink &sink) const noexcept override {
+        if (loadKey.empty())
+            return PresetResult::error("factory preset load key is empty");
+        try {
+            const auto lookup = factoryCatalog_.find(loadKey);
+            if (!lookup.ok()) {
+                if (lookup.error == FactoryPresetCatalogError::NotFound)
+                    return PresetResult::notFound("factory preset load key was not found");
+                return PresetResult::error("factory preset resource is invalid");
+            }
+
+            const auto parsed = parsePresetDocument(lookup.resource->bytes, targetPluginId_);
+            if (!parsed.ok())
+                return production_catalog_detail::codecLoadResult(parsed.error);
+            if (!parsed.document->metadata.factoryLoadKey ||
+                *parsed.document->metadata.factoryLoadKey != loadKey)
+                return PresetResult::error("factory preset load key mismatch");
+            return emitState(*parsed.document, sink);
+        } catch (...) {
+            return PresetResult::error("factory preset loading failed");
+        }
     }
 
-    PresetResult loadFile(std::string_view,
-                          PresetStateSink &) const noexcept override {
-        return PresetResult::unsupported("preset loading belongs to #92");
+    PresetResult loadFile(std::string_view path,
+                          PresetStateSink &sink) const noexcept override {
+        if (!userStorage_)
+            return PresetResult::unsupported("native user preset storage unavailable");
+        try {
+            std::string_view rootView;
+            if (!nativeUserLocation(rootView))
+                return PresetResult::unsupported("native user preset storage unavailable");
+
+            const auto identity = production_catalog_detail::directChildIdentity(rootView, path);
+            if (!identity)
+                return PresetResult::error("preset path is outside the declared user root");
+
+            auto loaded = userStorage_->load(*identity);
+            if (!loaded.ok())
+                return production_catalog_detail::storageLoadStatusResult(loaded.status);
+            if (!loaded.document)
+                return PresetResult::error("preset storage returned no document");
+            if (loaded.document->metadata.targetPluginId != targetPluginId_)
+                return PresetResult::error("preset targets a different plug-in");
+            return emitState(*loaded.document, sink);
+        } catch (...) {
+            return PresetResult::error("user preset loading failed");
+        }
     }
 
 private:
@@ -242,6 +371,29 @@ private:
                                           : CLAP_TIMESTAMP_UNKNOWN;
             sink.setTimestamps(creation, modification);
         }
+        return PresetResult::success();
+    }
+
+    [[nodiscard]] PresetResult emitState(const PresetDocument &document,
+                                         PresetStateSink &sink) const noexcept {
+        const auto validation = validatePresetDocument(document);
+        if (!validation.ok())
+            return PresetResult::error("preset document failed validation");
+        if (document.metadata.targetPluginId != targetPluginId_)
+            return PresetResult::error("preset targets a different plug-in");
+        // The current Gain/PolySynth persistent state surface consists only of
+        // published base parameters. Do not silently discard future typed settings.
+        if (!document.settings.empty())
+            return PresetResult::unsupported("preset contains unsupported persistent settings");
+
+        if (!sink.beginCandidate(document.metadata.targetPluginId))
+            return PresetResult::error("preset state candidate could not start");
+        for (const auto &parameter : document.parameters) {
+            if (!sink.setParameter(parameter.stableParameterId, parameter.value))
+                return PresetResult::error("preset state candidate rejected a parameter");
+        }
+        if (!sink.endCandidate())
+            return PresetResult::error("preset state candidate could not complete");
         return PresetResult::success();
     }
 
