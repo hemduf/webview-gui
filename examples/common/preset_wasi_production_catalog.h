@@ -3,10 +3,20 @@
 #include "preset_clap_contract.h"
 #include "presets/preset_factory_catalog.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#define WEBVIEW_GUI_WASI_PRESET_TRY try
+#define WEBVIEW_GUI_WASI_PRESET_CATCH_ALL catch (...)
+#else
+#define WEBVIEW_GUI_WASI_PRESET_TRY if (true)
+#define WEBVIEW_GUI_WASI_PRESET_CATCH_ALL else if (false)
+#endif
 
 namespace webview_gui::examples::presets {
 
@@ -30,7 +40,7 @@ public:
     }
 
     PresetResult enumerateFactoryMetadata(PresetMetadataSink &sink) const noexcept override {
-        try {
+        WEBVIEW_GUI_WASI_PRESET_TRY {
             for (std::size_t i = 0u; i < factoryCatalog_.size(); ++i) {
                 const auto *resource = factoryCatalog_.at(i);
                 if (!resource || !resource->valid())
@@ -52,7 +62,7 @@ public:
                     return result;
             }
             return PresetResult::success();
-        } catch (...) {
+        } WEBVIEW_GUI_WASI_PRESET_CATCH_ALL {
             return PresetResult::error("factory preset metadata extraction failed");
         }
     }
@@ -66,7 +76,7 @@ public:
                              PresetStateSink &sink) const noexcept override {
         if (loadKey.empty())
             return PresetResult::error("factory preset load key is empty");
-        try {
+        WEBVIEW_GUI_WASI_PRESET_TRY {
             const auto lookup = factoryCatalog_.find(loadKey);
             if (!lookup.ok()) {
                 if (lookup.error == FactoryPresetCatalogError::NotFound)
@@ -79,7 +89,7 @@ public:
                 *document.metadata.factoryLoadKey != loadKey)
                 return PresetResult::error("factory preset load key mismatch");
             return emitState(document, sink);
-        } catch (...) {
+        } WEBVIEW_GUI_WASI_PRESET_CATCH_ALL {
             return PresetResult::error("factory preset loading failed");
         }
     }
@@ -163,10 +173,10 @@ private:
 [[nodiscard]] inline std::unique_ptr<PresetCatalog> makeWasiProductionPresetCatalog(
     const FactoryPresetCatalog &factoryCatalog,
     std::string_view targetPluginId) noexcept {
-    try {
+    WEBVIEW_GUI_WASI_PRESET_TRY {
         return std::make_unique<WasiProductionPresetCatalog>(
             factoryCatalog, std::string{targetPluginId});
-    } catch (...) {
+    } WEBVIEW_GUI_WASI_PRESET_CATCH_ALL {
         return {};
     }
 }
@@ -180,3 +190,6 @@ private:
 }
 
 } // namespace webview_gui::examples::presets
+
+#undef WEBVIEW_GUI_WASI_PRESET_TRY
+#undef WEBVIEW_GUI_WASI_PRESET_CATCH_ALL
