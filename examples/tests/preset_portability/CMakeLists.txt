@@ -7,8 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(WEBVIEW_GUI_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
 set(WEBVIEW_GUI_PRESET_INCLUDE_DIR "${WEBVIEW_GUI_ROOT}/examples/common/presets")
-set(WEBVIEW_GUI_CHOC_INCLUDE_DIR "${WEBVIEW_GUI_ROOT}/include/webview-gui/_impl/platform/choc")
 set(WEBVIEW_GUI_BUNDLED_PRESET_ROOT "${WEBVIEW_GUI_PRESET_INCLUDE_DIR}/bundled")
+include("${WEBVIEW_GUI_ROOT}/cmake/WebviewGuiChocDependency.cmake")
+webview_gui_resolve_choc_dependency()
+if(NOT WEBVIEW_GUI_CHOC_INCLUDE_DIRS)
+    message(FATAL_ERROR "Preset portability tests could not resolve the repository-pinned CHOC dependency")
+endif()
 
 # Regression for #104 review corrections: production calls may package a target
 # created by an examples subdirectory (PolySynth). CMake rejects a parent-level
@@ -27,7 +31,7 @@ add_executable(webview_gui_preset_portability_contract
 )
 target_include_directories(webview_gui_preset_portability_contract PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_features(webview_gui_preset_portability_contract PRIVATE cxx_std_17)
 
@@ -36,7 +40,7 @@ add_executable(webview_gui_preset_factory_bundle_contract
 )
 target_include_directories(webview_gui_preset_factory_bundle_contract PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_definitions(webview_gui_preset_factory_bundle_contract PRIVATE
     WEBVIEW_GUI_BUNDLED_PRESET_ROOT="${WEBVIEW_GUI_BUNDLED_PRESET_ROOT}")
@@ -49,7 +53,7 @@ add_executable(webview_gui_native_preset_adapter_contract
 )
 target_include_directories(webview_gui_native_preset_adapter_contract PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_link_libraries(webview_gui_native_preset_adapter_contract PRIVATE Threads::Threads)
 target_compile_features(webview_gui_native_preset_adapter_contract PRIVATE cxx_std_17)
