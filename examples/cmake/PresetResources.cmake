@@ -57,9 +57,6 @@ function(webview_gui_attach_native_preset_runtime target)
     if(NOT TARGET ${target})
         message(FATAL_ERROR "preset runtime: missing target ${target}")
     endif()
-    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-        return()
-    endif()
 
     get_target_property(runtime_attached ${target} WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED)
     if(runtime_attached)
@@ -70,6 +67,9 @@ function(webview_gui_attach_native_preset_runtime target)
     # PresetResources is also consumed by focused standalone contract projects
     # that do not add the root webview-gui target. Resolve the exact same pinned
     # CHOC dependency here rather than relying on root configure side effects.
+    # WASI does not compile the native filesystem runtime, but portable browser
+    # and storage interfaces still include the shared preset codec declarations,
+    # so their translation units need the same CHOC header path.
     webview_gui_resolve_choc_dependency()
     if(NOT DEFINED WEBVIEW_GUI_CHOC_INCLUDE_DIRS
        OR "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}" STREQUAL "")
@@ -77,13 +77,18 @@ function(webview_gui_attach_native_preset_runtime target)
             "preset runtime requires the CPM-fetched CHOC include directory from webview-gui")
     endif()
 
-    target_sources(${target} PRIVATE
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
-        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
     target_include_directories(${target} PRIVATE
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common"
         "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets"
         ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS})
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+        return()
+    endif()
+
+    target_sources(${target} PRIVATE
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/preset_production_catalog.cpp"
+        "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/native_preset_storage.cpp")
     if(WIN32)
         # Keep wrapper-visible Win32 declarations intact. native_preset_storage.cpp
         # scopes its own lean Windows include configuration internally.
@@ -99,8 +104,8 @@ function(webview_gui_track_preset_resources target)
 
     # Every native artifact compiling the shared CLAP entry also needs the #36
     # production catalog/native storage runtime and the pinned CHOC include path.
-    # The target property makes this idempotent for the canonical CLAP target,
-    # while the WASI guard keeps native filesystem code out of WCLAP.
+    # The target property makes this idempotent for the canonical CLAP target;
+    # WASI receives portable codec headers only and never native filesystem code.
     webview_gui_attach_native_preset_runtime(${target})
 
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
