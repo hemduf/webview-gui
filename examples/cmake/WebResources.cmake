@@ -83,7 +83,7 @@ function(webview_gui_add_web_resources)
         COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_app}/node_modules" "${_app}/dist"
         COMMAND "${CMAKE_COMMAND}" -E env WEBVIEW_GUI_UI_SOURCEMAPS=0
             "${WEBVIEW_GUI_NPM_EXECUTABLE}" --prefix "${_workspace}" exec --
-            vite "${_app}" --config "${_app}/vite.config.mjs"
+            vite build "${_app}" --config "${_app}/vite.config.mjs"
             --outDir "${_dist}" --emptyOutDir
         COMMAND "${CMAKE_COMMAND}"
             "-DINPUT_DIR=${_dist}"
