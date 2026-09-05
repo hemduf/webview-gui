@@ -6,8 +6,11 @@ include_guard(GLOBAL)
 # webview-gui's WebView-only backend and never links native CHOC/OS GUI support.
 # COMPILE_TARGETS lists additional plug-in/core targets which compile inline
 # ClapWebviewGui code and therefore need the same target-local WCLAP profile.
+# WEB_RESOURCE_TARGET optionally names a target produced by
+# webview_gui_add_web_resources(); its exact Vite dist tree is copied into the
+# .wclap bundle after it has been generated.
 function(webview_gui_configure_wclap_target target)
-    set(oneValueArgs OUTPUT_NAME RESOURCE_DIRECTORY)
+    set(oneValueArgs OUTPUT_NAME RESOURCE_DIRECTORY WEB_RESOURCE_TARGET)
     set(multiValueArgs COMPILE_TARGETS)
     cmake_parse_arguments(WCLAP "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -119,12 +122,38 @@ function(webview_gui_configure_wclap_target target)
         )
     endif()
 
+    set(_web_resource_dist "")
+    if(WCLAP_WEB_RESOURCE_TARGET)
+        if(NOT TARGET ${WCLAP_WEB_RESOURCE_TARGET})
+            message(FATAL_ERROR
+                "webview_gui_configure_wclap_target: WEB_RESOURCE_TARGET '${WCLAP_WEB_RESOURCE_TARGET}' is not a target")
+        endif()
+        get_target_property(_web_resource_dist ${WCLAP_WEB_RESOURCE_TARGET} WEBVIEW_GUI_WEB_DIST_DIR)
+        get_target_property(_web_resource_stamp ${WCLAP_WEB_RESOURCE_TARGET} WEBVIEW_GUI_WEB_DIST_STAMP)
+        get_target_property(_web_resource_build_target ${WCLAP_WEB_RESOURCE_TARGET} WEBVIEW_GUI_WEB_DIST_TARGET)
+        if(NOT _web_resource_dist OR NOT _web_resource_stamp OR NOT _web_resource_build_target)
+            message(FATAL_ERROR
+                "webview_gui_configure_wclap_target: WEB_RESOURCE_TARGET '${WCLAP_WEB_RESOURCE_TARGET}' was not created by webview_gui_add_web_resources")
+        endif()
+        add_dependencies(${target} ${_web_resource_build_target})
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${_web_resource_stamp}")
+    endif()
+
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${_bundle_dir}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_bundle_dir}"
         COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${target}>" "${_bundle_dir}/module.wasm"
         VERBATIM
     )
+
+    if(WCLAP_WEB_RESOURCE_TARGET)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_web_resource_dist}"
+                "${_bundle_dir}"
+            VERBATIM
+        )
+    endif()
 
     if(WCLAP_RESOURCE_DIRECTORY)
         add_custom_command(TARGET ${target} POST_BUILD
