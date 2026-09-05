@@ -1,5 +1,6 @@
 #include "webview-gui/_impl/standalone_device_bridge.h"
 #include "webview-gui/webview-gui.h"
+#include "choc/platform/choc_ObjectiveCHelpers.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <clap/clap.h>
@@ -100,6 +101,13 @@ std::vector<unsigned char> makeSnapshot()
 
 int main()
 {
+    // A plug-in WKWebView always runs inside an AppKit host. Hosted macOS CI does
+    // not create NSApplication for a bare CTest executable, and WKWebView may then
+    // remain constructed but never schedule its custom-scheme navigation. Create
+    // the same process-level AppKit object a real DAW/standalone host provides.
+    require(choc::objc::getSharedNSApplication() != nullptr,
+            "failed to create the AppKit application host");
+
     auto host = makeHost();
     StandaloneDeviceBridge bridge{&host};
     const auto initScript = bridge.initScript();
