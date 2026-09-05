@@ -4,6 +4,7 @@
 #include "presets/preset_factory_catalog.h"
 #include "presets/preset_storage.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
