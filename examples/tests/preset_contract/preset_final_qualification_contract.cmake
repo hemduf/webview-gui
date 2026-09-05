@@ -68,6 +68,15 @@ expect_contains(native_ci_contract "webview_gui_examples_preset_load"
 expect_absent(preset_ci "continue-on-error"
     "preset contract blocking behavior")
 
+# Documentation is part of the final contract, so changes to it must trigger
+# this watchdog on both main pushes and pull requests.
+string(REGEX MATCHALL "examples/README\\.md" readme_trigger_matches "${preset_ci}")
+list(LENGTH readme_trigger_matches readme_trigger_count)
+if(readme_trigger_count LESS 2)
+    list(APPEND violations
+        "preset documentation watchdog: examples/README.md appears ${readme_trigger_count} time(s), expected push and pull_request coverage")
+endif()
+
 if(violations)
     list(JOIN violations "\n - " violation_text)
     message(FATAL_ERROR "#96 final qualification contract RED:\n - ${violation_text}")
