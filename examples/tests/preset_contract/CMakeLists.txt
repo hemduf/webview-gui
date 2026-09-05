@@ -110,6 +110,90 @@ target_link_libraries(webview_gui_preset_load_tests PRIVATE
 )
 target_compile_features(webview_gui_preset_load_tests PRIVATE cxx_std_17)
 
+# #38 browser state is deliberately a pure main/UI-thread model. Keeping this
+# target independent from storage/WebView/processor code makes persistent-vs-
+# transient dirty semantics deterministic and prevents accidental RT coupling.
+add_executable(webview_gui_preset_browser_state_tests
+    preset_browser_state_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_state_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+)
+target_link_libraries(webview_gui_preset_browser_state_tests PRIVATE clap)
+target_compile_features(webview_gui_preset_browser_state_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_preset_browser_controller_tests
+    preset_browser_controller_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_controller_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_browser_controller_tests PRIVATE
+    clap
+    webview_gui_preset_contract_native_support
+)
+target_compile_features(webview_gui_preset_browser_controller_tests PRIVATE cxx_std_17)
+
+add_executable(webview_gui_preset_browser_protocol_tests
+    preset_browser_protocol_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_protocol_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+)
+target_link_libraries(webview_gui_preset_browser_protocol_tests PRIVATE clap)
+target_compile_features(webview_gui_preset_browser_protocol_tests PRIVATE cxx_std_17)
+
+# Protocol/runtime headers are compiled into WCLAP/WASI once browser integration
+# is enabled. Keep the shared surface compatible with the repository-wide
+# -fno-exceptions contract before production WASM targets include it.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_executable(webview_gui_preset_browser_protocol_noexceptions_tests
+        preset_browser_protocol_tests.cpp
+    )
+    target_include_directories(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../../common
+    )
+    target_link_libraries(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE clap)
+    target_compile_features(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE cxx_std_17)
+    target_compile_options(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE -fno-exceptions)
+endif()
+
+add_executable(webview_gui_preset_browser_runtime_tests
+    preset_browser_runtime_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_runtime_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_browser_runtime_tests PRIVATE
+    clap
+    webview_gui_preset_contract_native_support
+)
+target_compile_features(webview_gui_preset_browser_runtime_tests PRIVATE cxx_std_17)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Exercise the same portable catalog/storage shape used by WCLAP/WASI. The
+    # native preset codec intentionally depends on exception-enabled CHOC and is
+    # already qualified by the normal runtime target above; pulling it into this
+    # target would test an impossible native configuration rather than WASI.
+    add_executable(webview_gui_preset_browser_runtime_noexceptions_tests
+        preset_browser_runtime_tests.cpp
+    )
+    target_include_directories(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../../common
+        ${CMAKE_CURRENT_LIST_DIR}/../..
+    )
+    target_link_libraries(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE clap)
+    target_compile_definitions(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
+        __wasi__=1
+    )
+    target_compile_features(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE cxx_std_17)
+    target_compile_options(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE -fno-exceptions)
+endif()
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -121,6 +205,22 @@ add_test(NAME webview_gui_examples_preset_metadata_review
     COMMAND webview_gui_preset_metadata_review_tests)
 add_test(NAME webview_gui_examples_preset_load
     COMMAND webview_gui_preset_load_tests)
+add_test(NAME webview_gui_examples_preset_browser_state
+    COMMAND webview_gui_preset_browser_state_tests)
+add_test(NAME webview_gui_examples_preset_browser_controller
+    COMMAND webview_gui_preset_browser_controller_tests)
+add_test(NAME webview_gui_examples_preset_browser_protocol
+    COMMAND webview_gui_preset_browser_protocol_tests)
+if(TARGET webview_gui_preset_browser_protocol_noexceptions_tests)
+    add_test(NAME webview_gui_examples_preset_browser_protocol_noexceptions
+        COMMAND webview_gui_preset_browser_protocol_noexceptions_tests)
+endif()
+add_test(NAME webview_gui_examples_preset_browser_runtime
+    COMMAND webview_gui_preset_browser_runtime_tests)
+if(TARGET webview_gui_preset_browser_runtime_noexceptions_tests)
+    add_test(NAME webview_gui_examples_preset_browser_runtime_noexceptions
+        COMMAND webview_gui_preset_browser_runtime_noexceptions_tests)
+endif()
 add_test(NAME webview_gui_examples_preset_plugin_load_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..

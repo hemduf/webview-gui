@@ -1,6 +1,7 @@
 #pragma once
 
-#include "preset_codec.h"
+#include "preset_codec_error.h"
+#include "preset_document.h"
 
 #include <cstdint>
 #include <optional>
@@ -12,8 +13,9 @@
 namespace webview_gui::examples::presets {
 
 // Format-neutral user-preset storage boundary. This interface deliberately has
-// no filesystem dependency so WCLAP/WASI and browser/host-backed persistence can
-// use the same preset document/codec contract as native desktop storage.
+// no filesystem or codec implementation dependency so WCLAP/WASI and
+// browser/host-backed persistence can use the same preset document/status
+// contract without pulling CHOC/native storage into module translation units.
 enum class PresetStorageKind : std::uint8_t {
     Unavailable,
     Native,
@@ -38,10 +40,12 @@ enum class PresetStorageError : std::uint8_t {
 // Portable status plus optional backend diagnostics. Native adapters preserve
 // the exact #103 enum value, system error and diagnostic path without forcing
 // std::filesystem into WCLAP/WASI/browser consumers. Host backends may leave
-// these fields at their defaults.
+// these fields at their defaults. Value-initializing the opaque enum preserves
+// the concrete enum's zero == None contract without requiring its definition
+// here.
 struct PresetStorageStatus {
     PresetStorageError error = PresetStorageError::None;
-    PresetCodecError codecError = PresetCodecError::None;
+    PresetCodecError codecError{};
     std::uint32_t backendErrorCode = 0u;
     int systemErrorCode = 0;
     std::string diagnosticPath;

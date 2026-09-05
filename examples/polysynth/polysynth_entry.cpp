@@ -1,6 +1,6 @@
 #include "polysynth_plugin.h"
 #include "polysynth_preset_discovery.h"
-#include "wclap/polysynth_wclap_proxy.h"
+#include "wclap/polysynth_preset_browser_proxy.h"
 
 #include <cstring>
 
@@ -37,10 +37,10 @@ const clap_plugin_t *CLAP_ABI nativeFactoryCreatePlugin(
         return nullptr;
 
     // Native CLAP and WCLAP intentionally share the exact same WebView proxy,
-    // parameter gesture bridge, resources and RT-safe telemetry handoff. The
-    // helper name reflects its original WCLAP use, but ClapWebviewGui negotiates
-    // the native Cocoa/Win32/X11 backend when the host does not own a WebView.
-    const auto *wrapped = wclap::wrapPolySynthWclapPlugin(inner, host);
+    // parameter gesture bridge, resources, preset browser and RT-safe telemetry
+    // handoff. ClapWebviewGui negotiates the native Cocoa/Win32/X11 backend when
+    // the host does not own a WebView.
+    const auto *wrapped = wclap::wrapPolySynthPresetBrowserPlugin(inner, host);
     if (wrapped)
         return wrapped;
 

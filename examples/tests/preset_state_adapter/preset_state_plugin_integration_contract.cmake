@@ -35,18 +35,20 @@ foreach(marker
     endif()
 endforeach()
 
+# State restore may perform browser bookkeeping after the commit, so pin the
+# shared commit call rather than requiring it to be the literal return expression.
 foreach(requirement
-    "return commitPersistentParameterSnapshot(loaded, true);"
-    "commitPersistentParameterSnapshot(*mapped.candidate, false)")
+    "commitPersistentParameterSnapshot(loaded, true)"
+    "commitPersistentParameterSnapshot(*mapped.candidate, notifyHostParams)")
     string(FIND "${gain_source}" "${requirement}" gain_position)
     if(gain_position EQUAL -1)
         message(FATAL_ERROR
-            "GainPlugin state load and preset load must share the same commit seam with distinct host-notification policy; missing '${requirement}'")
+            "GainPlugin state load and preset load must share the same commit seam with explicit host-notification policy; missing '${requirement}'")
     endif()
 endforeach()
 
 foreach(requirement
-    "return commitPersistentParameterSnapshot(loaded, true);"
+    "commitPersistentParameterSnapshot(loaded, true)"
     "commitPersistentParameterSnapshot(*mapped.candidate, false)")
     string(FIND "${poly_source}" "${requirement}" poly_position)
     if(poly_position EQUAL -1)

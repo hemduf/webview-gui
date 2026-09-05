@@ -431,7 +431,7 @@ int main() {
 
     uint32_t width = 0;
     uint32_t height = 0;
-    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
+    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 430) {
         std::cerr << "Gain clap.gui did not expose the expected initial logical size after create()\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);
@@ -629,7 +629,7 @@ int main() {
         plugin->destroy(plugin);
         return 22;
     }
-    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 320) {
+    if (!gui->get_size(plugin, &width, &height) || width != 480 || height != 430) {
         std::cerr << "Gain clap.gui recreate did not restore the initial logical size\n";
         gui->destroy(plugin);
         plugin->destroy(plugin);

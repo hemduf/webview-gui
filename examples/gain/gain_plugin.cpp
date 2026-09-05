@@ -2,6 +2,8 @@
 #include "gain_persistent_state.h"
 #include "gain_preset_state.h"
 #include "gain_webview_parameter_bridge.h"
+#include "../common/preset_browser_runtime.h"
+#include "../common/preset_browser_storage.h"
 #include "../common/preset_load_controller.h"
 #include "../common/preset_production_catalog.h"
 #include "../common/presets/preset_factory_catalog.h"
@@ -19,6 +21,9 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace webview_gui::examples::gain {
 namespace {
@@ -68,7 +73,7 @@ constexpr const char kEditorMime[] = "text/html; charset=utf-8";
 constexpr const char kEditorScriptUri[] = "/gain.js";
 constexpr const char kEditorScriptMime[] = "text/javascript; charset=utf-8";
 constexpr uint32_t kEditorWidth = 480;
-constexpr uint32_t kEditorHeight = 320;
+constexpr uint32_t kEditorHeight = 430;
 constexpr std::size_t kUiParameterMessageSize = 16;
 constexpr std::size_t kUiMeterMessageSize = 16;
 constexpr uint8_t kUiGainParameter = 1;
@@ -83,20 +88,29 @@ constexpr const char kEditorHtml[] = R"html(<!doctype html>
 <style>
 :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171717; color: #f2f2f2; }
 body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
-main { width: min(30rem, calc(100vw - 2rem)); display: grid; gap: 1.25rem; padding: 1.5rem; box-sizing: border-box; }
+main { width: min(30rem, calc(100vw - 2rem)); display: grid; gap: .8rem; padding: 1rem 1.5rem; box-sizing: border-box; }
 header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
 h1 { margin: 0; font-size: 1.1rem; font-weight: 650; }
-label { display: grid; gap: .5rem; }
-input[type="range"] { width: 100%; }
-.row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+label { display: grid; gap: .35rem; }
+input[type="range"], select, input[type="text"] { width: 100%; box-sizing: border-box; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .meters { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
 meter { width: 100%; }
 small { opacity: .7; }
+.preset { display: grid; gap: .45rem; border: 1px solid #3a3a3a; border-radius: .45rem; padding: .6rem; }
+.preset-head, .preset-actions { display: flex; gap: .35rem; align-items: center; }
+.preset-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button { min-height: 1.8rem; }
 </style>
 </head>
 <body>
 <main>
 <header><h1>Gain</h1><output id="gain-value" for="gain">0.00 dB</output></header>
+<section class="preset" aria-label="Preset browser">
+<div class="preset-head"><strong id="preset-current">Init</strong><button id="preset-prev" title="Previous preset">◀</button><button id="preset-next" title="Next preset">▶</button></div>
+<select id="preset-list" aria-label="Preset"></select>
+<div class="preset-actions"><button id="preset-init">Init</button><input id="preset-name" type="text" maxlength="96" placeholder="User preset name"><button id="preset-save">Save As</button><button id="preset-delete">Delete</button></div>
+</section>
 <label>Gain<input id="gain" type="range" min="-60" max="12" step="0.1" value="0"></label>
 <label class="row"><span>Bypass</span><input id="bypass" type="checkbox"></label>
 <section class="meters" aria-label="Stereo output meter">
@@ -118,6 +132,19 @@ const KIND_VALUE = 2;
 const KIND_END = 3;
 const PARAM_GAIN = 1;
 const PARAM_BYPASS = 2;
+const PRESET_SNAPSHOT = 1;
+const PRESET_LOAD = 2;
+const PRESET_NEXT = 3;
+const PRESET_PREVIOUS = 4;
+const PRESET_INIT = 5;
+const PRESET_SAVE_AS = 6;
+const PRESET_DELETE = 7;
+const PRESET_REFRESH = 8;
+const PRESET_NONE = 0;
+const PRESET_FACTORY = 2;
+const PRESET_USER = 3;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder("utf-8", {fatal: true});
 const syncRequest = new ArrayBuffer(4);
 const bytes = new Uint8Array(syncRequest);
 bytes.set([0x57, 0x56, 0x51, 0x31]);
@@ -140,12 +167,45 @@ function requestSync() {
     window.parent.postMessage(syncRequest, "*");
 }
 
+function encodePreset(command, kind = PRESET_NONE, identity = "", name = "", overwrite = false) {
+    const identityBytes = textEncoder.encode(identity);
+    const nameBytes = textEncoder.encode(name);
+    if (identityBytes.length > 1024 || nameBytes.length > 1024)
+        return null;
+    const buffer = new ArrayBuffer(12 + identityBytes.length + nameBytes.length);
+    const bytes = new Uint8Array(buffer);
+    bytes.set([0x57, 0x56, 0x50, 0x32]);
+    bytes[4] = command;
+    bytes[5] = kind;
+    bytes[6] = overwrite ? 1 : 0;
+    const view = new DataView(buffer);
+    view.setUint16(8, identityBytes.length, true);
+    view.setUint16(10, nameBytes.length, true);
+    bytes.set(identityBytes, 12);
+    bytes.set(nameBytes, 12 + identityBytes.length);
+    return buffer;
+}
+
+function requestPreset(command, kind = PRESET_NONE, identity = "", name = "", overwrite = false) {
+    const message = encodePreset(command, kind, identity, name, overwrite);
+    if (message)
+        window.parent.postMessage(message, "*");
+}
+
 const gain = document.getElementById("gain");
 const gainValue = document.getElementById("gain-value");
 const bypass = document.getElementById("bypass");
 const meterLeft = document.getElementById("meter-left");
 const meterRight = document.getElementById("meter-right");
+const presetCurrent = document.getElementById("preset-current");
+const presetList = document.getElementById("preset-list");
+const presetName = document.getElementById("preset-name");
+const presetSave = document.getElementById("preset-save");
+const presetDelete = document.getElementById("preset-delete");
 let gainGestureOpen = false;
+let currentPresetKind = PRESET_NONE;
+let currentPresetIdentity = "";
+let userMutationsAvailable = false;
 
 function beginGain() {
     if (gainGestureOpen)
@@ -161,7 +221,86 @@ function endGain() {
     gainGestureOpen = false;
 }
 
+function readString(bytes, view, state, length) {
+    if (length > 1024 || state.offset + length > bytes.length)
+        throw new Error("invalid preset string");
+    const value = textDecoder.decode(bytes.slice(state.offset, state.offset + length));
+    state.offset += length;
+    return value;
+}
+
+function applyPresetSnapshot(data) {
+    if (!(data instanceof ArrayBuffer) || data.byteLength < 12 || data.byteLength > 65535)
+        return false;
+    const bytes = new Uint8Array(data);
+    if (bytes[0] !== 0x57 || bytes[1] !== 0x56 || bytes[2] !== 0x42 || bytes[3] !== 0x32)
+        return false;
+    try {
+        const view = new DataView(data);
+        const kind = bytes[4];
+        const flags = bytes[5];
+        const count = view.getUint16(6, true);
+        const state = {offset: 12};
+        const identity = readString(bytes, view, state, view.getUint16(8, true));
+        const name = readString(bytes, view, state, view.getUint16(10, true));
+        const entries = [];
+        for (let i = 0; i < count; ++i) {
+            if (state.offset + 6 > bytes.length)
+                throw new Error("truncated preset entry");
+            const entryKind = bytes[state.offset];
+            const tagCount = bytes[state.offset + 1];
+            const identityLength = view.getUint16(state.offset + 2, true);
+            const nameLength = view.getUint16(state.offset + 4, true);
+            state.offset += 6;
+            const entryIdentity = readString(bytes, view, state, identityLength);
+            const entryName = readString(bytes, view, state, nameLength);
+            for (let tag = 0; tag < tagCount; ++tag) {
+                if (state.offset + 2 > bytes.length)
+                    throw new Error("truncated preset tag");
+                const tagLength = view.getUint16(state.offset, true);
+                state.offset += 2;
+                readString(bytes, view, state, tagLength);
+            }
+            entries.push({kind: entryKind, identity: entryIdentity, name: entryName});
+        }
+        if (state.offset !== bytes.length)
+            throw new Error("trailing preset data");
+
+        currentPresetKind = kind;
+        currentPresetIdentity = identity;
+        userMutationsAvailable = (flags & 2) !== 0;
+        presetCurrent.textContent = `${name || "Init"}${(flags & 1) !== 0 ? " *" : ""}`;
+        presetList.replaceChildren();
+        const factoryGroup = document.createElement("optgroup");
+        factoryGroup.label = "Factory";
+        const userGroup = document.createElement("optgroup");
+        userGroup.label = "User";
+        for (const entry of entries) {
+            const option = document.createElement("option");
+            option.value = `${entry.kind}:${entry.identity}`;
+            option.textContent = entry.name;
+            if (entry.kind === PRESET_FACTORY)
+                factoryGroup.appendChild(option);
+            else if (entry.kind === PRESET_USER)
+                userGroup.appendChild(option);
+            if (entry.kind === kind && entry.identity === identity)
+                option.selected = true;
+        }
+        if (factoryGroup.children.length)
+            presetList.appendChild(factoryGroup);
+        if (userGroup.children.length)
+            presetList.appendChild(userGroup);
+        presetSave.disabled = !userMutationsAvailable;
+        presetDelete.disabled = !userMutationsAvailable || kind !== PRESET_USER || !identity;
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 function applyUiSync(data) {
+    if (applyPresetSnapshot(data))
+        return;
     if (!(data instanceof ArrayBuffer) || data.byteLength !== 16)
         return;
     const bytes = new Uint8Array(data);
@@ -195,7 +334,9 @@ function applyUiSync(data) {
 
 window.addEventListener("message", event => applyUiSync(event.data));
 requestSync();
+requestPreset(PRESET_REFRESH);
 setInterval(requestSync, 33);
+setInterval(() => requestPreset(PRESET_SNAPSHOT), 250);
 
 gain.addEventListener("pointerdown", beginGain);
 gain.addEventListener("input", () => {
@@ -215,6 +356,34 @@ bypass.addEventListener("change", () => {
     send(KIND_BEGIN, PARAM_BYPASS);
     send(KIND_VALUE, PARAM_BYPASS, bypass.checked ? 1 : 0);
     send(KIND_END, PARAM_BYPASS);
+});
+
+document.getElementById("preset-prev").addEventListener("click", () => requestPreset(PRESET_PREVIOUS));
+document.getElementById("preset-next").addEventListener("click", () => requestPreset(PRESET_NEXT));
+document.getElementById("preset-init").addEventListener("click", () => requestPreset(PRESET_INIT));
+presetList.addEventListener("change", () => {
+    const separator = presetList.value.indexOf(":");
+    if (separator < 0)
+        return;
+    const kind = Number(presetList.value.slice(0, separator));
+    const identity = presetList.value.slice(separator + 1);
+    requestPreset(PRESET_LOAD, kind, identity);
+});
+presetSave.addEventListener("click", () => {
+    if (!userMutationsAvailable)
+        return;
+    const name = presetName.value.trim();
+    if (!name)
+        return;
+    const overwrite = currentPresetKind === PRESET_USER && currentPresetIdentity.length > 0;
+    const identity = overwrite
+        ? currentPresetIdentity
+        : `${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "preset"}.wvpreset`;
+    requestPreset(PRESET_SAVE_AS, PRESET_USER, identity, name, overwrite);
+});
+presetDelete.addEventListener("click", () => {
+    if (userMutationsAvailable && currentPresetKind === PRESET_USER && currentPresetIdentity)
+        requestPreset(PRESET_DELETE, PRESET_USER, currentPresetIdentity);
 });
 })());
 )js";
@@ -354,7 +523,14 @@ bool decodeState(const std::array<uint8_t, kStateSize> &bytes,
 class GainPlugin final : public GainBase {
 public:
     explicit GainPlugin(const clap_host_t *host)
-        : GainBase(&kDescriptor, host), host_(host), gui_(clapPlugin(), host) {
+        : GainBase(&kDescriptor, host),
+          host_(host),
+          gui_(clapPlugin(), host),
+          presetStorage_(kGainPluginId),
+          presetBrowserController_(presets::gainFactoryPresetCatalog(),
+                                   std::string{kGainPluginId},
+                                   presetStorage_.get()),
+          presetBrowserRuntime_(presetBrowserController_) {
         syncParameterSnapshotsFromProcessor();
     }
 
@@ -384,6 +560,7 @@ protected:
         applyPendingLoadedState();
         if (!processData)
             return CLAP_PROCESS_ERROR;
+        notePersistentInputEvents(processData->in_events);
         guiParameterBridge_.drain(processData->out_events, processor_);
         if (!processor_.process(*processData))
             return CLAP_PROCESS_ERROR;
@@ -439,13 +616,7 @@ protected:
     }
 
     bool webviewReceive(const void *buffer, uint32_t size) const noexcept override {
-        if (guiCreated_ && buffer && size == 4) {
-            const auto *bytes = static_cast<const uint8_t *>(buffer);
-            if (bytes[0] == 0x57 && bytes[1] == 0x56 &&
-                bytes[2] == 0x51 && bytes[3] == 0x31)
-                return sendUiSnapshotToWebview();
-        }
-        return guiParameterBridge_.receive(guiCreated_, buffer, size);
+        return const_cast<GainPlugin *>(this)->receiveWebviewMessage(buffer, size);
     }
 
     bool implementsGui() const noexcept override { return true; }
@@ -568,7 +739,11 @@ protected:
             return false;
 
         const GainParameterSnapshot loaded{static_cast<float>(gainDb), bypassed};
-        return commitPersistentParameterSnapshot(loaded, true);
+        if (!commitPersistentParameterSnapshot(loaded, true))
+            return false;
+        presetDirtyPending_.store(false, std::memory_order_relaxed);
+        presetBrowserController_.clearIdentityAfterStateRestore();
+        return true;
     }
 
     bool implementsPresetLoad() const noexcept override { return true; }
@@ -599,7 +774,7 @@ protected:
             return false;
         }
 
-        return presets::loadPresetFromLocation(
+        const bool loaded = presets::loadPresetFromLocation(
             *catalog,
             locationKind,
             location,
@@ -607,7 +782,7 @@ protected:
             host_,
             hostPresetLoad,
             [this](const presets::PresetDocument &document) noexcept -> presets::PresetResult {
-                switch (applyGainPresetDocument(document)) {
+                switch (applyGainPresetDocument(document, false)) {
                     case presets::PresetStateAdapterError::None:
                         return presets::PresetResult::success();
                     case presets::PresetStateAdapterError::WrongTargetPlugin:
@@ -619,6 +794,9 @@ protected:
                 }
                 return presets::PresetResult::error("unknown Gain preset state error");
             });
+        if (loaded)
+            syncBrowserIdentityAfterHostPresetLoad(locationKind, location, loadKey);
+        return loaded;
     }
 
     bool implementsAudioPorts() const noexcept override { return true; }
@@ -742,7 +920,8 @@ protected:
                     header->size < sizeof(clap_event_param_value_t))
                     continue;
                 const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
-                (void)processor_.applyParameterValue(event);
+                if (processor_.applyParameterValue(event))
+                    presetDirtyPending_.store(true, std::memory_order_relaxed);
             }
         }
         guiParameterBridge_.drain(out, processor_);
@@ -785,15 +964,16 @@ private:
 
     [[nodiscard]] presets::PresetDocument captureGainPresetDocument(
         presets::PresetMetadata metadata) const {
-        return captureGainPreset(readEffectiveGainParameterSnapshot(), metadata);
+        return captureGainPreset(readEffectiveGainParameterSnapshot(), std::move(metadata));
     }
 
     presets::PresetStateAdapterError applyGainPresetDocument(
-        const presets::PresetDocument &document) noexcept {
+        const presets::PresetDocument &document,
+        bool notifyHostParams) noexcept {
         const auto mapped = makeGainPresetCandidate(document);
         if (!mapped.ok())
             return mapped.error;
-        (void)commitPersistentParameterSnapshot(*mapped.candidate, false);
+        (void)commitPersistentParameterSnapshot(*mapped.candidate, notifyHostParams);
         return presets::PresetStateAdapterError::None;
     }
 
@@ -806,6 +986,140 @@ private:
             }
         }
         return hostParams_;
+    }
+
+    [[nodiscard]] bool receiveWebviewMessage(const void *buffer, uint32_t size) noexcept {
+        if (!guiCreated_)
+            return false;
+
+        consumePendingPresetDirty();
+
+        auto applyDocument = [this](const presets::PresetDocument &document) {
+            return applyGainPresetDocument(document, true) ==
+                   presets::PresetStateAdapterError::None;
+        };
+        auto captureDocument = [this](std::string_view displayName)
+            -> std::optional<presets::PresetDocument> {
+            presets::PresetMetadata metadata;
+            metadata.name.assign(displayName.data(), displayName.size());
+            metadata.creator = "webview-gui";
+            metadata.description = "User preset";
+            metadata.tags = {"User", "Gain"};
+            return captureGainPresetDocument(std::move(metadata));
+        };
+        auto resetInit = [this]() {
+            return commitPersistentParameterSnapshot(defaultGainParameterSnapshot(), true);
+        };
+        auto sendSnapshot = [this](const void *data, std::size_t byteCount) {
+            return guiCreated_ && gui_.send(data, static_cast<uint32_t>(byteCount));
+        };
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const auto presetResult = presetBrowserRuntime_.receive(buffer,
+                                                                    size,
+                                                                    applyDocument,
+                                                                    captureDocument,
+                                                                    resetInit,
+                                                                    sendSnapshot);
+            if (presetResult.handled) {
+                if (presetResult.ok())
+                    presetDirtyPending_.store(false, std::memory_order_relaxed);
+                return presetResult.ok();
+            }
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            return false;
+        }
+#endif
+
+        if (buffer && size == 4) {
+            const auto *bytes = static_cast<const uint8_t *>(buffer);
+            if (bytes[0] == 0x57 && bytes[1] == 0x56 &&
+                bytes[2] == 0x51 && bytes[3] == 0x31)
+                return sendUiSnapshotToWebview();
+        }
+
+        const bool accepted = guiParameterBridge_.receive(guiCreated_, buffer, size);
+        if (accepted && isUiPersistentValueMessage(buffer, size))
+            presetDirtyPending_.store(true, std::memory_order_relaxed);
+        return accepted;
+    }
+
+    [[nodiscard]] static bool isUiPersistentValueMessage(const void *buffer,
+                                                         uint32_t size) noexcept {
+        if (!buffer || size != kUiParameterMessageSize)
+            return false;
+        const auto *bytes = static_cast<const uint8_t *>(buffer);
+        return bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'G' && bytes[3] == '1' &&
+               bytes[4] == 2u && (bytes[5] == kUiGainParameter || bytes[5] == kUiBypassParameter);
+    }
+
+    void notePersistentInputEvents(const clap_input_events_t *in) noexcept {
+        if (!in || !in->size || !in->get)
+            return;
+        const uint32_t count = in->size(in);
+        for (uint32_t index = 0; index < count; ++index) {
+            const auto *header = in->get(in, index);
+            if (!header || header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
+                header->type != CLAP_EVENT_PARAM_VALUE ||
+                header->size < sizeof(clap_event_param_value_t))
+                continue;
+            const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
+            if (event.param_id == kGainParamId || event.param_id == kBypassParamId) {
+                presetDirtyPending_.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+
+    void consumePendingPresetDirty() noexcept {
+        if (presetDirtyPending_.exchange(false, std::memory_order_relaxed))
+            presetBrowserController_.markPersistentEdit();
+    }
+
+    static std::string_view basenameView(const char *path) noexcept {
+        if (!path)
+            return {};
+        const char *name = path;
+        for (const char *cursor = path; *cursor != '\0'; ++cursor) {
+            if (*cursor == '/' || *cursor == '\\')
+                name = cursor + 1;
+        }
+        return name;
+    }
+
+    void syncBrowserIdentityAfterHostPresetLoad(uint32_t locationKind,
+                                                const char *location,
+                                                const char *loadKey) noexcept {
+        presetDirtyPending_.store(false, std::memory_order_relaxed);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            const auto refreshed = presetBrowserController_.refresh();
+            if (!refreshed.ok()) {
+                presetBrowserController_.clearIdentityAfterStateRestore();
+                return;
+            }
+            bool marked = false;
+            if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && loadKey) {
+                marked = presetBrowserController_.markLoaded(
+                    presets::PresetBrowserContentKind::Factory, loadKey);
+            } else if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && location) {
+                const auto identity = basenameView(location);
+                if (!identity.empty()) {
+                    marked = presetBrowserController_.markLoaded(
+                        presets::PresetBrowserContentKind::User, identity);
+                }
+            }
+            if (!marked)
+                presetBrowserController_.clearIdentityAfterStateRestore();
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            presetBrowserController_.clearIdentityAfterStateRestore();
+        }
+#endif
     }
 
     bool sendParameterSnapshotToWebview() const noexcept {
@@ -885,12 +1199,16 @@ private:
     GainEventProcessor processor_{};
     mutable ::webview_gui::ClapWebviewGui gui_;
     mutable GainWebviewParameterBridge guiParameterBridge_{};
+    presets::PresetBrowserStorage presetStorage_;
+    presets::PresetBrowserController presetBrowserController_;
+    presets::PresetBrowserRuntime presetBrowserRuntime_;
     mutable uint32_t lastMeterSequenceSent_ = 0u;
     mutable bool hasSentMeterSequence_ = false;
     bool guiCreated_ = false;
     bool hostOwnedWebviewGui_ = false;
     std::atomic<float> gainDbSnapshot_{0.0f};
     std::atomic<bool> bypassSnapshot_{false};
+    std::atomic<bool> presetDirtyPending_{false};
 
     std::atomic<float> pendingLoadedGainDb_{0.0f};
     std::atomic<bool> pendingLoadedBypass_{false};
