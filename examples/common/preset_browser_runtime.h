@@ -70,7 +70,11 @@ public:
         }
 
         switch (decoded.request.command) {
+            // Snapshot is intentionally storage-free so a WebView may poll dirty
+            // state/current identity without repeatedly touching the filesystem.
+            // Refresh is the explicit catalog/storage rescan command.
             case PresetBrowserCommand::Snapshot:
+                return emitSnapshot(sendSnapshot);
             case PresetBrowserCommand::Refresh:
                 return refreshAndSend(sendSnapshot);
 
