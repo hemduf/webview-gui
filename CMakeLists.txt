@@ -9,13 +9,13 @@ add_library(webview-gui STATIC
 
 include(FetchContent)
 
-# CPM is only the dependency bootstrap. CHOC itself is fetched exclusively from
-# the maintained hemduf fork below and pinned to an immutable commit.
+# CPM is only the dependency bootstrap. Pin the bootstrap itself to the exact
+# commit behind v0.40.2 so dependency resolution stays immutable as well.
 FetchContent_Declare(
     cpm_cmake
     GIT_REPOSITORY https://github.com/cpm-cmake/CPM.cmake.git
-    GIT_TAG v0.40.2
-    GIT_SHALLOW TRUE
+    GIT_TAG 0bc73f41cedb561efe5643826891dcb705c680de
+    GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(cpm_cmake)
 include("${cpm_cmake_SOURCE_DIR}/cmake/CPM.cmake")
