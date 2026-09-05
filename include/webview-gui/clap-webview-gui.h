@@ -119,6 +119,7 @@ struct ClapWebviewGui {
             return false;
 
         WebviewGui *ptr = nullptr;
+        const auto standaloneInitScript = standaloneDevices.initScript();
 
         if (startUrl.rfind("file:", 0) == 0) {
             size_t pos = 5;
@@ -140,9 +141,6 @@ struct ClapWebviewGui {
             ptr = WebviewGui::create(platform, startUrl.c_str(), [this](const char *path, WebviewGui::Resource &resource){
                 if (!isOnGuiThread())
                     return false;
-
-                if (standaloneDevices.provideResource(path, resource))
-                    return detail::resourceSizeAllowed(resource.bytes.size());
 
                 if (!pluginWebview || !pluginWebview->get_resource || !plugin)
                     return false;
@@ -183,7 +181,7 @@ struct ClapWebviewGui {
                     return false;
                 }
                 return true;
-            });
+            }, standaloneInitScript);
         }
 
         if (!ptr) return false;

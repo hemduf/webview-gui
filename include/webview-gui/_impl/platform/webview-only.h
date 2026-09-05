@@ -25,6 +25,10 @@ WebviewGui * WebviewGui::create(Platform, const std::string &, ResourceGetter) {
     return nullptr;
 }
 
+WebviewGui * WebviewGui::create(Platform, const std::string &, ResourceGetter, const std::string &) {
+    return nullptr;
+}
+
 WebviewGui::WebviewGui(WebviewGui::Impl *) {}
 WebviewGui::~WebviewGui() {}
 bool WebviewGui::attach(void *) { return false; }

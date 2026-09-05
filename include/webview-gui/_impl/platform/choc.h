@@ -202,7 +202,16 @@ struct WebviewGui::Impl {
 };
 #	endif
 
-WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &startPath, WebviewGui::ResourceGetter getter) {
+WebviewGui * WebviewGui::create(WebviewGui::Platform p,
+                                const std::string &startPath,
+                                WebviewGui::ResourceGetter getter) {
+	return create(p, startPath, std::move(getter), {});
+}
+
+WebviewGui * WebviewGui::create(WebviewGui::Platform p,
+                                const std::string &startPath,
+                                WebviewGui::ResourceGetter getter,
+                                const std::string &initScript) {
 	if (!supports(p) || !detail::isSafePluginStartPath(startPath)) return nullptr;
 
 	auto *impl = new WebviewGui::Impl();
@@ -253,7 +262,7 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 		return chocResource;
 	};
 
-	options.webviewIsReady = [startUri, trustedOrigin, impl](choc::ui::WebView &wv){
+	options.webviewIsReady = [startUri, trustedOrigin, initScript, impl](choc::ui::WebView &wv){
 		if (!impl->isOnGuiThread()) return;
 
 		const auto guardScript = std::string("(()=>{const u=location.href.toLowerCase();const o='")
@@ -315,8 +324,14 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p, const std::string &start
 			return choc::value::Value{true};
 		});
 
-		const auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
-		if (bridgeBootstrap.empty() || !wv.addInitScript(bridgeBootstrap))
+		auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
+		if (bridgeBootstrap.empty())
+			return;
+		if (!initScript.empty()) {
+			bridgeBootstrap += '\n';
+			bridgeBootstrap += initScript;
+		}
+		if (!wv.addInitScript(bridgeBootstrap))
 			return;
 
 		wv.navigate(startUri);
