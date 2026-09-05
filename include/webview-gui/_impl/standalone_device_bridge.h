@@ -35,23 +35,37 @@ public:
     }
 
     void injectIntoHtml(WebviewGui::Resource &resource) noexcept {
-        // Keep this strictly standalone-only. A normal DAW host does not expose
-        // the private device-control extension and therefore receives no injected
-        // resources, DOM, messages or polling work.
-        if (!available() || resource.mediaType.rfind("text/html", 0) != 0 || resource.bytes.empty())
+        // Keep all augmentation strictly standalone-only. DAW hosts do not expose
+        // the private device-control extension, so their HTML/JS resources are
+        // returned byte-for-byte unchanged.
+        if (!available() || resource.bytes.empty())
+            return;
+
+        const bool isJavaScript =
+            resource.mediaType.rfind("text/javascript", 0) == 0 ||
+            resource.mediaType.rfind("application/javascript", 0) == 0;
+        if (isJavaScript) {
+            const std::string script(resource.bytes.begin(), resource.bytes.end());
+            if (script.find(kScriptGuard) != std::string::npos)
+                return;
+            resource.bytes.push_back('\n');
+            resource.bytes.insert(resource.bytes.end(), kScript, kScript + std::strlen(kScript));
+            resource.bytes.push_back('\n');
+            return;
+        }
+
+        if (resource.mediaType.rfind("text/html", 0) != 0)
             return;
 
         std::string html(resource.bytes.begin(), resource.bytes.end());
         if (html.find(kInjectionMarker) != std::string::npos)
             return;
 
-        // WKWebView custom-scheme subresources are not a reliable execution path
-        // for injected JavaScript. The editor response already carries the
-        // webview-gui CSP, which explicitly permits inline scripts, so inject the
-        // small standalone controller directly into the trusted local document.
-        const std::string injection = std::string{"\n"} + kStyle +
-                                      "\n<script id=\"" + kInjectionMarker + "\">\n" +
-                                      kScript + "\n</script>\n";
+        // Gain and PolySynth deliberately use `script-src 'self'`. Do not weaken
+        // their CSP and do not depend on an extra custom-scheme subresource.
+        // Inject only the standalone styles here; the controller is appended to
+        // the plug-in's already-authorized same-origin JavaScript resource.
+        const std::string injection = std::string{"\n"} + kStyle + "\n";
         const auto body = html.rfind("</body>");
         if (body == std::string::npos)
             html += injection;
@@ -119,6 +133,7 @@ public:
 private:
     static constexpr const char *kScriptPath = "/__webview_gui/standalone-devices.js";
     static constexpr const char *kInjectionMarker = "webview-gui-standalone-devices";
+    static constexpr const char *kScriptGuard = "__webviewGuiStandaloneDevices";
     static constexpr uint32_t kMaxItems = 256;
 
     const clap_wrapper_host_standalone_device_control *resolve() noexcept {
@@ -287,7 +302,7 @@ private:
     const clap_host_t *host_ = nullptr;
     const clap_wrapper_host_standalone_device_control *extension_ = nullptr;
 
-    inline static constexpr const char kStyle[] = R"css(<style>
+    inline static constexpr const char kStyle[] = R"css(<style id="webview-gui-standalone-devices">
 #wvg-io-button{position:fixed;top:10px;right:10px;z-index:2147483646;border:1px solid rgba(255,255,255,.18);background:#202124;color:#f5f5f5;border-radius:7px;padding:7px 10px;font:600 12px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.25)}
 #wvg-io-panel{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.58);display:none;align-items:center;justify-content:center;font-family:system-ui,sans-serif;color:#f5f5f5}
 #wvg-io-panel[data-open="1"]{display:flex}
@@ -301,6 +316,8 @@ private:
 
     inline static constexpr const char kScript[] = R"js((() => {
 "use strict";
+if (typeof window === "undefined" || window.__webviewGuiStandaloneDevices) return;
+window.__webviewGuiStandaloneDevices = true;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const storageKey = "__webview_gui_capability";
