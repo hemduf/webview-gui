@@ -26,45 +26,23 @@ public:
         return resolve() != nullptr;
     }
 
-    bool provideResource(const char *path, WebviewGui::Resource &resource) noexcept {
-        if (!path || std::strcmp(path, kScriptPath) != 0 || !available())
-            return false;
-        resource.mediaType = "text/javascript; charset=utf-8";
-        resource.bytes.assign(kScript, kScript + std::strlen(kScript));
-        return true;
+    [[nodiscard]] std::string initScript() noexcept {
+        return available() ? std::string{kScript} : std::string{};
     }
 
     void injectIntoHtml(WebviewGui::Resource &resource) noexcept {
-        // Keep all augmentation strictly standalone-only. DAW hosts do not expose
-        // the private device-control extension, so their HTML/JS resources are
-        // returned byte-for-byte unchanged.
-        if (!available() || resource.bytes.empty())
-            return;
-
-        const bool isJavaScript =
-            resource.mediaType.rfind("text/javascript", 0) == 0 ||
-            resource.mediaType.rfind("application/javascript", 0) == 0;
-        if (isJavaScript) {
-            const std::string script(resource.bytes.begin(), resource.bytes.end());
-            if (script.find(kScriptGuard) != std::string::npos)
-                return;
-            resource.bytes.push_back('\n');
-            resource.bytes.insert(resource.bytes.end(), kScript, kScript + std::strlen(kScript));
-            resource.bytes.push_back('\n');
-            return;
-        }
-
-        if (resource.mediaType.rfind("text/html", 0) != 0)
+        // Keep DOM augmentation strictly standalone-only. DAW hosts do not expose
+        // the private device-control extension and receive the plug-in resource
+        // byte-for-byte unchanged.
+        if (!available() || resource.mediaType.rfind("text/html", 0) != 0 || resource.bytes.empty())
             return;
 
         std::string html(resource.bytes.begin(), resource.bytes.end());
         if (html.find(kInjectionMarker) != std::string::npos)
             return;
 
-        // Gain and PolySynth deliberately use `script-src 'self'`. Do not weaken
-        // their CSP and do not depend on an extra custom-scheme subresource.
-        // Inject only the standalone styles here; the controller is appended to
-        // the plug-in's already-authorized same-origin JavaScript resource.
+        // Only style is injected into the page. The controller itself is a native
+        // init script, so page CSP cannot block it and no CSP weakening is needed.
         const std::string injection = std::string{"\n"} + kStyle + "\n";
         const auto body = html.rfind("</body>");
         if (body == std::string::npos)
@@ -131,9 +109,7 @@ public:
     }
 
 private:
-    static constexpr const char *kScriptPath = "/__webview_gui/standalone-devices.js";
     static constexpr const char *kInjectionMarker = "webview-gui-standalone-devices";
-    static constexpr const char *kScriptGuard = "__webviewGuiStandaloneDevices";
     static constexpr uint32_t kMaxItems = 256;
 
     const clap_wrapper_host_standalone_device_control *resolve() noexcept {
@@ -341,8 +317,9 @@ function acceptSnapshot(bytes){ if(!bytes||bytes.byteLength<4||bytes[0]!==0x57||
 function bridgeToken(){ const match=location.hash.match(/(?:^#|&)__wg=([0-9a-f]{64})(?:&|$)/);if(match)return match[1];try{return sessionStorage.getItem(storageKey)||"";}catch(_){return "";} }
 function installNativeReceiver(){ if(nativeReceiverInstalled)return true;const token=bridgeToken();if(!/^[0-9a-f]{64}$/.test(token))return false;const name="_WebviewGui_send_"+token,deliver=window[name];if(typeof deliver!=="function")return false;window[name]=base64=>{const bytes=decodeNative(base64);if(acceptSnapshot(bytes))return;deliver(base64);};nativeReceiverInstalled=true;return true; }
 function probe(){ if(state||probeAttempts++>=20)return;const receiverReady=installNativeReceiver();if(receiverReady)request();if(!state)setTimeout(probe,50); }
-ensureUi();
-probe();
+function start(){ ensureUi(); probe(); }
+if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, {once:true});
+else start();
 })();)js";
 };
 
