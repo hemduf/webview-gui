@@ -1,0 +1,59 @@
+name: Automation rebase PR 114
+
+on:
+  push:
+    branches:
+      - fix/standalone-device-ui-runtime
+    paths:
+      - .github/workflows/_automation_rebase_114.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rebase-pr-114:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Merge current main and resolve the single known CHOC option conflict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          set +e
+          git merge --no-edit origin/main
+          merge_status=$?
+          set -e
+          if [ "$merge_status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            expected="include/webview-gui/_impl/platform/choc.h"
+            if [ "$conflicts" != "$expected" ]; then
+              echo "Unexpected merge conflicts:" >&2
+              printf '%s\n' "$conflicts" >&2
+              exit 1
+            fi
+            git checkout --ours -- "$expected"
+            python3 - <<'PY'
+from pathlib import Path
+path = Path('include/webview-gui/_impl/platform/choc.h')
+text = path.read_text()
+old = 'options.webviewGuiDeferInitialResourceNavigation = true;'
+new = 'options.deferInitialResourceNavigation = true;'
+if text.count(old) != 1:
+    raise SystemExit(f'expected exactly one legacy CHOC option, found {text.count(old)}')
+path.write_text(text.replace(old, new))
+PY
+            git add "$expected"
+            git commit --no-edit
+          fi
+          rm -f .github/workflows/_automation_rebase_114.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: remove temporary PR 114 rebase workflow"
+          fi
+          git push origin HEAD:fix/standalone-device-ui-runtime
