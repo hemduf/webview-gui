@@ -147,6 +147,7 @@ test "$(git -C .ci/clap-trap/wclap-bridge hash-object source/_generic/wclap-modu
   e568c9a14fb75e07da4d417ad47d4582ce61ac05
 git -C .ci/clap-trap/wclap-bridge diff --exit-code
 
+# Gain lifecycle + Preset Discovery + preset-load qualification.
 python3 .github/scripts/patch_clap_trap_factory_loader.py \
   --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
   --loader-source .ci/clap-trap/src/plugin-loader.cpp
@@ -169,18 +170,32 @@ cmake --build build-clap-trap --target clap-trap-cli --parallel
 ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
 ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
 
-# Rebuild the same pinned host with the PolySynth instrument smoke contract.
+# PolySynth lifecycle + Preset Discovery + preset-load qualification. Keep the
+# already-patched factory loader, reset only the smoke source, then install the
+# instrument-specific contracts used by the PolySynth owner workflow.
 git -C .ci/clap-trap checkout -- examples/cli.cpp
 python3 .github/scripts/patch_clap_trap_wclap.py \
   --source .ci/clap-trap/examples/cli.cpp \
   --sync-magic WVS1 \
   --instrument
+python3 .github/scripts/patch_clap_trap_wclap_presets.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --preset-load-key polysynth:bass \
+  --expected-param-id 1000 \
+  --expected-param-value -3
+python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --expected-plugin-id com.webview-gui.example.polysynth
+python3 .github/scripts/patch_clap_trap_wclap_discovery_concurrency.py \
+  --source .ci/clap-trap/examples/cli.cpp
 cmake --build build-clap-trap --target clap-trap-cli --parallel
+./build-clap-trap/clap-trap validate \
+  build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
 ./build-clap-trap/clap-trap validate \
   build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
 ```
 
-The WCLAP workflows additionally exercise Preset Discovery provider metadata, factory lifecycle/concurrency and `clap.preset-load/2` through the real packaged modules, run the host smoke twice, inspect the WASM import/export table to require `clap_entry`, reject native GUI imports and verify the distributable `.wclap.tar.gz` layout.
+The WCLAP workflows additionally inspect the WASM import/export table to require `clap_entry`, reject native GUI imports, verify the canonical nine-file preset bank and distributable `.wclap.tar.gz` layout, and exercise the Preset Discovery provider/indexer lifecycle, metadata, factory concurrency and `clap.preset-load/2` against each real packaged module twice.
 
 ## Native format projections
 
