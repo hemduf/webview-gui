@@ -47,19 +47,13 @@ void copyText(char (&destination)[N], const char *text)
     std::snprintf(destination, N, "%s", text ? text : "");
 }
 
-uint32_t CLAP_ABI audioApiCount(const clap_host_t *)
-{
-    return 2;
-}
+uint32_t CLAP_ABI audioApiCount(const clap_host_t *) { return 2; }
 
 bool CLAP_ABI audioApiInfo(const clap_host_t *, uint32_t index,
                            clap_wrapper_standalone_audio_api_info *info)
 {
     if (!info || index >= 2)
         return false;
-
-    // Intentionally fail the first item. The bridge must still produce valid
-    // JSON without a leading comma before the second item.
     if (index == 0)
         return false;
 
@@ -74,8 +68,7 @@ bool CLAP_ABI audioApiInfo(const clap_host_t *, uint32_t index,
 bool CLAP_ABI setAudioApi(const clap_host_t *host, int32_t apiId)
 {
     auto *s = state(host);
-    if (!s)
-        return false;
+    if (!s) return false;
     s->lastAudioApi = apiId;
     return true;
 }
@@ -115,7 +108,6 @@ bool CLAP_ABI deviceInfo(const clap_host_t *, clap_wrapper_standalone_device_kin
         case CLAP_WRAPPER_STANDALONE_MIDI_OUTPUT:
             info->id = 0;
             copyText(info->name, "MIDI Output");
-            info->selected = false;
             return true;
     }
     return false;
@@ -126,8 +118,7 @@ bool CLAP_ABI getAudioConfiguration(
     clap_wrapper_standalone_audio_configuration *configuration)
 {
     auto *s = state(host);
-    if (!s || !configuration)
-        return false;
+    if (!s || !configuration) return false;
     *configuration = s->configuration;
     return true;
 }
@@ -137,34 +128,25 @@ bool CLAP_ABI setAudioConfiguration(
     const clap_wrapper_standalone_audio_configuration *configuration)
 {
     auto *s = state(host);
-    if (!s || !configuration)
-        return false;
+    if (!s || !configuration) return false;
     s->configuration = *configuration;
     return true;
 }
 
-uint32_t CLAP_ABI sampleRateCount(const clap_host_t *)
-{
-    return 2;
-}
+uint32_t CLAP_ABI sampleRateCount(const clap_host_t *) { return 2; }
 
 bool CLAP_ABI sampleRate(const clap_host_t *, uint32_t index, uint32_t *value)
 {
-    if (!value || index >= 2)
-        return false;
+    if (!value || index >= 2) return false;
     *value = index == 0 ? 44100u : 48000u;
     return true;
 }
 
-uint32_t CLAP_ABI bufferSizeCount(const clap_host_t *)
-{
-    return 2;
-}
+uint32_t CLAP_ABI bufferSizeCount(const clap_host_t *) { return 2; }
 
 bool CLAP_ABI bufferSize(const clap_host_t *, uint32_t index, uint32_t *value)
 {
-    if (!value || index >= 2)
-        return false;
+    if (!value || index >= 2) return false;
     *value = index == 0 ? 128u : 256u;
     return true;
 }
@@ -175,8 +157,7 @@ bool CLAP_ABI setMidiDeviceEnabled(const clap_host_t *host,
                                    bool enabled)
 {
     auto *s = state(host);
-    if (!s)
-        return false;
+    if (!s) return false;
     s->lastMidiKind = kind;
     s->lastMidiId = id;
     s->lastMidiEnabled = enabled;
@@ -187,8 +168,7 @@ bool CLAP_ABI setMidiDeviceEnabled(const clap_host_t *host,
 bool CLAP_ABI refreshMidiDevices(const clap_host_t *host)
 {
     auto *s = state(host);
-    if (!s)
-        return false;
+    if (!s) return false;
     ++s->refreshCalls;
     return true;
 }
@@ -273,13 +253,20 @@ int main()
     html.mediaType = "text/html; charset=utf-8";
     const std::string originalHtml = "<!doctype html><html><body>editor</body></html>";
     html.bytes.assign(originalHtml.begin(), originalHtml.end());
-
     bridge.injectIntoHtml(html);
     require(bytesToString(html.bytes) == originalHtml,
             "non-standalone host must not receive injected UI");
 
-    WebviewGui::Resource script;
-    require(!bridge.provideResource("/__webview_gui/standalone-devices.js", script),
+    WebviewGui::Resource editorScript;
+    editorScript.mediaType = "text/javascript; charset=utf-8";
+    const std::string originalScript = "window.editorLoaded=true;";
+    editorScript.bytes.assign(originalScript.begin(), originalScript.end());
+    bridge.injectIntoHtml(editorScript);
+    require(bytesToString(editorScript.bytes) == originalScript,
+            "non-standalone host must not mutate editor JavaScript");
+
+    WebviewGui::Resource privateScript;
+    require(!bridge.provideResource("/__webview_gui/standalone-devices.js", privateScript),
             "non-standalone host must not expose the private script");
 
     // Re-use the same bridge after an initial miss. A miss must not be cached.
@@ -287,17 +274,27 @@ int main()
     bridge.injectIntoHtml(html);
     const auto injectedHtml = bytesToString(html.bytes);
     require(injectedHtml.find("webview-gui-standalone-devices") != std::string::npos,
-            "standalone HTML injection missing");
+            "standalone style injection missing");
+    require(injectedHtml.find("<script") == std::string::npos,
+            "standalone controller must not be injected inline into CSP-protected HTML");
 
-    require(bridge.provideResource("/__webview_gui/standalone-devices.js", script),
-            "standalone script resource missing");
-    const auto scriptText = bytesToString(script.bytes);
-    require(scriptText.find("nativeReceiverInstalled") != std::string::npos,
+    bridge.injectIntoHtml(editorScript);
+    const auto augmentedScript = bytesToString(editorScript.bytes);
+    require(augmentedScript.find(originalScript) == 0,
+            "editor JavaScript prefix changed");
+    require(augmentedScript.find("__webviewGuiStandaloneDevices") != std::string::npos,
+            "standalone controller was not appended to same-origin editor JavaScript");
+    require(augmentedScript.find("nativeReceiverInstalled") != std::string::npos,
             "native receiver retry state missing");
-    require(scriptText.find("probeAttempts") != std::string::npos,
+    require(augmentedScript.find("probeAttempts") != std::string::npos,
             "bounded probe state missing");
-    require(scriptText.find("setTimeout(probe,50)") != std::string::npos,
+    require(augmentedScript.find("setTimeout(probe,50)") != std::string::npos,
             "receiver retry timer missing");
+
+    const auto onceSize = editorScript.bytes.size();
+    bridge.injectIntoHtml(editorScript);
+    require(editorScript.bytes.size() == onceSize,
+            "controller augmentation must be idempotent");
 
     std::vector<unsigned char> response;
     const auto sender = [&response](const unsigned char *data, size_t size) {
