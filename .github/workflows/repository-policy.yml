@@ -19,3 +19,72 @@ jobs:
 
       - name: Verify stable required workflows requalify main
         run: cmake -P tests/ci_policy_tests.cmake
+
+  finalize-issue-62-docs:
+    if: github.event_name == 'pull_request' && github.head_ref == 'feat/62-vite-react-ui'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: feat/62-vite-react-ui
+          fetch-depth: 0
+      - name: Patch frontend documentation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('examples/README.md')
+          text = path.read_text()
+          anchor = '## Native CLAP validator reproduction\n'
+          if anchor not in text:
+              raise SystemExit('README anchor not found')
+          section = r'''## Frontend projects and embedded WebView resources
+
+Gain and PolySynth use normal offline frontend projects under `examples/gain/ui/` and `examples/polysynth/ui/`. Each project is authored with **Vite 7.1.4**, **React 19.1.1**, and **Tailwind CSS 4.1.13**. CI uses Node.js **20.19.4** with npm 10.8.x; local example builds require Node.js >= 20.19.0. Both directories commit `package-lock.json`, and production builds use `npm ci` rather than resolving ambient package versions.
+
+To work on either frontend independently:
+
+```bash
+cd examples/gain/ui       # or examples/polysynth/ui
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+```
+
+The normal CMake example build does not require a separate frontend command. When Gain or PolySynth is enabled, `webview_gui_add_web_resources()` installs the pinned frontend dependencies into the build tree, runs Vite, cleans the previous `dist/`, and converts the complete production tree into a generated binary-safe C++ resource table. For example:
+
+```bash
+cmake -S examples -B build-examples -G Ninja \
+  -DWEBVIEW_GUI_SOURCE_DIR="$PWD" \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+cmake --build build-examples --parallel
+```
+
+The generated resource API stores each URI, MIME type, byte pointer, and explicit byte count. Nested/hashed Vite assets and binary files therefore do not rely on C-string termination or source-tree paths. Resource lookup is allocation-free and is used only by the WebView resource callback; no Node/Vite/resource-generation or WebView work is reachable from `process()`.
+
+Native CLAP, VST3, AU and standalone wrappers all link the same generated resource target. WCLAP packaging copies the **same Vite `dist/` tree** into the `.wclap` bundle before adding canonical preset resources, so there is no second browser application or divergent frontend build. Every production editor is self-contained and requires no CDN or runtime dev server.
+
+To add an image, font, JSON file or other static asset, place it under the frontend `public/` directory when it needs a stable root URI, or import/reference it from `src/` when Vite should fingerprint it. MIME handling covers the supported web asset types and falls back to `application/octet-stream` for arbitrary binary data. Source/config/package changes are build dependencies; the build recreates `dist/` before generation so deleted assets cannot survive in native or WCLAP artifacts.
+
+Production source maps are disabled. Set `WEBVIEW_GUI_UI_SOURCEMAPS=1` only when invoking Vite manually for a development build; CMake release/resource builds intentionally force them off.
+
+The frontend toolchain remains example-only: the repository's default library configuration keeps `WEBVIEW_GUI_BUILD_EXAMPLES=OFF`, does not call the resource helper, and therefore does not discover Node/npm or expose frontend implementation details through the installed `webview-gui` package.
+
+'''
+          if section not in text:
+              text = text.replace(anchor, section + anchor, 1)
+          path.write_text(text)
+          Path('.github/workflows/issue62-docs-patch.yml').unlink(missing_ok=True)
+      - name: Restore policy workflow and commit documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout HEAD^ -- .github/workflows/repository-policy.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "[#62] document Vite resource architecture"
+          git pull --rebase origin feat/62-vite-react-ui
+          git push origin HEAD:feat/62-vite-react-ui
