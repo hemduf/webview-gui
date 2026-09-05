@@ -102,55 +102,42 @@ int main()
 {
     auto host = makeHost();
     StandaloneDeviceBridge bridge{&host};
-    require(bridge.available(), "fake standalone extension is not visible");
+    const auto initScript = bridge.initScript();
+    require(!initScript.empty(), "fake standalone extension did not produce an init script");
 
-    bool editorScriptServed = false;
+    bool htmlServed = false;
     auto gui = WebviewGui::createUnique(
         WebviewGui::COCOA,
         "/index.html",
         [&](const char *path, WebviewGui::Resource &resource)
         {
-            if (!path)
+            if (!path || std::strcmp(path, "/index.html") != 0)
                 return false;
 
-            if (std::strcmp(path, "/index.html") == 0) {
-                // Match the CSP used by the real Gain and PolySynth editors:
-                // injected inline JavaScript must remain blocked, while the
-                // existing same-origin editor script is authorized.
-                static constexpr const char html[] =
-                    "<!doctype html><html><head>"
-                    "<meta http-equiv=\"Content-Security-Policy\" "
-                    "content=\"default-src 'none'; style-src 'unsafe-inline'; "
-                    "script-src 'self'; img-src data:\">"
-                    "<title>standalone-bridge</title></head>"
-                    "<body><main>editor</main><script src=\"editor.js\" defer></script></body></html>";
-                resource.mediaType = "text/html; charset=utf-8";
-                resource.bytes.assign(html, html + sizeof(html) - 1);
-                bridge.injectIntoHtml(resource);
-                return true;
-            }
-
-            if (std::strcmp(path, "/editor.js") == 0) {
-                static constexpr const char editorScript[] =
-                    "window.__exampleEditorLoaded = true;";
-                resource.mediaType = "text/javascript; charset=utf-8";
-                resource.bytes.assign(editorScript, editorScript + sizeof(editorScript) - 1);
-                bridge.injectIntoHtml(resource);
-                editorScriptServed = true;
-                return true;
-            }
-
-            return false;
-        });
+            // Match the real Gain/PolySynth CSP. The standalone controller is a
+            // native WebKit init script, so `script-src 'self'` must not block it.
+            static constexpr const char html[] =
+                "<!doctype html><html><head>"
+                "<meta http-equiv=\"Content-Security-Policy\" "
+                "content=\"default-src 'none'; style-src 'unsafe-inline'; "
+                "script-src 'self'; img-src data:\">"
+                "<title>standalone-bridge</title></head>"
+                "<body><main>editor</main></body></html>";
+            resource.mediaType = "text/html; charset=utf-8";
+            resource.bytes.assign(html, html + sizeof(html) - 1);
+            bridge.injectIntoHtml(resource);
+            htmlServed = true;
+            return true;
+        },
+        initScript);
 
     require(gui != nullptr, "WKWebView creation failed");
 
     std::atomic<int> queryCount{0};
     const auto snapshot = makeSnapshot();
 
-    // The page can begin loading before receive is assigned. The production
-    // bridge must therefore retry WVDQ long enough for this callback to become
-    // available, then stop probing once WVDJ has been accepted by the script.
+    // The page can begin loading before receive is assigned. The controller
+    // retries WVDQ for a bounded startup window, then stops once WVDJ arrives.
     gui->receive = [&](const unsigned char *bytes, std::size_t size)
     {
         if (size != 4 || std::memcmp(bytes, "WVDQ", 4) != 0)
@@ -161,12 +148,12 @@ int main()
 
     pumpFor(std::chrono::milliseconds{1400});
 
-    require(editorScriptServed, "same-origin editor JavaScript was never requested");
+    require(htmlServed, "editor HTML was never requested");
     const auto queries = queryCount.load(std::memory_order_relaxed);
-    require(queries > 0, "augmented editor JavaScript never reached the native bridge");
+    require(queries > 0, "native standalone init script never reached the CHOC bridge");
     require(queries <= 6,
-            "WVDJ was not accepted by the JavaScript receiver; bounded probe kept retrying");
+            "WVDJ was not accepted by the native init-script receiver; probe kept retrying");
 
-    std::puts("standalone-device-bridge WKWebView CSP runtime smoke passed");
+    std::puts("standalone-device-bridge WKWebView CSP init-script smoke passed");
     return 0;
 }
