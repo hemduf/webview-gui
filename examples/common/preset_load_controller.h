@@ -1,51 +1,11 @@
 #pragma once
 
 #include "preset_clap_contract.h"
+#include "presets/preset_document.h"
 
 #if defined(__wasi__)
-
-namespace webview_gui::examples::presets {
-
-inline void notifyPresetLoadFailure(const clap_host_t *host,
-                                    const clap_host_preset_load_t *hostPresetLoad,
-                                    std::uint32_t locationKind,
-                                    const char *location,
-                                    const char *loadKey,
-                                    const PresetResult &result) noexcept {
-    if (host && hostPresetLoad && hostPresetLoad->on_error) {
-        hostPresetLoad->on_error(host,
-                                 locationKind,
-                                 location,
-                                 loadKey,
-                                 result.osError,
-                                 "WCLAP preset loading is deferred to #94");
-    }
-}
-
-template <typename CommitFn>
-[[nodiscard]] bool loadPresetFromLocation(PresetCatalog &,
-                                          std::uint32_t locationKind,
-                                          const char *location,
-                                          const char *loadKey,
-                                          const clap_host_t *host,
-                                          const clap_host_preset_load_t *hostPresetLoad,
-                                          CommitFn &&) noexcept {
-    const auto result = PresetResult::unsupported(
-        "WCLAP preset loading is deferred to #94");
-    notifyPresetLoadFailure(host,
-                            hostPresetLoad,
-                            locationKind,
-                            location,
-                            loadKey,
-                            result);
-    return false;
-}
-
-} // namespace webview_gui::examples::presets
-
-#else
-
-#include "presets/preset_document.h"
+#include "preset_wasi_production_catalog.h"
+#endif
 
 #include <clap/ext/params.h>
 #include <clap/factory/preset-discovery.h>
@@ -55,6 +15,14 @@ template <typename CommitFn>
 #include <string_view>
 #include <utility>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#define WEBVIEW_GUI_PRESET_LOAD_TRY try
+#define WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL catch (...)
+#else
+#define WEBVIEW_GUI_PRESET_LOAD_TRY if (true)
+#define WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL else if (false)
+#endif
+
 namespace webview_gui::examples::presets {
 
 class PresetDocumentStateSink final : public PresetStateSink {
@@ -62,14 +30,14 @@ public:
     bool beginCandidate(std::string_view targetPluginId) noexcept override {
         if (building_ || targetPluginId.empty())
             return false;
-        try {
+        WEBVIEW_GUI_PRESET_LOAD_TRY {
             document_ = {};
             document_.metadata.targetPluginId.assign(targetPluginId.data(), targetPluginId.size());
             document_.metadata.name = "CLAP preset load candidate";
             building_ = true;
             completed_ = false;
             return true;
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL {
             document_ = {};
             building_ = false;
             completed_ = false;
@@ -80,10 +48,10 @@ public:
     bool setParameter(std::uint32_t stableParameterId, double value) noexcept override {
         if (!building_)
             return false;
-        try {
+        WEBVIEW_GUI_PRESET_LOAD_TRY {
             document_.parameters.push_back({stableParameterId, value});
             return true;
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL {
             return false;
         }
     }
@@ -118,7 +86,7 @@ inline void notifyLoadError(const clap_host_t *host,
     if (!host || !hostPresetLoad || !hostPresetLoad->on_error)
         return;
 
-    try {
+    WEBVIEW_GUI_PRESET_LOAD_TRY {
         const std::string message = result.message.empty()
                                         ? std::string{"preset load failed"}
                                         : std::string{result.message};
@@ -128,7 +96,7 @@ inline void notifyLoadError(const clap_host_t *host,
                                  loadKey,
                                  result.osError,
                                  message.c_str());
-    } catch (...) {
+    } WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL {
         hostPresetLoad->on_error(host,
                                  locationKind,
                                  location,
@@ -207,12 +175,12 @@ template <typename CommitFn>
 
     PresetDocumentStateSink sink;
     PresetResult loadResult = PresetResult::error("preset load failed");
-    try {
+    WEBVIEW_GUI_PRESET_LOAD_TRY {
         if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
             loadResult = catalog.loadFactory(loadKey, sink);
         else
             loadResult = catalog.loadFile(location, sink);
-    } catch (...) {
+    } WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL {
         loadResult = PresetResult::error("preset catalog load threw an exception");
     }
 
@@ -239,9 +207,9 @@ template <typename CommitFn>
     }
 
     PresetResult commitResult = PresetResult::error("preset state commit failed");
-    try {
+    WEBVIEW_GUI_PRESET_LOAD_TRY {
         commitResult = std::forward<CommitFn>(commit)(*document);
-    } catch (...) {
+    } WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL {
         commitResult = PresetResult::error("preset state commit threw an exception");
     }
 
@@ -266,4 +234,5 @@ template <typename CommitFn>
 
 } // namespace webview_gui::examples::presets
 
-#endif
+#undef WEBVIEW_GUI_PRESET_LOAD_TRY
+#undef WEBVIEW_GUI_PRESET_LOAD_CATCH_ALL

@@ -38,6 +38,8 @@ function(require_absent haystack_var needle label)
 endfunction()
 
 # Native CLAP validation remains owned by the plug-in development workflows.
+# #95 additionally requires deterministic Preset Discovery + preset-load gates
+# in those same three-OS matrices so the preset surface cannot become advisory.
 foreach(workflow_var IN ITEMS gain_core polysynth_core)
     require_contains(${workflow_var}
         "152b9823e992d782c5c1fd33bca0295478b919aa"
@@ -45,6 +47,16 @@ foreach(workflow_var IN ITEMS gain_core polysynth_core)
     require_contains(${workflow_var} "macos-latest" "macOS validator platform")
     require_contains(${workflow_var} "ubuntu-latest" "Linux validator platform")
     require_contains(${workflow_var} "windows-latest" "Windows validator platform")
+    require_contains(${workflow_var}
+        "webview_gui_examples_preset_discovery_factory"
+        "plug-in-owned Preset Discovery gate")
+    require_contains(${workflow_var}
+        "webview_gui_examples_preset_load"
+        "plug-in-owned preset-load gate")
+    require_contains(${workflow_var}
+        "patch_clap_validator_preset_discovery.cmake"
+        "pinned validator Preset Discovery fix")
+    require_absent(${workflow_var} "continue-on-error" "blocking native validator/preset gate")
 endforeach()
 require_contains(gain_core
     "webview_gui_example_gain_validate"

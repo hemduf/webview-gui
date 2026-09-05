@@ -12,6 +12,14 @@
 #include <string_view>
 #include <type_traits>
 
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#define WEBVIEW_GUI_PRESET_DISCOVERY_TRY try
+#define WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL catch (...)
+#else
+#define WEBVIEW_GUI_PRESET_DISCOVERY_TRY if (true)
+#define WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL else if (false)
+#endif
+
 namespace webview_gui::examples::presets {
 
 namespace detail {
@@ -77,7 +85,7 @@ public:
     bool beginPreset(std::string_view name, std::string_view loadKey) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->begin_preset)
             return false;
-        try {
+        WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
             std::string nameText{name};
             std::string loadKeyText{loadKey};
             const char *loadKeyPtr = loadKey.empty() ? nullptr : loadKeyText.c_str();
@@ -87,7 +95,7 @@ public:
             if (!accepted)
                 cancelled_ = true;
             return accepted;
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
             failed_ = true;
             return false;
         }
@@ -96,11 +104,11 @@ public:
     void setTargetPlugin(std::string_view pluginId) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->add_plugin_id)
             return;
-        try {
+        WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
             std::string idText{pluginId};
             const clap_universal_plugin_id_t universalId{"clap", idText.c_str()};
             receiver_->add_plugin_id(receiver_, &universalId);
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
             failed_ = true;
         }
     }
@@ -108,9 +116,9 @@ public:
     void setFlags(std::uint32_t flags) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->set_flags)
             return;
-        try {
+        WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
             receiver_->set_flags(receiver_, flags);
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
             failed_ = true;
         }
     }
@@ -131,9 +139,9 @@ public:
                        clap_timestamp modification) noexcept override {
         if (failed_ || cancelled_ || !receiver_ || !receiver_->set_timestamps)
             return;
-        try {
+        WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
             receiver_->set_timestamps(receiver_, creation, modification);
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
             failed_ = true;
         }
     }
@@ -148,10 +156,10 @@ private:
     void callString(StringCallback callback, std::string_view text) noexcept {
         if (failed_ || cancelled_ || !receiver_ || !callback)
             return;
-        try {
+        WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
             std::string copy{text};
             callback(receiver_, copy.c_str());
-        } catch (...) {
+        } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
             failed_ = true;
         }
     }
@@ -166,12 +174,12 @@ inline void notifyMetadataError(
     const PresetResult &result) noexcept {
     if (!receiver || !receiver->on_error)
         return;
-    try {
+    WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
         std::string message = result.message.empty()
                                   ? std::string{"preset metadata extraction failed"}
                                   : std::string{result.message};
         receiver->on_error(receiver, result.osError, message.c_str());
-    } catch (...) {
+    } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
     }
 }
 
@@ -229,9 +237,9 @@ class PresetDiscoveryFactoryImpl {
 #if !defined(__wasi__)
                 if (location.empty())
                     return false;
-                try {
+                WEBVIEW_GUI_PRESET_DISCOVERY_TRY {
                     state->nativeUserRoot.assign(location.data(), location.size());
-                } catch (...) {
+                } WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL {
                     return false;
                 }
                 userFilesAvailable = true;
@@ -300,8 +308,9 @@ class PresetDiscoveryFactoryImpl {
             result = PresetResult::unsupported("unsupported preset discovery location kind");
         }
 
-        // Adapter faults (allocation/callback exceptions) are not host-requested
-        // cancellation. Report them even if the catalog saw beginPreset()==false.
+        // Adapter faults are distinct from host-requested cancellation. With
+        // exceptions disabled allocation failures terminate rather than cross the
+        // C ABI; all explicit callback/status failures still fail closed here.
         if (sink.failed()) {
             detail::notifyMetadataError(receiver,
                 PresetResult::error("metadata receiver adapter failed"));
@@ -388,3 +397,6 @@ const void *presetDiscoveryEntryFactory(const char *factoryId) noexcept {
 }
 
 } // namespace webview_gui::examples::presets
+
+#undef WEBVIEW_GUI_PRESET_DISCOVERY_TRY
+#undef WEBVIEW_GUI_PRESET_DISCOVERY_CATCH_ALL
