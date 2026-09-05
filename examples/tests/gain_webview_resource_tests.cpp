@@ -295,79 +295,57 @@ int main() {
     }
 
     const std::string html(htmlOutput.bytes.begin(), htmlOutput.bytes.end());
-    if (!contains(html, "id=\"gain\"") ||
-        !contains(html, "id=\"bypass\"") ||
-        !contains(html, "id=\"gain-value\"") ||
-        !contains(html, "id=\"meter-left\"") ||
-        !contains(html, "id=\"meter-right\"")) {
-        std::cerr << "bundled Gain editor is missing its required control/meter surface\n";
+    if (!contains(html, "id=\"root\"") ||
+        !contains(html, "script-src 'self'") ||
+        !contains(html, "type=\"module\"") ||
+        contains(html, "http://") || contains(html, "https://") || contains(html, "//cdn.")) {
+        std::cerr << "bundled Gain editor is not a self-contained Vite entry point
+";
         plugin->destroy(plugin);
         return 9;
     }
 
-    if (contains(html, "http://") || contains(html, "https://") || contains(html, "//cdn.")) {
-        std::cerr << "bundled Gain editor must not require remote runtime resources\n";
-        plugin->destroy(plugin);
-        return 10;
-    }
-
-    if (!contains(html, "script-src 'self'") ||
-        !contains(html, "<script src=\"gain.js\" defer></script>")) {
-        std::cerr << "bundled Gain editor does not load its same-origin parameter transport script\n";
+    const auto scriptMarker = html.find("<script type=\"module\" crossorigin src=\"");
+    const auto fallbackMarker = html.find("<script type=\"module\" src=\"");
+    const auto marker = scriptMarker != std::string::npos ? scriptMarker : fallbackMarker;
+    if (marker == std::string::npos) {
+        std::cerr << "Vite entry does not reference its module asset
+";
         plugin->destroy(plugin);
         return 90;
     }
-
-    MemoryOutputStream scriptOutput(5);
-    char scriptMime[64] = {};
-    if (!webview->get_resource(plugin, "/gain.js", scriptMime, sizeof(scriptMime),
-                               &scriptOutput.stream) ||
-        std::strcmp(scriptMime, "text/javascript; charset=utf-8") != 0 ||
-        scriptOutput.bytes.empty()) {
-        std::cerr << "bundled Gain parameter transport script was not served correctly\n";
+    const auto src = html.find("src=\"", marker);
+    const auto srcEnd = src == std::string::npos ? std::string::npos : html.find('\"', src + 5u);
+    if (src == std::string::npos || srcEnd == std::string::npos) {
         plugin->destroy(plugin);
         return 91;
     }
-
-    const std::string script(scriptOutput.bytes.begin(), scriptOutput.bytes.end());
-    if (!contains(script, "new ArrayBuffer(16)") ||
-        !contains(script, "bytes.set([0x57, 0x56, 0x47, 0x31])") ||
-        !contains(script, "setFloat64(8, value, true)") ||
-        !contains(script, "window.parent.postMessage(encode(kind, parameter, value), \"*\")") ||
-        !contains(script, "gain.addEventListener(\"input\"") ||
-        !contains(script, "gain.addEventListener(\"pointercancel\"") ||
-        !contains(script, "bypass.addEventListener(\"change\"")) {
-        std::cerr << "Gain editor script does not implement the WVG1 binary control protocol\n";
+    std::string scriptPath = html.substr(src + 5u, srcEnd - (src + 5u));
+    if (!scriptPath.empty() && scriptPath[0] == '.')
+        scriptPath.erase(0u, 1u);
+    if (scriptPath.empty() || scriptPath[0] != '/') {
         plugin->destroy(plugin);
         return 92;
     }
 
-    if (!contains(script, "window.addEventListener(\"message\"") ||
-        !contains(script, "getFloat64(8, true)") ||
-        !contains(script, "gain.value =") ||
-        !contains(script, "bypass.checked =") ||
-        !contains(script, "bytes.set([0x57, 0x56, 0x51, 0x31])") ||
-        !contains(script, "setInterval(requestSync, 33)")) {
-        std::cerr << "Gain editor script does not poll and consume the parameter sync protocol\n";
-        plugin->destroy(plugin);
-        return 94;
-    }
-
-    if (!contains(script, "getFloat32(4, true)") ||
-        !contains(script, "getFloat32(8, true)") ||
-        !contains(script, "meterLeft.value =") ||
-        !contains(script, "meterRight.value =") ||
-        !contains(script, "bytes[2] === 0x4d")) {
-        std::cerr << "Gain editor script does not consume the WVM1 stereo meter protocol\n";
-        plugin->destroy(plugin);
-        return 104;
-    }
-
-    if (contains(script, "JSON.stringify") || contains(script, "fetch(") ||
-        contains(script, "XMLHttpRequest")) {
-        std::cerr << "Gain editor control transport introduced JSON or network I/O\n";
+    MemoryOutputStream scriptOutput(5);
+    char scriptMime[64] = {};
+    if (!webview->get_resource(plugin, scriptPath.c_str(), scriptMime, sizeof(scriptMime),
+                               &scriptOutput.stream) ||
+        std::strcmp(scriptMime, "application/javascript; charset=utf-8") != 0 ||
+        scriptOutput.bytes.empty()) {
+        std::cerr << "bundled Vite JavaScript asset was not served correctly
+";
         plugin->destroy(plugin);
         return 93;
+    }
+    const std::string script(scriptOutput.bytes.begin(), scriptOutput.bytes.end());
+    if (contains(script, "http://") || contains(script, "https://") ||
+        contains(script, "XMLHttpRequest")) {
+        std::cerr << "Gain frontend introduced a remote runtime dependency
+";
+        plugin->destroy(plugin);
+        return 94;
     }
 
     MemoryOutputStream unknownOutput;
