@@ -107,17 +107,16 @@ public:
         static_assert(std::is_nothrow_invocable_v<NoteEndSink &, const clap_event_note_t &>,
                       "PolySynth NOTE_END sink must be noexcept");
 
-        bool dispatchOk = true;
-        auto scheduledSink = [this, &coreEventSink, &voiceSink, &noteEndSink, &dispatchOk](
+        // NoteEventScheduler owns the single post-allocation noteOnDispatched()
+        // callback. The lifecycle sink must only materialize the generation/DSP
+        // voice before that callback runs; invoking the hook here as well would
+        // initialise polyphonic state twice for every NOTE_ON.
+        auto scheduledSink = [this, &voiceSink, &noteEndSink](
                                  const ScheduledNoteEvent &event) noexcept {
             applyScheduled(event, voiceSink, noteEndSink);
-            if (event.kind == ScheduledNoteKind::NoteOn &&
-                !notifyNoteOnDispatched(coreEventSink, event, 0))
-                dispatchOk = false;
         };
-        const bool processed = scheduler_.processWithBoundariesAndEvents(
+        return scheduler_.processWithBoundariesAndEvents(
             events, framesCount, boundarySink, coreEventSink, scheduledSink);
-        return processed && dispatchOk;
     }
 
     template <typename NoteEndSink>
@@ -147,23 +146,6 @@ private:
         std::uint64_t generation = 0;
         VoiceStage stage = VoiceStage::Inactive;
     };
-
-    template <typename CoreEventSink>
-    static auto notifyNoteOnDispatched(CoreEventSink &sink,
-                                       const ScheduledNoteEvent &event,
-                                       int) noexcept
-        -> decltype(static_cast<bool>(sink.noteOnDispatched(event))) {
-        static_assert(noexcept(sink.noteOnDispatched(event)),
-                      "PolySynth NOTE_ON dispatch hook must be noexcept");
-        return static_cast<bool>(sink.noteOnDispatched(event));
-    }
-
-    template <typename CoreEventSink>
-    static bool notifyNoteOnDispatched(CoreEventSink &,
-                                       const ScheduledNoteEvent &,
-                                       long) noexcept {
-        return true;
-    }
 
     void clearStages() noexcept {
         for (auto &slot : slots_)

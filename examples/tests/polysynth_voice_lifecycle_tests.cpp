@@ -9,6 +9,7 @@
 
 namespace {
 
+using webview_gui::examples::polysynth::ScheduledNoteEvent;
 using webview_gui::examples::polysynth::VoiceIdentity;
 using webview_gui::examples::polysynth::VoiceLifecycle;
 using webview_gui::examples::polysynth::VoiceLifecycleEvent;
@@ -87,6 +88,17 @@ struct NoteEndCapture {
 
     std::array<clap_event_note_t, 24> events{};
     std::size_t count = 0;
+};
+
+struct CoreHookCapture {
+    bool operator()(const clap_event_header_t &) noexcept { return true; }
+
+    bool noteOnDispatched(const ScheduledNoteEvent &) noexcept {
+        ++noteOnDispatchCount;
+        return true;
+    }
+
+    std::size_t noteOnDispatchCount = 0;
 };
 
 bool sameIdentity(const VoiceIdentity &identity,
@@ -286,6 +298,30 @@ int main() {
     if (lifecycle.activeCount() != 0 || lifecycle.stage(0) != VoiceStage::Inactive) {
         std::cerr << "voice lifecycle reset leaked active or releasing state\n";
         return 22;
+    }
+
+    // The scheduler is the single owner of the post-allocation noteOnDispatched
+    // hook. VoiceLifecycle must not invoke it a second time after materialising
+    // the generation/DSP voice.
+    lifecycle.reset();
+    if (!lifecycle.configure(1))
+        return 23;
+    InputEvents hookInput;
+    if (!hookInput.pushNote(0, CLAP_EVENT_NOTE_ON, 700, 0, 5, 72))
+        return 24;
+    VoiceCapture hookVoices;
+    NoteEndCapture hookEnds;
+    CoreHookCapture hookCore;
+    auto hookBoundary = [](std::uint32_t) noexcept {};
+    if (!lifecycle.processWithBoundariesAndEvents(&hookInput.input,
+                                                  1,
+                                                  hookBoundary,
+                                                  hookCore,
+                                                  hookVoices,
+                                                  hookEnds) ||
+        hookVoices.count != 1 || hookCore.noteOnDispatchCount != 1) {
+        std::cerr << "NOTE_ON dispatch hook was not invoked exactly once\n";
+        return 25;
     }
 
     return 0;
