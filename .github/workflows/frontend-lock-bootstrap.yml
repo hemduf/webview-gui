@@ -1,0 +1,31 @@
+name: Frontend lockfile bootstrap
+
+on:
+  push:
+    branches: [feat/62-vite-react-ui]
+    paths:
+      - 'examples/gain/ui/package.json'
+      - '.github/workflows/frontend-lock-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+          cache: 'npm'
+          cache-dependency-path: examples/gain/ui/package.json
+      - name: Generate deterministic npm lockfile
+        working-directory: examples/gain/ui
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-package-lock
+          path: examples/gain/ui/package-lock.json
+          if-no-files-found: error
