@@ -43,9 +43,11 @@ if(APPLE)
     target_include_directories(webview_gui_standalone_device_bridge_macos_runtime_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../../include
         ${clap_SOURCE_DIR}/include
+        ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
     )
     target_link_libraries(webview_gui_standalone_device_bridge_macos_runtime_tests PRIVATE
         webview-gui
+        "-framework AppKit"
         "-framework CoreFoundation"
     )
 
