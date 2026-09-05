@@ -4,28 +4,33 @@ on:
   push:
     branches: [feat/62-vite-react-ui]
     paths:
-      - 'examples/gain/ui/package.json'
       - '.github/workflows/frontend-lock-bootstrap.yml'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  generate-lockfile:
+  generate-and-commit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feat/62-vite-react-ui
       - uses: actions/setup-node@v4
         with:
           node-version: '20.19.4'
-          cache: 'npm'
-          cache-dependency-path: examples/gain/ui/package.json
-      - name: Generate deterministic npm lockfile
-        working-directory: examples/gain/ui
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frontend-package-lock
-          path: examples/gain/ui/package-lock.json
-          if-no-files-found: error
+      - name: Generate deterministic lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd examples/gain/ui
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cp package-lock.json ../../polysynth/ui/package-lock.json
+          cd ../../..
+          rm .github/workflows/frontend-lock-bootstrap.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add examples/gain/ui/package-lock.json examples/polysynth/ui/package-lock.json .github/workflows/frontend-lock-bootstrap.yml
+          git commit -m "[#62] commit deterministic frontend lockfiles"
+          git push origin HEAD:feat/62-vite-react-ui
