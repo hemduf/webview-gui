@@ -145,10 +145,9 @@ target_include_directories(webview_gui_preset_browser_protocol_tests PRIVATE
 target_link_libraries(webview_gui_preset_browser_protocol_tests PRIVATE clap)
 target_compile_features(webview_gui_preset_browser_protocol_tests PRIVATE cxx_std_17)
 
-# The browser protocol is compiled into WCLAP/WASI once the WebView integration
-# is enabled. Keep its shared header compatible with that repository-wide
-# -fno-exceptions contract instead of discovering explicit try/catch only after
-# the production WASM target includes it.
+# Protocol/runtime headers are compiled into WCLAP/WASI once browser integration
+# is enabled. Keep the shared surface compatible with the repository-wide
+# -fno-exceptions contract before production WASM targets include it.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_executable(webview_gui_preset_browser_protocol_noexceptions_tests
         preset_browser_protocol_tests.cpp
@@ -175,6 +174,23 @@ target_link_libraries(webview_gui_preset_browser_runtime_tests PRIVATE
 )
 target_compile_features(webview_gui_preset_browser_runtime_tests PRIVATE cxx_std_17)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_executable(webview_gui_preset_browser_runtime_noexceptions_tests
+        preset_browser_runtime_tests.cpp
+    )
+    target_include_directories(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../../common
+        ${CMAKE_CURRENT_LIST_DIR}/../..
+        ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+    )
+    target_link_libraries(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
+        clap
+        webview_gui_preset_contract_native_support
+    )
+    target_compile_features(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE cxx_std_17)
+    target_compile_options(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE -fno-exceptions)
+endif()
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -198,6 +214,10 @@ if(TARGET webview_gui_preset_browser_protocol_noexceptions_tests)
 endif()
 add_test(NAME webview_gui_examples_preset_browser_runtime
     COMMAND webview_gui_preset_browser_runtime_tests)
+if(TARGET webview_gui_preset_browser_runtime_noexceptions_tests)
+    add_test(NAME webview_gui_examples_preset_browser_runtime_noexceptions
+        COMMAND webview_gui_preset_browser_runtime_noexceptions_tests)
+endif()
 add_test(NAME webview_gui_examples_preset_plugin_load_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
