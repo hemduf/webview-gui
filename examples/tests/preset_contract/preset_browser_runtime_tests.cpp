@@ -136,6 +136,24 @@ int main() {
     assert(!applied.has_value());
     assert(snapshots.empty());
 
+    // PolySynth already owns the WVP1 namespace for parameter gestures. The
+    // preset dispatcher must key on the complete WVP2 magic and never consume
+    // those legacy parameter messages.
+    std::uint8_t legacyParameterMessage[24]{};
+    legacyParameterMessage[0] = 'W';
+    legacyParameterMessage[1] = 'V';
+    legacyParameterMessage[2] = 'P';
+    legacyParameterMessage[3] = '1';
+    result = runtime.receive(legacyParameterMessage,
+                             sizeof(legacyParameterMessage),
+                             apply,
+                             capture,
+                             resetInit,
+                             send);
+    assert(!result.handled);
+    assert(!applied.has_value());
+    assert(snapshots.empty());
+
     // Snapshot refreshes storage/catalog state and emits a bounded WVB2 frame.
     auto bytes = request(PresetBrowserCommand::Snapshot);
     result = runtime.receive(bytes.data(), bytes.size(), apply, capture, resetInit, send);
@@ -230,12 +248,12 @@ int main() {
     assert(result.ok());
     assert(controller.model().userCount() == 0u);
 
-    // Malformed WVP traffic is consumed and rejected rather than leaking into
+    // Malformed WVP2 traffic is consumed and rejected rather than leaking into
     // the parameter bridge. No callback executes for the rejected command.
     const auto appliedBeforeInvalid = applied;
     const auto snapshotsBeforeInvalid = snapshots.size();
     bytes = request(PresetBrowserCommand::Snapshot);
-    bytes[3] = '9';
+    bytes[4] = 0xffu;
     result = runtime.receive(bytes.data(), bytes.size(), apply, capture, resetInit, send);
     assert(result.handled);
     assert(!result.ok());
