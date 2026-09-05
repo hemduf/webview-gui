@@ -145,6 +145,22 @@ target_include_directories(webview_gui_preset_browser_protocol_tests PRIVATE
 target_link_libraries(webview_gui_preset_browser_protocol_tests PRIVATE clap)
 target_compile_features(webview_gui_preset_browser_protocol_tests PRIVATE cxx_std_17)
 
+# The browser protocol is compiled into WCLAP/WASI once the WebView integration
+# is enabled. Keep its shared header compatible with that repository-wide
+# -fno-exceptions contract instead of discovering explicit try/catch only after
+# the production WASM target includes it.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_executable(webview_gui_preset_browser_protocol_noexceptions_tests
+        preset_browser_protocol_tests.cpp
+    )
+    target_include_directories(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../../common
+    )
+    target_link_libraries(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE clap)
+    target_compile_features(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE cxx_std_17)
+    target_compile_options(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE -fno-exceptions)
+endif()
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -162,6 +178,10 @@ add_test(NAME webview_gui_examples_preset_browser_controller
     COMMAND webview_gui_preset_browser_controller_tests)
 add_test(NAME webview_gui_examples_preset_browser_protocol
     COMMAND webview_gui_preset_browser_protocol_tests)
+if(TARGET webview_gui_preset_browser_protocol_noexceptions_tests)
+    add_test(NAME webview_gui_examples_preset_browser_protocol_noexceptions
+        COMMAND webview_gui_preset_browser_protocol_noexceptions_tests)
+endif()
 add_test(NAME webview_gui_examples_preset_plugin_load_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
