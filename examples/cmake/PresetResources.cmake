@@ -4,6 +4,8 @@ if(NOT DEFINED WEBVIEW_GUI_SOURCE_DIR OR "${WEBVIEW_GUI_SOURCE_DIR}" STREQUAL ""
     message(FATAL_ERROR "PresetResources.cmake requires WEBVIEW_GUI_SOURCE_DIR")
 endif()
 
+include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiChocDependency.cmake")
+
 set(WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY
     "${WEBVIEW_GUI_SOURCE_DIR}/examples/common/presets/bundled")
 
@@ -65,6 +67,10 @@ function(webview_gui_attach_native_preset_runtime target)
     endif()
     set_property(TARGET ${target} PROPERTY WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED TRUE)
 
+    # PresetResources is also consumed by focused standalone contract projects
+    # that do not add the root webview-gui target. Resolve the exact same pinned
+    # CHOC dependency here rather than relying on root configure side effects.
+    webview_gui_resolve_choc_dependency()
     if(NOT DEFINED WEBVIEW_GUI_CHOC_INCLUDE_DIRS
        OR "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}" STREQUAL "")
         message(FATAL_ERROR
