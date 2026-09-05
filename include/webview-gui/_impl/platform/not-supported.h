@@ -16,6 +16,9 @@ WebviewGui * WebviewGui::create(Platform, const std::string &, const std::string
 WebviewGui * WebviewGui::create(Platform, const std::string &, ResourceGetter) {
 	return nullptr;
 }
+WebviewGui * WebviewGui::create(Platform, const std::string &, ResourceGetter, const std::string &) {
+	return nullptr;
+}
 
 // None of these should ever be called, because no instances can ever be created
 WebviewGui::WebviewGui(WebviewGui::Impl *) {}
