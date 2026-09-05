@@ -13,12 +13,13 @@ FetchContent_Declare(webview_gui_preset_contract_clap
 )
 FetchContent_MakeAvailable(webview_gui_preset_contract_clap)
 
-set(WEBVIEW_GUI_PRESET_TEST_CHOC_DIR
-    ${CMAKE_CURRENT_LIST_DIR}/../../../include/webview-gui/_impl/platform/choc)
-if(NOT EXISTS "${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}/choc/text/choc_JSON.h")
-    message(FATAL_ERROR
-        "Preset contract tests require the repository-pinned CHOC submodule; checkout submodules before configuring")
+set(WEBVIEW_GUI_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
+include("${WEBVIEW_GUI_ROOT}/cmake/WebviewGuiChocDependency.cmake")
+webview_gui_resolve_choc_dependency()
+if(NOT WEBVIEW_GUI_CHOC_INCLUDE_DIRS)
+    message(FATAL_ERROR "Preset contract tests could not resolve the repository-pinned CHOC dependency")
 endif()
+set(WEBVIEW_GUI_PRESET_TEST_CHOC_DIR "${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}")
 
 add_library(webview_gui_preset_contract_native_support STATIC
     ${CMAKE_CURRENT_LIST_DIR}/../../common/preset_production_catalog.cpp
@@ -136,3 +137,11 @@ add_test(NAME webview_gui_examples_preset_entry_factory_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
         -P ${CMAKE_CURRENT_LIST_DIR}/preset_entry_factory_contract.cmake)
+add_test(NAME webview_gui_examples_preset_native_ci_contract
+    COMMAND ${CMAKE_COMMAND}
+        -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_native_ci_contract.cmake)
+add_test(NAME webview_gui_examples_preset_final_qualification_contract
+    COMMAND ${CMAKE_COMMAND}
+        -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_final_qualification_contract.cmake)

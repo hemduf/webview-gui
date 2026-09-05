@@ -36,11 +36,14 @@ The skeleton is intentionally DSP-free. It exists only to qualify CLAP factory/l
 
 ## Native CLAP validator reproduction
 
-Gain and PolySynth keep native CLAP validation in their owner workflows. The validator is pinned to `free-audio/clap-validator` 0.4.1 commit `152b9823e992d782c5c1fd33bca0295478b919aa`; the CI Rust toolchain is 1.95.0. From a clean repository checkout:
+Gain and PolySynth keep native CLAP validation in their owner workflows. The validator is pinned to `free-audio/clap-validator` 0.4.1 commit `152b9823e992d782c5c1fd33bca0295478b919aa`; the CI Rust toolchain is 1.95.0. The pinned validator has two Preset Discovery defects relevant to the current CLAP SDK, so CI applies the repository-owned, drift-checked `patch_clap_validator_preset_discovery.cmake` before compiling it. From a clean repository checkout:
 
 ```bash
 git clone https://github.com/free-audio/clap-validator.git .ci/clap-validator
 git -C .ci/clap-validator checkout 152b9823e992d782c5c1fd33bca0295478b919aa
+cmake \
+  -DVALIDATOR_ROOT="$PWD/.ci/clap-validator" \
+  -P "$PWD/.github/scripts/patch_clap_validator_preset_discovery.cmake"
 rustup toolchain install 1.95.0 --profile minimal
 cargo +1.95.0 build --release --locked \
   --manifest-path .ci/clap-validator/Cargo.toml
@@ -58,11 +61,22 @@ cmake --build build-clap-validator --config Debug --parallel \
   --target webview_gui_example_polysynth_validate
 ```
 
-On Linux, install the same WebView build dependencies used by CI (`ninja-build`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`) before configuring. Each validation target prints the pinned validator commit and exact `.clap` path before running the blocking `validate --only-failed` command.
+The deterministic Preset Discovery and preset-load contracts used by both native owner workflows can be reproduced separately:
+
+```bash
+cmake -S examples/tests/preset_contract -B build-preset-contract
+cmake --build build-preset-contract --config Debug --parallel --target \
+  webview_gui_preset_discovery_factory_tests \
+  webview_gui_preset_load_tests
+ctest --test-dir build-preset-contract -C Debug --output-on-failure --no-tests=error \
+  -R '^(webview_gui_examples_preset_discovery_factory|webview_gui_examples_preset_load)$'
+```
+
+On Linux, install the same WebView build dependencies used by CI (`ninja-build`, `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`) before configuring. Each validation target prints the pinned validator commit and exact `.clap` path before running the blocking `validate --only-failed` command. The focused preset contracts and pinned validator run on macOS, Linux and Windows in both Gain and PolySynth owner workflows.
 
 ## PolySynth CLAP extension matrix
 
-This table is the completed #32 CLAP surface. Every interface marked `Implemented` is returned by the plug-in and covered by deterministic repository contracts. Interfaces owned by dependent tickets are explicitly not advertised here rather than being left as partial capabilities or placeholder extension pointers.
+This table is the completed #32/#37 CLAP surface. Every interface marked `Implemented` is returned by the plug-in and covered by deterministic repository contracts. Interfaces not implemented are explicitly not advertised rather than being left as partial capabilities or placeholder extension pointers.
 
 | CLAP capability | Status | Current contract |
 | --- | --- | --- |
@@ -78,7 +92,8 @@ This table is the completed #32 CLAP surface. Every interface marked `Implemente
 | `clap.render` | Intentionally not advertised | The current DSP has no alternate offline-quality algorithm, so render mode does not influence processing. The pinned CLAP contract explicitly advises not implementing this extension when the information has no effect. |
 | `clap.latency` | Intentionally not advertised | Current processing has zero algorithmic latency, so no latency extension is necessary. If later DSP introduces non-zero latency, the extension must be added with a matching deterministic contract. |
 | `clap.note-name` | Implemented | Publishes deterministic chromatic names for all 128 keys on the single note-input port (`C-1` through `G9`) for every channel. The mapping is static, main-thread-only, allocation-free, and does not affect note processing. |
-| `clap.preset-load/2` | Implemented | #92 exposes transactional preset loading in Gain and PolySynth. `PLUGIN` locations resolve stable bundled factory keys and native `FILE` locations resolve validated user-preset paths. Loading parses and validates into a candidate before mutating live state; failures call `host.preset-load.on_error()` without changing state, successes call `host.preset-load.loaded()` only after commit, and filesystem/serialization work stays off `process()`. Preset Discovery remains a separate #37 stage. |
+| `clap.preset-load/2` | Implemented | Transactional preset loading is exposed by Gain and PolySynth. `PLUGIN` locations resolve stable bundled factory keys and native `FILE` locations resolve validated user-preset paths. Loading parses and validates into a candidate before mutating live state; failures call `host.preset-load.on_error()` without changing state, successes call `host.preset-load.loaded()` only after commit, host parameter values are rescanned after commit, and filesystem/serialization work stays off `process()`. |
+| `clap.preset-discovery-factory/2` | Implemented | Gain and PolySynth expose entry-level Preset Discovery providers with stable provider IDs, `.wvpreset` filetype metadata, processor/WebView-free metadata indexing, native factory and user locations, plug-in universal IDs, and stable bundled `load_key`s. Native CI makes both discovery and preset loading blocking on macOS, Linux and Windows. WCLAP exposes the same factory catalog without pretending a writable native filesystem exists. |
 
 The PolySynth consumes CLAP core events sample-accurately. Qualified event handling covers `NOTE_ON`, `NOTE_OFF`, `NOTE_CHOKE`, generated `NOTE_END`, `PARAM_VALUE`, `PARAM_MOD`, and `NOTE_EXPRESSION` mappings for tuning, volume, pan, brightness, expression, and pressure. Transient per-note modulation/expression state is voice-generation-local and is cleared on reuse/reset rather than entering persistent state. Editor-originated `PARAM_GESTURE_BEGIN` / `PARAM_GESTURE_END` are emitted by the shared #33 GUI path rather than synthesized by the processor.
 
@@ -86,11 +101,11 @@ The #32 polyphonic contract keeps global base values, channel/key/note-targeted 
 
 Fixed stereo synthesis intentionally does not advertise unrelated spatial interfaces such as surround/ambisonics. Other optional CLAP interfaces remain absent unless they have meaningful semantics and deterministic tests; documentation must not use extension discovery as a feature wishlist.
 
-For WCLAP, this matrix describes the shared CLAP implementation rather than a separate WebAssembly fork. WCLAP-specific factory/export execution, WASI assumptions, WebView-only GUI negotiation, and bundle/resource qualification remain governed by #30 and its completed review follow-ups; adding or documenting a native CLAP extension here must not introduce a native OS/WebView/filesystem dependency into the WASM process path.
+For WCLAP, this matrix describes the shared CLAP implementation rather than a separate WebAssembly fork. WCLAP-specific factory/export execution, WASI assumptions, WebView-only GUI negotiation, and bundle/resource qualification remain governed by #30 and the preset qualification. Adding or documenting a native CLAP extension here must not introduce a native OS/WebView/filesystem dependency into the WASM process path.
 
 ## WCLAP / WASI reproduction
 
-Public CI pins WASI SDK 33.0 with SHA-256 `0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce`, `dfl/clap-trap` commit `c75d353dc57140cfceebf96dcbea9c491bef4f10`, and `WebCLAP/wclap-bridge` commit `cd11d22afbe2af350f24cd56e6e0536e5ca86452`. On Linux, the WCLAP bundles can be reproduced from a clean checkout with:
+Public CI pins WASI SDK 33.0 with SHA-256 `0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce`, `dfl/clap-trap` commit `c75d353dc57140cfceebf96dcbea9c491bef4f10`, and the maintained `hemduf/wclap-bridge` fork at commit `92fa28be64c59a6b815793b9dd752fc1d461d635`. The bridge commit is additionally checked for the expected adopted `source/_generic/wclap-module.h` blob and a clean checkout before the host is built. On Linux, the WCLAP bundles can be reproduced from a clean checkout with:
 
 ```bash
 curl --fail --location --retry 3 \
@@ -117,36 +132,70 @@ test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap/module.wasm
 test -f build-polysynth-wclap/WebviewGuiPolySynth.wclap.tar.gz
 ```
 
+WCLAP advertises bundled factory presets through a PLUGIN location and does not advertise native FILE user-preset locations. The same canonical factory catalog is used for Gain and PolySynth, and the packaged bundle validation checks the canonical preset bank before host execution.
+
 The same pinned lifecycle/WebView host used by CI can then validate both bundles:
 
 ```bash
 git clone --filter=blob:none https://github.com/dfl/clap-trap.git .ci/clap-trap
 git -C .ci/clap-trap checkout c75d353dc57140cfceebf96dcbea9c491bef4f10
-git clone --filter=blob:none https://github.com/WebCLAP/wclap-bridge.git \
+git clone --filter=blob:none https://github.com/hemduf/wclap-bridge.git \
   .ci/clap-trap/wclap-bridge
-git -C .ci/clap-trap/wclap-bridge checkout cd11d22afbe2af350f24cd56e6e0536e5ca86452
+git -C .ci/clap-trap/wclap-bridge checkout 92fa28be64c59a6b815793b9dd752fc1d461d635
 git -C .ci/clap-trap/wclap-bridge submodule update --init --recursive
+test "$(git -C .ci/clap-trap/wclap-bridge hash-object source/_generic/wclap-module.h)" = \
+  e568c9a14fb75e07da4d417ad47d4582ce61ac05
+git -C .ci/clap-trap/wclap-bridge diff --exit-code
 
+# Gain lifecycle + Preset Discovery + preset-load qualification.
+python3 .github/scripts/patch_clap_trap_factory_loader.py \
+  --loader-header .ci/clap-trap/include/clap-trap/plugin-loader.h \
+  --loader-source .ci/clap-trap/src/plugin-loader.cpp
 python3 .github/scripts/patch_clap_trap_wclap.py \
   --source .ci/clap-trap/examples/cli.cpp \
   --sync-magic WVQ1
+python3 .github/scripts/patch_clap_trap_wclap_presets.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --preset-load-key gain:trim-minus-6db \
+  --expected-param-id 4096 \
+  --expected-param-value -6
+python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --expected-plugin-id com.webview-gui.example.gain
+python3 .github/scripts/patch_clap_trap_wclap_discovery_concurrency.py \
+  --source .ci/clap-trap/examples/cli.cpp
 cmake -S .ci/clap-trap -B build-clap-trap -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCLAP_TRAP_BUILD_TESTS=OFF
 cmake --build build-clap-trap --target clap-trap-cli --parallel
 ./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
+./build-clap-trap/clap-trap validate build-gain-wclap/WebviewGuiGain.wclap --blocks 4
 
-# Rebuild the same pinned host with the PolySynth instrument smoke contract.
+# PolySynth lifecycle + Preset Discovery + preset-load qualification. Keep the
+# already-patched factory loader, reset only the smoke source, then install the
+# instrument-specific contracts used by the PolySynth owner workflow.
 git -C .ci/clap-trap checkout -- examples/cli.cpp
 python3 .github/scripts/patch_clap_trap_wclap.py \
   --source .ci/clap-trap/examples/cli.cpp \
   --sync-magic WVS1 \
   --instrument
+python3 .github/scripts/patch_clap_trap_wclap_presets.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --preset-load-key polysynth:bass \
+  --expected-param-id 1000 \
+  --expected-param-value -3
+python3 .github/scripts/patch_clap_trap_wclap_discovery_smoke.py \
+  --source .ci/clap-trap/examples/cli.cpp \
+  --expected-plugin-id com.webview-gui.example.polysynth
+python3 .github/scripts/patch_clap_trap_wclap_discovery_concurrency.py \
+  --source .ci/clap-trap/examples/cli.cpp
 cmake --build build-clap-trap --target clap-trap-cli --parallel
+./build-clap-trap/clap-trap validate \
+  build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
 ./build-clap-trap/clap-trap validate \
   build-polysynth-wclap/WebviewGuiPolySynth.wclap --blocks 4
 ```
 
-The WCLAP workflows additionally inspect the WASM import/export table to require `clap_entry`, reject native GUI imports and verify the distributable `.wclap.tar.gz` layout.
+The WCLAP workflows additionally inspect the WASM import/export table to require `clap_entry`, reject native GUI imports, verify the canonical nine-file preset bank and distributable `.wclap.tar.gz` layout, and exercise the Preset Discovery provider/indexer lifecycle, metadata, factory concurrency and `clap.preset-load/2` against each real packaged module twice.
 
 ## Native format projections
 
@@ -225,7 +274,7 @@ python examples/tests/verify_native_artifacts.py \
   --workspace "$PWD"
 ```
 
-This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators. Preset files are not yet part of the artifact gate because the remaining #37 Preset Discovery/packaging qualification is still open; once that stage lands, its bundled preset resources become required here as well.
+This is an artifact boundary check; it does not replace the deterministic processor, GUI, CLAP or format validators. The current preset qualification makes Preset Discovery and `clap.preset-load/2` blocking for native CLAP and verifies the canonical factory bank in real WCLAP packages. WebView preset-browser UX and final per-wrapper preset packaging remain owned by #38 and are not claimed by this #37 qualification.
 
 ### macOS AUv2
 

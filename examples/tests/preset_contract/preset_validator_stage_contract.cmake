@@ -3,30 +3,30 @@ if(NOT DEFINED WEBVIEW_GUI_SOURCE_DIR)
 endif()
 
 set(config_file "${WEBVIEW_GUI_SOURCE_DIR}/clap-validator.toml")
-if(NOT EXISTS "${config_file}")
-    message(FATAL_ERROR
-        "#91 requires an explicit staged clap-validator exception until #95")
+if(EXISTS "${config_file}")
+    file(READ "${config_file}" config)
+else()
+    set(config "")
 endif()
 
-file(READ "${config_file}" config)
-foreach(required IN ITEMS
-        "#95 MUST remove these exclusions"
+foreach(forbidden IN ITEMS
         "preset-discovery-crawl = false"
         "preset-discovery-load = false"
         "preset-discovery-descriptor-consistency = false")
-    string(FIND "${config}" "${required}" position)
-    if(position EQUAL -1)
+    string(FIND "${config}" "${forbidden}" position)
+    if(NOT position EQUAL -1)
         message(FATAL_ERROR
-            "Missing staged validator contract marker: ${required}")
+            "#95 requires Preset Discovery validation to be blocking; remove exclusion: ${forbidden}")
     endif()
 endforeach()
 
-# Keep the exception narrowly scoped. Other validator tests must remain enabled
-# by default, and #95 is responsible for deleting this staged exception rather
-# than broadening it.
+# Once #95 starts, no validator test may be silently disabled by repository
+# configuration. Any future exclusion needs its own reviewed qualification path.
 string(REGEX MATCHALL "[A-Za-z0-9_-]+[ \t]*=[ \t]*false" disabled_tests "${config}")
 list(LENGTH disabled_tests disabled_count)
-if(NOT disabled_count EQUAL 3)
+if(disabled_count GREATER 0)
     message(FATAL_ERROR
-        "Only the three known pinned-validator Preset Discovery bugs may be disabled before #95; found ${disabled_count}")
+        "#95 forbids advisory clap-validator tests; found ${disabled_count} disabled test(s) in clap-validator.toml")
 endif()
+
+message(STATUS "#95 clap-validator preset exclusions are retired")

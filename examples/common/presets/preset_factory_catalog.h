@@ -1,48 +1,11 @@
 #pragma once
 
-#if defined(__wasi__)
-
 #include "../example_plugin_ids.h"
+#include "preset_document.h"
 
-#include <cstddef>
-#include <string_view>
-
-namespace webview_gui::examples::presets {
-
-inline constexpr std::string_view kPresetFileExtension = "wvpreset";
-inline constexpr std::string_view kPresetFileSuffix = ".wvpreset";
-inline constexpr std::string_view kGainFactoryTargetPluginId =
-    plugin_ids::kGainPluginId;
-inline constexpr std::string_view kPolySynthFactoryTargetPluginId =
-    plugin_ids::kPolySynthPluginId;
-
-// #94 owns real WCLAP Preset Discovery + factory loading. Until that bounded
-// stage lands, keep the #92 instance build free of the CHOC JSON parser and do
-// not synthesize factory data in WASI.
-class FactoryPresetCatalog {
-public:
-    [[nodiscard]] constexpr std::size_t size() const noexcept { return 0u; }
-    [[nodiscard]] static constexpr std::string_view fileExtension() noexcept {
-        return kPresetFileExtension;
-    }
-};
-
-[[nodiscard]] inline const FactoryPresetCatalog &gainFactoryPresetCatalog() {
-    static const FactoryPresetCatalog catalog{};
-    return catalog;
-}
-
-[[nodiscard]] inline const FactoryPresetCatalog &polySynthFactoryPresetCatalog() {
-    static const FactoryPresetCatalog catalog{};
-    return catalog;
-}
-
-} // namespace webview_gui::examples::presets
-
-#else
-
-#include "../example_plugin_ids.h"
+#if !defined(__wasi__)
 #include "preset_codec.h"
+#endif
 
 #include <array>
 #include <cstddef>
@@ -76,13 +39,24 @@ struct FactoryPresetResource {
     std::string loadKey;
     PresetContentKind contentKind = PresetContentKind::Factory;
     PresetMetadata metadata;
+    PresetDocument document;
+#if !defined(__wasi__)
     PresetCodecError codecError = PresetCodecError::None;
     std::string bytes;
+#endif
 
     [[nodiscard]] bool valid() const noexcept {
-        return codecError == PresetCodecError::None && !bytes.empty() &&
-               !loadKey.empty() && metadata.factoryLoadKey.has_value() &&
-               *metadata.factoryLoadKey == loadKey;
+        if (loadKey.empty() || !metadata.factoryLoadKey.has_value() ||
+            *metadata.factoryLoadKey != loadKey ||
+            !document.metadata.factoryLoadKey.has_value() ||
+            *document.metadata.factoryLoadKey != loadKey ||
+            !validatePresetDocument(document).ok())
+            return false;
+#if !defined(__wasi__)
+        return codecError == PresetCodecError::None && !bytes.empty();
+#else
+        return true;
+#endif
     }
 };
 
@@ -177,6 +151,9 @@ struct PolyFactoryDefinition {
     std::array<double, 13> values{};
 };
 
+// These definitions are the single in-process source for both native and WASI
+// factory catalogs. Native builds additionally serialize them through #100;
+// WASI keeps the PresetDocument directly so module.wasm never imports CHOC.
 inline constexpr std::array<GainFactoryDefinition, 3> kGainFactoryDefinitions{{
     {"gain:unity",
      "Unity",
@@ -230,18 +207,6 @@ static_assert(factoryDefinitionsHaveUniqueLoadKeys(kGainFactoryDefinitions),
 static_assert(factoryDefinitionsHaveUniqueLoadKeys(kPolyFactoryDefinitions),
               "PolySynth factory definitions must have unique non-empty load keys");
 
-inline FactoryPresetResource makeFactoryResource(PresetDocument document) {
-    FactoryPresetResource resource;
-    resource.loadKey = document.metadata.factoryLoadKey.value_or(std::string{});
-    resource.contentKind = PresetContentKind::Factory;
-    resource.metadata = document.metadata;
-
-    auto encoded = serializePresetDocument(document);
-    resource.codecError = encoded.error;
-    resource.bytes = std::move(encoded.bytes);
-    return resource;
-}
-
 inline PresetMetadata makeMetadata(std::string_view targetPluginId,
                                    std::string_view loadKey,
                                    std::string_view name,
@@ -260,7 +225,7 @@ inline PresetMetadata makeMetadata(std::string_view targetPluginId,
     return metadata;
 }
 
-inline FactoryPresetResource makeGainResource(const GainFactoryDefinition &definition) {
+inline PresetDocument makeGainDocument(const GainFactoryDefinition &definition) {
     PresetDocument document;
     document.metadata = makeMetadata(kGainFactoryTargetPluginId,
                                      definition.loadKey,
@@ -271,10 +236,10 @@ inline FactoryPresetResource makeGainResource(const GainFactoryDefinition &defin
         {0x1000u, definition.gainDb},
         {0x1001u, 0.0},
     };
-    return makeFactoryResource(std::move(document));
+    return document;
 }
 
-inline FactoryPresetResource makePolyResource(const PolyFactoryDefinition &definition) {
+inline PresetDocument makePolyDocument(const PolyFactoryDefinition &definition) {
     PresetDocument document;
     document.metadata = makeMetadata(kPolySynthFactoryTargetPluginId,
                                      definition.loadKey,
@@ -285,7 +250,29 @@ inline FactoryPresetResource makePolyResource(const PolyFactoryDefinition &defin
     for (std::size_t i = 0u; i < definition.values.size(); ++i)
         document.parameters.push_back(
             {static_cast<StableParameterId>(1000u + i), definition.values[i]});
-    return makeFactoryResource(std::move(document));
+    return document;
+}
+
+inline FactoryPresetResource makeFactoryResource(PresetDocument document) {
+    FactoryPresetResource resource;
+    resource.loadKey = document.metadata.factoryLoadKey.value_or(std::string{});
+    resource.contentKind = PresetContentKind::Factory;
+    resource.metadata = document.metadata;
+#if !defined(__wasi__)
+    auto encoded = serializePresetDocument(document);
+    resource.codecError = encoded.error;
+    resource.bytes = std::move(encoded.bytes);
+#endif
+    resource.document = std::move(document);
+    return resource;
+}
+
+inline FactoryPresetResource makeGainResource(const GainFactoryDefinition &definition) {
+    return makeFactoryResource(makeGainDocument(definition));
+}
+
+inline FactoryPresetResource makePolyResource(const PolyFactoryDefinition &definition) {
+    return makeFactoryResource(makePolyDocument(definition));
 }
 
 inline const std::array<FactoryPresetResource, kGainFactoryDefinitions.size()> &
@@ -325,5 +312,3 @@ polyFactoryResources() {
 }
 
 } // namespace webview_gui::examples::presets
-
-#endif

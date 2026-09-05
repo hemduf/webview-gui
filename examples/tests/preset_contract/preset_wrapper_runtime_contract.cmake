@@ -11,7 +11,9 @@ foreach(required IN ITEMS
         "function(webview_gui_attach_native_preset_runtime target)"
         "preset_production_catalog.cpp"
         "native_preset_storage.cpp"
-        "include/webview-gui/_impl/platform/choc"
+        "WebviewGuiChocDependency.cmake"
+        "webview_gui_resolve_choc_dependency()"
+        "WEBVIEW_GUI_CHOC_INCLUDE_DIRS"
         "WEBVIEW_GUI_NATIVE_PRESET_RUNTIME_ATTACHED"
         "if(CMAKE_SYSTEM_NAME STREQUAL \"WASI\")"
         "webview_gui_attach_native_preset_runtime(\${target})")
@@ -21,6 +23,15 @@ foreach(required IN ITEMS
             "#91 wrapper runtime contract missing PresetResources marker: ${required}")
     endif()
 endforeach()
+
+# The maintained CHOC fork is resolved centrally through CPM. Reintroducing the
+# removed physical submodule path would make focused/wrapper projects diverge
+# from the root dependency contract again.
+string(FIND "${resources}" "include/webview-gui/_impl/platform/choc" stale_choc_position)
+if(NOT stale_choc_position EQUAL -1)
+    message(FATAL_ERROR
+        "#91 wrapper runtime must not depend on the removed in-tree CHOC submodule path")
+endif()
 
 # WIN32_LEAN_AND_MEAN must remain local to the preset storage implementation.
 # Propagating it to wrapper targets hides Win32 declarations required by

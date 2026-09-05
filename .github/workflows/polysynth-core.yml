@@ -9,6 +9,9 @@ on:
   pull_request:
     paths:
       - 'examples/polysynth/**'
+      - 'examples/common/preset_*.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
       - 'examples/tests/polysynth_voice_allocator_tests.cpp'
       - 'examples/tests/polysynth_note_scheduler_tests.cpp'
       - 'examples/tests/polysynth_voice_lifecycle_tests.cpp'
@@ -38,6 +41,9 @@ on:
       - 'examples/tests/polysynth_tail_tests.cpp'
       - 'examples/tests/polysynth_validator_ci_contract.cmake'
       - 'examples/tests/polysynth_extension_matrix_contract.cmake'
+      - 'examples/tests/preset_contract/**'
+      - 'clap-validator.toml'
+      - '.github/scripts/patch_clap_validator_preset_discovery.cmake'
       - 'examples/README.md'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/polysynth-core.yml'
@@ -116,6 +122,20 @@ jobs:
           ctest --test-dir build-polysynth-core -C Debug --output-on-failure
           --no-tests=error -R '^webview_gui_examples_polysynth_(voice_allocator|note_scheduler|voice_lifecycle|voice_engine|amp_envelope|amp_envelope_parameter|filter|mix_controls|filter_envelope|oscillator_tuning|polyphonic_parameter_state|event_stream|parameter_model|parameter_event|note_expression|pan_expression|brightness_expression|expression_expression|pressure_expression|note_expression_stream|clap_ports|param_flush_polyphony|voice_info|state|state_snapshot_concurrency|state_context|tail)$'
 
+      - name: Configure PolySynth-owned preset contracts
+        run: cmake -S examples/tests/preset_contract -B build-polysynth-preset-contract
+
+      - name: Build PolySynth-owned preset contracts
+        run: >-
+          cmake --build build-polysynth-preset-contract --config Debug --parallel --target
+          webview_gui_preset_discovery_factory_tests
+          webview_gui_preset_load_tests
+
+      - name: Run PolySynth-owned preset discovery/load contracts
+        run: >-
+          ctest --test-dir build-polysynth-preset-contract -C Debug --output-on-failure --no-tests=error
+          -R '^(webview_gui_examples_preset_discovery_factory|webview_gui_examples_preset_load)$'
+
       - name: Run PolySynth extension matrix contract
         run: >-
           cmake
@@ -160,6 +180,12 @@ jobs:
 
       - name: Print pinned clap-validator commit
         run: git -C clap-validator rev-parse HEAD
+
+      - name: Patch pinned clap-validator Preset Discovery defects
+        run: >-
+          cmake
+          -DVALIDATOR_ROOT="${{ github.workspace }}/clap-validator"
+          -P "${{ github.workspace }}/.github/scripts/patch_clap_validator_preset_discovery.cmake"
 
       - name: Install clap-validator Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal

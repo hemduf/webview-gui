@@ -2,7 +2,7 @@
 
 #include "polysynth_plugin.h"
 #include "../common/preset_discovery_factory.h"
-#include "../common/preset_production_catalog.h"
+#include "../common/preset_runtime_catalog.h"
 #include "../common/presets/preset_factory_catalog.h"
 
 #include <memory>

@@ -1,4 +1,5 @@
 #include "../polysynth_plugin.h"
+#include "../polysynth_preset_discovery.h"
 #include "polysynth_wclap_proxy.h"
 
 #include <clap/clap.h>
@@ -61,8 +62,12 @@ bool CLAP_ABI polysynthWclapEntryInit(const char *) { return true; }
 void CLAP_ABI polysynthWclapEntryDeinit() {}
 
 const void *CLAP_ABI polysynthWclapEntryGetFactory(const char *factoryId) {
-    if (factoryId && std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
+    if (!factoryId)
+        return nullptr;
+    if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
         return &kWclapFactory;
+    if (presets::classifyPresetClapId(factoryId) == presets::ClapPresetSurface::EntryFactory)
+        return polysynthPresetDiscoveryFactory();
     return nullptr;
 }
 

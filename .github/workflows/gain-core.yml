@@ -9,6 +9,9 @@ on:
   pull_request:
     paths:
       - 'examples/gain/**'
+      - 'examples/common/preset_*.h'
+      - 'examples/common/preset_production_catalog.cpp'
+      - 'examples/common/presets/**'
       - 'examples/tests/gain_core_tests.cpp'
       - 'examples/tests/gain_meter_tests.cpp'
       - 'examples/tests/gain_clap_adapter_tests.cpp'
@@ -19,6 +22,9 @@ on:
       - 'examples/tests/gain_native_gui_contract.cmake'
       - 'examples/tests/gain_native_gui_tests.cpp'
       - 'examples/tests/gain_validator_ci_contract.cmake'
+      - 'examples/tests/preset_contract/**'
+      - 'clap-validator.toml'
+      - '.github/scripts/patch_clap_validator_preset_discovery.cmake'
       - 'examples/CMakeLists.txt'
       - '.github/workflows/gain-core.yml'
   workflow_dispatch:
@@ -72,6 +78,20 @@ jobs:
           ctest --test-dir build-gain-core -C Debug --output-on-failure
           --no-tests=error -R '^webview_gui_examples_gain_(core|meter|clap_adapter|state_host_sync|webview_resource|webview_param|webview_backpressure|native_gui)$'
 
+      - name: Configure Gain-owned preset contracts
+        run: cmake -S examples/tests/preset_contract -B build-gain-preset-contract
+
+      - name: Build Gain-owned preset contracts
+        run: >-
+          cmake --build build-gain-preset-contract --config Debug --parallel --target
+          webview_gui_preset_discovery_factory_tests
+          webview_gui_preset_load_tests
+
+      - name: Run Gain-owned preset discovery/load contracts
+        run: >-
+          ctest --test-dir build-gain-preset-contract -C Debug --output-on-failure --no-tests=error
+          -R '^(webview_gui_examples_preset_discovery_factory|webview_gui_examples_preset_load)$'
+
       - name: Run Gain validator CI contract
         run: >-
           cmake
@@ -108,6 +128,12 @@ jobs:
 
       - name: Print pinned clap-validator commit
         run: git -C clap-validator rev-parse HEAD
+
+      - name: Patch pinned clap-validator Preset Discovery defects
+        run: >-
+          cmake
+          -DVALIDATOR_ROOT="${{ github.workspace }}/clap-validator"
+          -P "${{ github.workspace }}/.github/scripts/patch_clap_validator_preset_discovery.cmake"
 
       - name: Install clap-validator Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal
