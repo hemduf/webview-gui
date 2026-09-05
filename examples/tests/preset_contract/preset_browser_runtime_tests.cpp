@@ -23,6 +23,7 @@ public:
     std::optional<std::string> nativeFileRoot() const override { return std::nullopt; }
 
     PresetStorageListResult list() const override {
+        ++listCount_;
         PresetStorageListResult result;
         for (const auto &entry : entries_)
             result.entries.push_back({entry.identity, entry.document.metadata});
@@ -69,6 +70,8 @@ public:
         return status;
     }
 
+    [[nodiscard]] int listCount() const noexcept { return listCount_; }
+
 private:
     struct Entry {
         std::string identity;
@@ -77,6 +80,7 @@ private:
 
     std::string targetPluginId_;
     std::vector<Entry> entries_;
+    mutable int listCount_ = 0;
 };
 
 PresetDocument userDocument(std::string name, double gainDb) {
@@ -154,16 +158,34 @@ int main() {
     assert(!applied.has_value());
     assert(snapshots.empty());
 
-    // Snapshot refreshes storage/catalog state and emits a bounded WVB2 frame.
+    // Snapshot polling is storage-free. Before the explicit refresh it emits an
+    // empty-but-valid model and must not enumerate the user backend.
     auto bytes = request(PresetBrowserCommand::Snapshot);
     result = runtime.receive(bytes.data(), bytes.size(), apply, capture, resetInit, send);
     assert(result.ok());
-    assert(controller.model().factoryCount() == 3u);
-    assert(!snapshots.empty());
+    assert(storage.listCount() == 0);
     auto decoded = decodePresetBrowserSnapshotForTest(snapshots.back().data(), snapshots.back().size());
+    assert(decoded.ok());
+    assert(decoded.entries.empty());
+    assert(decoded.userMutationsAvailable);
+
+    // Refresh is the explicit storage/catalog rescan and emits the new complete
+    // snapshot after enumeration.
+    bytes = request(PresetBrowserCommand::Refresh);
+    result = runtime.receive(bytes.data(), bytes.size(), apply, capture, resetInit, send);
+    assert(result.ok());
+    assert(storage.listCount() == 1);
+    assert(controller.model().factoryCount() == 3u);
+    decoded = decodePresetBrowserSnapshotForTest(snapshots.back().data(), snapshots.back().size());
     assert(decoded.ok());
     assert(decoded.entries.size() == 3u);
     assert(decoded.userMutationsAvailable);
+
+    // Repeated snapshot polling does not re-enumerate storage.
+    bytes = request(PresetBrowserCommand::Snapshot);
+    result = runtime.receive(bytes.data(), bytes.size(), apply, capture, resetInit, send);
+    assert(result.ok());
+    assert(storage.listCount() == 1);
 
     // Successful editor load commits processor/base state before current-preset
     // identity is advanced.
