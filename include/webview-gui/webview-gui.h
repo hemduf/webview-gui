@@ -45,6 +45,11 @@ struct WebviewGui {
 	// The starting URL may be relative for these:
 	WEBVIEW_GUI_IMPL static WebviewGui * create(Platform platform, const std::string &startUrl, const std::string &baseDir);
 	WEBVIEW_GUI_IMPL static WebviewGui * create(Platform platform, const std::string &startUrl, ResourceGetter getter);
+	// Native-only trusted bootstrap executed by the backend before page scripts.
+	// This is intentionally separate from page HTML/CSP and is useful for small
+	// host-owned bridges. Pass an empty string when no additional bootstrap is needed.
+	WEBVIEW_GUI_IMPL static WebviewGui * create(Platform platform, const std::string &startUrl,
+	                                             ResourceGetter getter, const std::string &initScript);
 	WEBVIEW_GUI_IMPL ~WebviewGui();
 	
 	// Convenience template for creating shared/unique pointers
