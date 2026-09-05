@@ -3,6 +3,11 @@ name: Standalone device bridge runtime contract
 on:
   pull_request:
     paths:
+      - "include/webview-gui/webview-gui.h"
+      - "include/webview-gui/clap-webview-gui.h"
+      - "include/webview-gui/_impl/platform/choc.h"
+      - "include/webview-gui/_impl/platform/not-supported.h"
+      - "include/webview-gui/_impl/platform/webview-only.h"
       - "include/webview-gui/_impl/standalone_device_bridge.h"
       - "include/webview-gui/standalone-device-control.h"
       - "tests/standalone_device_bridge/**"
@@ -10,6 +15,11 @@ on:
   push:
     branches: [main]
     paths:
+      - "include/webview-gui/webview-gui.h"
+      - "include/webview-gui/clap-webview-gui.h"
+      - "include/webview-gui/_impl/platform/choc.h"
+      - "include/webview-gui/_impl/platform/not-supported.h"
+      - "include/webview-gui/_impl/platform/webview-only.h"
       - "include/webview-gui/_impl/standalone_device_bridge.h"
       - "include/webview-gui/standalone-device-control.h"
       - "tests/standalone_device_bridge/**"
