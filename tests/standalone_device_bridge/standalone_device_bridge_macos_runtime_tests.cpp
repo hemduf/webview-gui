@@ -104,6 +104,7 @@ int main()
     StandaloneDeviceBridge bridge{&host};
     require(bridge.available(), "fake standalone extension is not visible");
 
+    bool editorScriptServed = false;
     auto gui = WebviewGui::createUnique(
         WebviewGui::COCOA,
         "/index.html",
@@ -113,16 +114,33 @@ int main()
                 return false;
 
             if (std::strcmp(path, "/index.html") == 0) {
+                // Match the CSP used by the real Gain and PolySynth editors:
+                // injected inline JavaScript must remain blocked, while the
+                // existing same-origin editor script is authorized.
                 static constexpr const char html[] =
-                    "<!doctype html><html><head><title>standalone-bridge</title></head>"
-                    "<body><main>editor</main></body></html>";
+                    "<!doctype html><html><head>"
+                    "<meta http-equiv=\"Content-Security-Policy\" "
+                    "content=\"default-src 'none'; style-src 'unsafe-inline'; "
+                    "script-src 'self'; img-src data:\">"
+                    "<title>standalone-bridge</title></head>"
+                    "<body><main>editor</main><script src=\"editor.js\" defer></script></body></html>";
                 resource.mediaType = "text/html; charset=utf-8";
                 resource.bytes.assign(html, html + sizeof(html) - 1);
                 bridge.injectIntoHtml(resource);
                 return true;
             }
 
-            return bridge.provideResource(path, resource);
+            if (std::strcmp(path, "/editor.js") == 0) {
+                static constexpr const char editorScript[] =
+                    "window.__exampleEditorLoaded = true;";
+                resource.mediaType = "text/javascript; charset=utf-8";
+                resource.bytes.assign(editorScript, editorScript + sizeof(editorScript) - 1);
+                bridge.injectIntoHtml(resource);
+                editorScriptServed = true;
+                return true;
+            }
+
+            return false;
         });
 
     require(gui != nullptr, "WKWebView creation failed");
@@ -143,11 +161,12 @@ int main()
 
     pumpFor(std::chrono::milliseconds{1400});
 
+    require(editorScriptServed, "same-origin editor JavaScript was never requested");
     const auto queries = queryCount.load(std::memory_order_relaxed);
-    require(queries > 0, "injected JavaScript never reached the native bridge");
+    require(queries > 0, "augmented editor JavaScript never reached the native bridge");
     require(queries <= 6,
             "WVDJ was not accepted by the JavaScript receiver; bounded probe kept retrying");
 
-    std::puts("standalone-device-bridge WKWebView runtime smoke passed");
+    std::puts("standalone-device-bridge WKWebView CSP runtime smoke passed");
     return 0;
 }
