@@ -32,6 +32,18 @@ namespace preset_browser_detail {
 
 using BaseProxy = detail::PolySynthWclapPluginProxy;
 
+struct PolySynthPresetBrowserProxy;
+
+// The browser proxy contains non-standard-layout controller/storage objects, so
+// never recover it with container-of/reinterpret_cast from clap_plugin_t. The
+// already-qualified BaseProxy remains standard-layout; a derived state object
+// carries the explicit owner back-pointer without touching the audio-thread
+// event representation or requiring a global registry/lock.
+struct BrowserProxyState final : detail::ProxyState {
+    explicit BrowserProxyState(const clap_host_t *host) noexcept : detail::ProxyState(host) {}
+    PolySynthPresetBrowserProxy *owner = nullptr;
+};
+
 inline constexpr char kPresetBrowserScriptUri[] = "/preset-browser.js";
 inline constexpr char kPresetBrowserScriptMime[] = "text/javascript; charset=utf-8";
 
@@ -253,28 +265,32 @@ struct PolySynthPresetBrowserProxy {
     presets::PresetBrowserRuntime browserRuntime;
     std::atomic<bool> presetDirtyPending{false};
 
-    PolySynthPresetBrowserProxy(const clap_plugin_t *inner, detail::ProxyState *state) noexcept
+    PolySynthPresetBrowserProxy(const clap_plugin_t *inner, BrowserProxyState *state) noexcept
         : base(inner, state),
           browserStorage(kPolySynthPluginId),
           browserController(presets::polySynthFactoryPresetCatalog(),
                             std::string{kPolySynthPluginId},
                             browserStorage.get()),
           browserRuntime(browserController) {
+        state->owner = this;
         base.plugin.destroy = proxyDestroy;
         base.plugin.process = inner->process ? proxyProcess : nullptr;
         base.plugin.get_extension = proxyGetExtension;
     }
 
     static PolySynthPresetBrowserProxy *from(const clap_plugin_t *outer) noexcept {
-        return reinterpret_cast<PolySynthPresetBrowserProxy *>(
-            const_cast<clap_plugin_t *>(outer));
+        auto *baseProxy = BaseProxy::from(outer);
+        if (!baseProxy || !baseProxy->state)
+            return nullptr;
+        auto *state = static_cast<BrowserProxyState *>(baseProxy->state);
+        return state->owner;
     }
 
     static void CLAP_ABI proxyDestroy(const clap_plugin_t *outer) {
         auto *self = from(outer);
         if (!self)
             return;
-        auto *state = self->base.state;
+        auto *state = static_cast<BrowserProxyState *>(self->base.state);
         const auto *inner = self->base.innerPlugin;
         self->base.state = nullptr;
         self->base.innerPlugin = nullptr;
@@ -282,6 +298,7 @@ struct PolySynthPresetBrowserProxy {
         self->base.initialized = false;
         self->base.active = false;
         if (state) {
+            state->owner = nullptr;
             if (state->guiCreated) {
                 state->uiQueue.closeOpenGestures();
                 state->gui.destroy();
@@ -308,9 +325,6 @@ struct PolySynthPresetBrowserProxy {
         if (!self || !id)
             return nullptr;
 
-        // Preserve the historical pre-init WebView probe accepted by the base
-        // proxy, but return this wrapper's stable table so WVP2 is available as
-        // soon as the GUI is created.
         if (std::strcmp(id, ::webview_gui::CLAP_EXT_WEBVIEW) == 0)
             return &webviewProxy;
 
@@ -639,11 +653,6 @@ struct PolySynthPresetBrowserProxy {
     };
 };
 
-static_assert(std::is_standard_layout_v<PolySynthPresetBrowserProxy>,
-              "PolySynth preset browser proxy must remain standard-layout");
-static_assert(offsetof(PolySynthPresetBrowserProxy, base) == 0u,
-              "PolySynth preset browser proxy requires the CLAP base proxy first");
-
 } // namespace preset_browser_detail
 
 inline const clap_plugin_t *wrapPolySynthPresetBrowserPlugin(const clap_plugin_t *inner,
@@ -651,7 +660,7 @@ inline const clap_plugin_t *wrapPolySynthPresetBrowserPlugin(const clap_plugin_t
     if (!inner || !host || !inner->init || !inner->destroy || !inner->get_extension ||
         !inner->process)
         return nullptr;
-    auto *state = new (std::nothrow) detail::ProxyState(host);
+    auto *state = new (std::nothrow) preset_browser_detail::BrowserProxyState(host);
     if (!state)
         return nullptr;
     auto *proxy = new (std::nothrow) preset_browser_detail::PolySynthPresetBrowserProxy(inner, state);
