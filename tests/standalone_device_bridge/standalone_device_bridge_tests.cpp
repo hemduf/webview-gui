@@ -54,6 +54,9 @@ bool CLAP_ABI audioApiInfo(const clap_host_t *, uint32_t index,
 {
     if (!info || index >= 2)
         return false;
+
+    // Intentionally fail the first item. The bridge must still produce valid
+    // JSON without a leading comma before the second item.
     if (index == 0)
         return false;
 
@@ -253,9 +256,34 @@ int main()
     html.mediaType = "text/html; charset=utf-8";
     const std::string originalHtml = "<!doctype html><html><body>editor</body></html>";
     html.bytes.assign(originalHtml.begin(), originalHtml.end());
+
+    require(bridge.initScript().empty(),
+            "non-standalone host must not expose a native init script");
     bridge.injectIntoHtml(html);
     require(bytesToString(html.bytes) == originalHtml,
             "non-standalone host must not receive injected UI");
+
+    // Re-use the same bridge after an initial miss. A miss must not be cached.
+    fake.exposeExtension = true;
+    const auto initScript = bridge.initScript();
+    require(!initScript.empty(), "standalone native init script missing after late discovery");
+    require(initScript.find("__webviewGuiStandaloneDevices") != std::string::npos,
+            "standalone init-script guard missing");
+    require(initScript.find("nativeReceiverInstalled") != std::string::npos,
+            "native receiver retry state missing");
+    require(initScript.find("probeAttempts") != std::string::npos,
+            "bounded probe state missing");
+    require(initScript.find("setTimeout(probe,50)") != std::string::npos,
+            "receiver retry timer missing");
+    require(initScript.find("DOMContentLoaded") != std::string::npos,
+            "native init script must wait for the editor DOM before creating controls");
+
+    bridge.injectIntoHtml(html);
+    const auto injectedHtml = bytesToString(html.bytes);
+    require(injectedHtml.find("webview-gui-standalone-devices") != std::string::npos,
+            "standalone style injection missing");
+    require(injectedHtml.find("<script") == std::string::npos,
+            "standalone controller must not be injected into CSP-protected HTML");
 
     WebviewGui::Resource editorScript;
     editorScript.mediaType = "text/javascript; charset=utf-8";
@@ -263,38 +291,7 @@ int main()
     editorScript.bytes.assign(originalScript.begin(), originalScript.end());
     bridge.injectIntoHtml(editorScript);
     require(bytesToString(editorScript.bytes) == originalScript,
-            "non-standalone host must not mutate editor JavaScript");
-
-    WebviewGui::Resource privateScript;
-    require(!bridge.provideResource("/__webview_gui/standalone-devices.js", privateScript),
-            "non-standalone host must not expose the private script");
-
-    // Re-use the same bridge after an initial miss. A miss must not be cached.
-    fake.exposeExtension = true;
-    bridge.injectIntoHtml(html);
-    const auto injectedHtml = bytesToString(html.bytes);
-    require(injectedHtml.find("webview-gui-standalone-devices") != std::string::npos,
-            "standalone style injection missing");
-    require(injectedHtml.find("<script") == std::string::npos,
-            "standalone controller must not be injected inline into CSP-protected HTML");
-
-    bridge.injectIntoHtml(editorScript);
-    const auto augmentedScript = bytesToString(editorScript.bytes);
-    require(augmentedScript.find(originalScript) == 0,
-            "editor JavaScript prefix changed");
-    require(augmentedScript.find("__webviewGuiStandaloneDevices") != std::string::npos,
-            "standalone controller was not appended to same-origin editor JavaScript");
-    require(augmentedScript.find("nativeReceiverInstalled") != std::string::npos,
-            "native receiver retry state missing");
-    require(augmentedScript.find("probeAttempts") != std::string::npos,
-            "bounded probe state missing");
-    require(augmentedScript.find("setTimeout(probe,50)") != std::string::npos,
-            "receiver retry timer missing");
-
-    const auto onceSize = editorScript.bytes.size();
-    bridge.injectIntoHtml(editorScript);
-    require(editorScript.bytes.size() == onceSize,
-            "controller augmentation must be idempotent");
+            "standalone host must not mutate plug-in JavaScript resources");
 
     std::vector<unsigned char> response;
     const auto sender = [&response](const unsigned char *data, size_t size) {
@@ -351,6 +348,6 @@ int main()
     require(bridge.receive(refreshCommand, sizeof(refreshCommand), sender), "WVDR was not consumed");
     require(fake.refreshCalls == 1, "WVDR did not reach host extension");
 
-    std::puts("standalone-device-bridge runtime contract passed");
+    std::puts("standalone-device-bridge native init-script contract passed");
     return 0;
 }
