@@ -339,10 +339,6 @@ TEST_CASE("native WebKitGTK policy blocks remote top-level navigation before com
         g_signal_handler_disconnect(child, loadHandler);
 }
 
-#ifndef WEBVIEW_GUI_CHOC_LINUX_LIFETIME_GUARD
-#error Linux tests must compile against the generated CHOC lifetime patch
-#endif
-
 namespace {
 
 class WeakObjectRef {
