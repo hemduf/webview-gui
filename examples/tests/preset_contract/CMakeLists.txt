@@ -161,6 +161,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(webview_gui_preset_browser_protocol_noexceptions_tests PRIVATE -fno-exceptions)
 endif()
 
+add_executable(webview_gui_preset_browser_runtime_tests
+    preset_browser_runtime_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_runtime_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_browser_runtime_tests PRIVATE
+    clap
+    webview_gui_preset_contract_native_support
+)
+target_compile_features(webview_gui_preset_browser_runtime_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -182,6 +196,8 @@ if(TARGET webview_gui_preset_browser_protocol_noexceptions_tests)
     add_test(NAME webview_gui_examples_preset_browser_protocol_noexceptions
         COMMAND webview_gui_preset_browser_protocol_noexceptions_tests)
 endif()
+add_test(NAME webview_gui_examples_preset_browser_runtime
+    COMMAND webview_gui_preset_browser_runtime_tests)
 add_test(NAME webview_gui_examples_preset_plugin_load_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
