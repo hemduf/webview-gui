@@ -70,13 +70,12 @@ int main() {
         bytes.push_back(0);
         assert(!decodePresetBrowserRequest(bytes.data(), bytes.size()).ok());
     }
-    assert(!decodePresetBrowserRequest(
-                request(PresetBrowserCommand::Load,
-                        PresetBrowserContentKind::None,
-                        "x").data(),
-                request(PresetBrowserCommand::Load,
-                        PresetBrowserContentKind::None,
-                        "x").size()).ok());
+    {
+        const auto bytes = request(PresetBrowserCommand::Load,
+                                   PresetBrowserContentKind::None,
+                                   "x");
+        assert(!decodePresetBrowserRequest(bytes.data(), bytes.size()).ok());
+    }
     {
         const auto bytes = request(PresetBrowserCommand::SaveAs,
                                    PresetBrowserContentKind::Factory,
