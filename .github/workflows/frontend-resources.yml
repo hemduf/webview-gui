@@ -1,0 +1,99 @@
+name: Frontend resource qualification
+
+on:
+  pull_request:
+    paths:
+      - 'examples/gain/ui/**'
+      - 'examples/polysynth/ui/**'
+      - 'examples/cmake/WebResources.cmake'
+      - 'examples/cmake/GenerateWebResources.cmake'
+      - 'examples/tests/web_resources_contract/**'
+      - 'examples/CMakeLists.txt'
+      - 'cmake/WebviewGuiWclap.cmake'
+      - '.github/workflows/frontend-resources.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'examples/gain/ui/**'
+      - 'examples/polysynth/ui/**'
+      - 'examples/cmake/WebResources.cmake'
+      - 'examples/cmake/GenerateWebResources.cmake'
+      - 'examples/tests/web_resources_contract/**'
+      - 'examples/CMakeLists.txt'
+      - 'cmake/WebviewGuiWclap.cmake'
+      - '.github/workflows/frontend-resources.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resource-pipeline:
+    name: Resources (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+          cache: npm
+          cache-dependency-path: |
+            examples/gain/ui/package-lock.json
+            examples/polysynth/ui/package-lock.json
+      - name: Qualify Gain Vite/resource pipeline
+        run: cmake -S examples/tests/web_resources_contract -B build-web-resources -G Ninja
+      - run: cmake --build build-web-resources --target webview_gui_web_resources_contract --parallel
+      - run: ctest --test-dir build-web-resources --output-on-failure --no-tests=error
+      - name: Build PolySynth frontend from its committed lockfile
+        working-directory: examples/polysynth/ui
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - working-directory: examples/polysynth/ui
+        run: npm run build
+
+  incremental-contract:
+    name: Incremental/stale-delete contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+      - name: Stage an isolated frontend source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a examples/gain/ui "$RUNNER_TEMP/ui"
+      - name: Initial resource build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S examples/tests/web_resources_contract -B build-web-resources -G Ninja \
+            -DWEBVIEW_GUI_TEST_UI_SOURCE_DIR="$RUNNER_TEMP/ui"
+          cmake --build build-web-resources --target fixture_resources --parallel
+          sha256sum build-web-resources/web-resources/fixture_resources/generated/fixture_resources_resources.cpp \
+            > "$RUNNER_TEMP/before.sha"
+      - name: Source edit rebuilds generated resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\n/* issue-62 incremental probe */\n' >> "$RUNNER_TEMP/ui/src/index.css"
+          cmake --build build-web-resources --target fixture_resources --parallel
+          sha256sum build-web-resources/web-resources/fixture_resources/generated/fixture_resources_resources.cpp \
+            > "$RUNNER_TEMP/after.sha"
+          ! cmp -s "$RUNNER_TEMP/before.sha" "$RUNNER_TEMP/after.sha"
+      - name: Added and deleted assets cannot remain stale
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'stale-probe\n' > "$RUNNER_TEMP/ui/public/stale-probe.txt"
+          cmake --build build-web-resources --target fixture_resources --parallel
+          grep -F '"/stale-probe.txt"' \
+            build-web-resources/web-resources/fixture_resources/generated/fixture_resources_resources.cpp
+          rm "$RUNNER_TEMP/ui/public/stale-probe.txt"
+          cmake --build build-web-resources --target fixture_resources --parallel
+          ! grep -F '"/stale-probe.txt"' \
+            build-web-resources/web-resources/fixture_resources/generated/fixture_resources_resources.cpp
