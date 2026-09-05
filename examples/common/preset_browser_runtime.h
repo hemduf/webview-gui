@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace webview_gui::examples::presets {
@@ -176,6 +177,26 @@ private:
         return emitSnapshot(sendSnapshot);
     }
 
+    template <typename ApplyDocument>
+    [[nodiscard]] static bool applyResolved(ApplyDocument &applyDocument,
+                                            PresetBrowserContentKind kind,
+                                            std::string_view identity,
+                                            const PresetDocument &document) {
+        // Most plug-ins can commit the already-resolved document directly. A
+        // wrapper may instead need the stable browser selection as well (for
+        // example PolySynth reuses its canonical clap.preset-load/2 path so the
+        // host notification and lock-free state handoff stay single-sourced).
+        if constexpr (std::is_invocable_r_v<bool,
+                                            ApplyDocument &,
+                                            PresetBrowserContentKind,
+                                            std::string_view,
+                                            const PresetDocument &>) {
+            return applyDocument(kind, identity, document);
+        } else {
+            return applyDocument(document);
+        }
+    }
+
     template <typename ApplyDocument, typename SendSnapshot>
     [[nodiscard]] PresetBrowserRuntimeResult loadAndSend(PresetBrowserContentKind kind,
                                                          std::string_view identity,
@@ -184,7 +205,7 @@ private:
         const auto resolved = controller_.resolve(kind, identity);
         if (!resolved.ok())
             return controllerFailure(resolved.error);
-        if (!applyDocument(*resolved.document))
+        if (!applyResolved(applyDocument, kind, identity, *resolved.document))
             return failure(PresetBrowserRuntimeError::ApplyFailed);
         if (!controller_.markLoaded(kind, identity))
             return controllerFailure(PresetBrowserControllerError::InvalidBrowserSnapshot);
