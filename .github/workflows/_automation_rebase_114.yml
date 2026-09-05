@@ -39,15 +39,15 @@ jobs:
             fi
             git checkout --ours -- "$expected"
             python3 - <<'PY'
-from pathlib import Path
-path = Path('include/webview-gui/_impl/platform/choc.h')
-text = path.read_text()
-old = 'options.webviewGuiDeferInitialResourceNavigation = true;'
-new = 'options.deferInitialResourceNavigation = true;'
-if text.count(old) != 1:
-    raise SystemExit(f'expected exactly one legacy CHOC option, found {text.count(old)}')
-path.write_text(text.replace(old, new))
-PY
+          from pathlib import Path
+          path = Path('include/webview-gui/_impl/platform/choc.h')
+          text = path.read_text()
+          old = 'options.webviewGuiDeferInitialResourceNavigation = true;'
+          new = 'options.deferInitialResourceNavigation = true;'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one legacy CHOC option, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
             git add "$expected"
             git commit --no-edit
           fi
