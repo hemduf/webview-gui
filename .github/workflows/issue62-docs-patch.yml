@@ -74,3 +74,5 @@ The frontend toolchain remains example-only: the repository's default library co
           git commit -m "[#62] document Vite resource architecture"
           git pull --rebase origin feat/62-vite-react-ui
           git push origin HEAD:feat/62-vite-react-ui
+
+# This workflow is intentionally self-deleting after the documentation commit.
