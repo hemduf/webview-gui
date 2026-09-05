@@ -175,17 +175,20 @@ target_link_libraries(webview_gui_preset_browser_runtime_tests PRIVATE
 target_compile_features(webview_gui_preset_browser_runtime_tests PRIVATE cxx_std_17)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Exercise the same portable catalog/storage shape used by WCLAP/WASI. The
+    # native preset codec intentionally depends on exception-enabled CHOC and is
+    # already qualified by the normal runtime target above; pulling it into this
+    # target would test an impossible native configuration rather than WASI.
     add_executable(webview_gui_preset_browser_runtime_noexceptions_tests
         preset_browser_runtime_tests.cpp
     )
     target_include_directories(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../../common
         ${CMAKE_CURRENT_LIST_DIR}/../..
-        ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
     )
-    target_link_libraries(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
-        clap
-        webview_gui_preset_contract_native_support
+    target_link_libraries(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE clap)
+    target_compile_definitions(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE
+        __wasi__=1
     )
     target_compile_features(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE cxx_std_17)
     target_compile_options(webview_gui_preset_browser_runtime_noexceptions_tests PRIVATE -fno-exceptions)
