@@ -269,7 +269,9 @@ inline void appendString(std::vector<std::uint8_t> &bytes, std::string_view text
         return result;
     }
 
+#if defined(__cpp_exceptions)
     try {
+#endif
         auto &bytes = result.bytes;
         bytes.reserve(kSnapshotHeaderBytes + current.identity.size() +
                       current.name.size() + entries.size() * kEntryHeaderBytes);
@@ -297,10 +299,12 @@ inline void appendString(std::vector<std::uint8_t> &bytes, std::string_view text
             bytes.clear();
             result.error = PresetBrowserProtocolError::LimitExceeded;
         }
+#if defined(__cpp_exceptions)
     } catch (...) {
         result.bytes.clear();
         result.error = PresetBrowserProtocolError::LimitExceeded;
     }
+#endif
     return result;
 }
 
@@ -348,7 +352,9 @@ inline void appendString(std::vector<std::uint8_t> &bytes, std::string_view text
         return result;
     }
 
+#if defined(__cpp_exceptions)
     try {
+#endif
         result.entries.reserve(entryCount);
         for (std::size_t entryIndex = 0u; entryIndex < entryCount; ++entryIndex) {
             if (offset > size || kEntryHeaderBytes > size - offset) {
@@ -393,11 +399,13 @@ inline void appendString(std::vector<std::uint8_t> &bytes, std::string_view text
             }
             result.entries.push_back(std::move(entry));
         }
+#if defined(__cpp_exceptions)
     } catch (...) {
         result.entries.clear();
         result.error = PresetBrowserProtocolError::LimitExceeded;
         return result;
     }
+#endif
 
     if (offset != size)
         result.error = PresetBrowserProtocolError::InvalidMessage;
