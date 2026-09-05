@@ -51,6 +51,11 @@ function(webview_gui_add_web_resources)
     set(_header "${_generated}/${WEB_TARGET}_resources.h")
     set(_source "${_generated}/${WEB_TARGET}_resources.cpp")
 
+    # CMake resolves WORKING_DIRECTORY before executing a custom command, so
+    # this directory must already exist at generate time rather than relying on
+    # the first command in the rule to create it.
+    file(MAKE_DIRECTORY "${_workspace}")
+
     file(GLOB_RECURSE _web_inputs CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE
         "${WEB_SOURCE_DIR}/*")
     list(FILTER _web_inputs EXCLUDE REGEX "/(node_modules|dist)/")
