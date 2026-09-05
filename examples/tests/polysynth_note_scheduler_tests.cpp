@@ -3,6 +3,7 @@
 #include <clap/clap.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -50,6 +51,29 @@ struct InputEvents {
         return true;
     }
 
+    bool pushMidi(uint32_t time,
+                  uint16_t port,
+                  uint8_t status,
+                  uint8_t data1,
+                  uint8_t data2) noexcept {
+        if (count >= kCapacity)
+            return false;
+
+        auto &event = midis[count];
+        event = {};
+        event.header.size = sizeof(event);
+        event.header.time = time;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_MIDI;
+        event.port_index = port;
+        event.data[0] = status;
+        event.data[1] = data1;
+        event.data[2] = data2;
+        headers[count] = &event.header;
+        ++count;
+        return true;
+    }
+
     bool pushForeign(uint32_t time) noexcept {
         if (count >= kCapacity)
             return false;
@@ -79,6 +103,7 @@ struct InputEvents {
     }
 
     std::array<clap_event_note_t, kCapacity> notes{};
+    std::array<clap_event_midi_t, kCapacity> midis{};
     std::array<clap_event_header_t, kCapacity> foreign{};
     std::array<const clap_event_header_t *, kCapacity> headers{};
     uint32_t count = 0;
@@ -152,8 +177,6 @@ int main() {
         return 3;
     }
 
-    // Same-time events must preserve host list order. These two note-ons also
-    // prove that identical key/channel values remain isolated by note_id.
     if (!expectEvent(capture, 0, 2, ScheduledNoteKind::NoteOn, 0, 100, 0, 1, 60,
                      "first same-time NOTE_ON") ||
         !expectEvent(capture, 1, 2, ScheduledNoteKind::NoteOn, 1, 101, 0, 1, 60,
@@ -161,17 +184,11 @@ int main() {
         return 4;
     }
 
-    // NOTE_OFF may wildcard any address field. A note_id-only release must
-    // target the concrete active identity without leaking to the overlapping
-    // same-key voice.
     if (!expectEvent(capture, 2, 5, ScheduledNoteKind::NoteOff, 0, 100, 0, 1, 60,
                      "note-id wildcard NOTE_OFF")) {
         return 5;
     }
 
-    // NOTE_OFF begins release but does not retire a voice. A later key-scoped
-    // NOTE_CHOKE therefore still sees both active identities. Fan-out order is
-    // deterministic ascending voice-slot order.
     if (!expectEvent(capture, 3, 7, ScheduledNoteKind::NoteChoke, 0, 100, 0, 1, 60,
                      "first wildcard NOTE_CHOKE") ||
         !expectEvent(capture, 4, 7, ScheduledNoteKind::NoteChoke, 1, 101, 0, 1, 60,
@@ -191,8 +208,6 @@ int main() {
         return 8;
     }
 
-    // Malformed NOTE_ON addresses are ignored rather than allocating a voice:
-    // CLAP requires port/channel/key to be specified for NOTE_ON.
     InputEvents malformed;
     if (!malformed.pushNote(1, CLAP_EVENT_NOTE_ON, 200, -1, 1, 64))
         return 9;
@@ -203,10 +218,6 @@ int main() {
         return 10;
     }
 
-    // Review regression: when deterministic stealing occurs, the old concrete
-    // identity must survive in the scheduled NOTE_ON result. The future voice
-    // engine needs it to emit the correct CLAP NOTE_END for the host voice that
-    // was terminated by stealing.
     scheduler.reset();
     if (!scheduler.configure(1))
         return 11;
@@ -228,10 +239,6 @@ int main() {
         return 14;
     }
 
-    // CLAP process events use offsets inside the current block. An event at
-    // frames_count has no corresponding sample and must not be scheduled or
-    // mutate the allocator; accepting it could later produce an invalid output
-    // NOTE_END at the same out-of-range offset.
     scheduler.reset();
     if (!scheduler.configure(1))
         return 15;
@@ -249,6 +256,203 @@ int main() {
     if (scheduler.activeCount() != 0) {
         std::cerr << "scheduler reset leaked active voice identities\n";
         return 18;
+    }
+
+    NoteEventScheduler portScheduler;
+    if (!portScheduler.configure(1))
+        return 19;
+    InputEvents wrongPort;
+    if (!wrongPort.pushNote(0, CLAP_EVENT_NOTE_ON, 500, 1, 2, 60) ||
+        !wrongPort.pushMidi(1, 1, 0x92u, 60u, 100u))
+        return 20;
+    Capture wrongPortCapture;
+    std::size_t forwardedWrongPortMidi = 0;
+    auto boundary = [](std::uint32_t) noexcept {};
+    auto wrongPortCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_MIDI)
+            ++forwardedWrongPortMidi;
+        return true;
+    };
+    if (!portScheduler.processWithBoundariesAndEvents(
+            &wrongPort.input, 3, boundary, wrongPortCore, wrongPortCapture) ||
+        wrongPortCapture.count != 0 || portScheduler.activeCount() != 0 ||
+        forwardedWrongPortMidi != 1) {
+        std::cerr << "scheduler accepted an event on a nonexistent note port\n";
+        return 21;
+    }
+
+    NoteEventScheduler rpnScheduler;
+    if (!rpnScheduler.configure(1))
+        return 22;
+    InputEvents rpn;
+    if (!rpn.pushMidi(0, 0, 0xb2u, 101u, 0u) ||
+        !rpn.pushMidi(0, 0, 0xb2u, 100u, 0u) ||
+        !rpn.pushMidi(1, 0, 0xb2u, 6u, 12u) ||
+        !rpn.pushMidi(1, 0, 0xb2u, 38u, 127u) ||
+        !rpn.pushMidi(2, 0, 0xb2u, 99u, 1u) ||
+        !rpn.pushMidi(2, 0, 0xb2u, 98u, 2u) ||
+        !rpn.pushMidi(3, 0, 0xb2u, 6u, 24u) ||
+        !rpn.pushMidi(4, 0, 0xe2u, 0x7fu, 0x7fu))
+        return 23;
+
+    double finalTuning = -999.0;
+    std::size_t rawNrpnMessages = 0;
+    auto rpnCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_MIDI) {
+            ++rawNrpnMessages;
+            return true;
+        }
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION &&
+            header.size >= sizeof(clap_event_note_expression_t)) {
+            const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING)
+                finalTuning = event.value;
+        }
+        return true;
+    };
+    Capture rpnCapture;
+    if (!rpnScheduler.processWithBoundariesAndEvents(
+            &rpn.input, 5, boundary, rpnCore, rpnCapture) ||
+        rpnCapture.count != 0 || rawNrpnMessages != 3 ||
+        std::fabs(finalTuning - 13.27) > 1.0e-12) {
+        std::cerr << "RPN cents range or NRPN isolation changed pitch-bend sensitivity\n";
+        return 24;
+    }
+
+    // RP-015 Reset All Controllers is not a power-on reset. In the subset this
+    // adapter models it resets bend/pressure/expression/sustain and the RPN
+    // selector while preserving Channel Volume, Pan, Brightness and the stored
+    // pitch-bend sensitivity value.
+    NoteEventScheduler resetScheduler;
+    if (!resetScheduler.configure(1))
+        return 31;
+    InputEvents resetInput;
+    if (!resetInput.pushMidi(0, 0, 0xb2u, 7u, 64u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 10u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 74u, 127u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 101u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 100u, 0u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 6u, 12u) ||
+        !resetInput.pushMidi(0, 0, 0xb2u, 38u, 127u) ||
+        !resetInput.pushMidi(1, 0, 0xe2u, 0x7fu, 0x7fu) ||
+        !resetInput.pushMidi(1, 0, 0xd2u, 80u, 0u) ||
+        !resetInput.pushMidi(1, 0, 0xb2u, 11u, 32u) ||
+        !resetInput.pushMidi(2, 0, 0xb2u, 121u, 0u) ||
+        !resetInput.pushMidi(3, 0, 0xe2u, 0x7fu, 0x7fu) ||
+        !resetInput.pushMidi(4, 0, 0x92u, 60u, 100u))
+        return 32;
+
+    bool resetBendCentered = false;
+    bool resetPressureCleared = false;
+    bool resetExpressionUsesPreservedVolume = false;
+    bool resetTouchedPanOrBrightness = false;
+    bool rangePreservedAfterReset = false;
+    bool replayPreservedPan = false;
+    bool replayPreservedBrightness = false;
+    bool replayPreservedVolume = false;
+    bool replayPreservedRange = false;
+    std::size_t resetNoteOns = 0;
+    const auto preservedVolume = 64.0 / 127.0;
+    auto resetCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type != CLAP_EVENT_NOTE_EXPRESSION ||
+            header.size < sizeof(clap_event_note_expression_t))
+            return true;
+        const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+        if (event.header.time == 2) {
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+                std::fabs(event.value) <= 1.0e-12)
+                resetBendCentered = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PRESSURE &&
+                std::fabs(event.value) <= 1.0e-12)
+                resetPressureCleared = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_EXPRESSION &&
+                std::fabs(event.value - preservedVolume) <= 1.0e-12)
+                resetExpressionUsesPreservedVolume = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN ||
+                event.expression_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS)
+                resetTouchedPanOrBrightness = true;
+        }
+        if (event.header.time == 3 && event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+            std::fabs(event.value - 13.27) <= 1.0e-12)
+            rangePreservedAfterReset = true;
+        if (event.header.time == 4 && event.key == 60) {
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_TUNING &&
+                std::fabs(event.value - 13.27) <= 1.0e-12)
+                replayPreservedRange = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_EXPRESSION &&
+                std::fabs(event.value - preservedVolume) <= 1.0e-12)
+                replayPreservedVolume = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN &&
+                std::fabs(event.value) <= 1.0e-12)
+                replayPreservedPan = true;
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS &&
+                std::fabs(event.value - 1.0) <= 1.0e-12)
+                replayPreservedBrightness = true;
+        }
+        return true;
+    };
+    Capture resetCapture;
+    auto resetNote = [&](const ScheduledNoteEvent &event) noexcept {
+        resetCapture(event);
+        if (event.kind == ScheduledNoteKind::NoteOn)
+            ++resetNoteOns;
+    };
+    if (!resetScheduler.processWithBoundariesAndEvents(
+            &resetInput.input, 5, boundary, resetCore, resetNote) ||
+        resetNoteOns != 1 || !resetBendCentered || !resetPressureCleared ||
+        !resetExpressionUsesPreservedVolume || resetTouchedPanOrBrightness ||
+        !rangePreservedAfterReset || !replayPreservedPan ||
+        !replayPreservedBrightness || !replayPreservedVolume || !replayPreservedRange) {
+        std::cerr << "MIDI Reset All Controllers violated RP-015 preservation/reset rules\n";
+        return 33;
+    }
+
+    NoteEventScheduler panScheduler;
+    if (!panScheduler.configure(1))
+        return 25;
+    InputEvents panInput;
+    if (!panInput.pushMidi(0, 0, 0xb2u, 10u, 64u) ||
+        !panInput.pushMidi(1, 0, 0xb2u, 10u, 127u))
+        return 26;
+    std::array<double, 2> panValues{};
+    std::size_t panCount = 0;
+    auto panCore = [&](const clap_event_header_t &header) noexcept -> bool {
+        if (header.type == CLAP_EVENT_NOTE_EXPRESSION &&
+            header.size >= sizeof(clap_event_note_expression_t)) {
+            const auto &event = reinterpret_cast<const clap_event_note_expression_t &>(header);
+            if (event.expression_id == CLAP_NOTE_EXPRESSION_PAN && panCount < panValues.size())
+                panValues[panCount++] = event.value;
+        }
+        return true;
+    };
+    Capture panCapture;
+    if (!panScheduler.processWithBoundariesAndEvents(
+            &panInput.input, 2, boundary, panCore, panCapture) ||
+        panCount != 2 || std::fabs(panValues[0] - 0.5) > 1.0e-12 ||
+        std::fabs(panValues[1] - 1.0) > 1.0e-12) {
+        std::cerr << "MIDI CC10 center/endpoints were mapped incorrectly\n";
+        return 27;
+    }
+
+    for (const auto controller : std::array<std::uint8_t, 5>{{123u, 124u, 125u, 126u, 127u}}) {
+        NoteEventScheduler modeScheduler;
+        if (!modeScheduler.configure(1))
+            return 28;
+        InputEvents modeInput;
+        if (!modeInput.pushMidi(0, 0, 0x92u, 60u, 100u) ||
+            !modeInput.pushMidi(1, 0, 0xb2u, controller, 0u))
+            return 29;
+        Capture modeCapture;
+        auto modeCore = [](const clap_event_header_t &) noexcept -> bool { return true; };
+        if (!modeScheduler.processWithBoundariesAndEvents(
+                &modeInput.input, 2, boundary, modeCore, modeCapture) ||
+            modeCapture.count != 2 ||
+            modeCapture.events[0].kind != ScheduledNoteKind::NoteOn ||
+            modeCapture.events[1].kind != ScheduledNoteKind::NoteOff ||
+            modeCapture.events[1].time != 1) {
+            std::cerr << "MIDI Channel Mode message omitted its All Notes Off side effect\n";
+            return 30;
+        }
     }
 
     return 0;

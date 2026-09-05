@@ -5,6 +5,7 @@
 #include "_impl/plugin_support.h"
 #include "_impl/callback_registry.h"
 #include "_impl/bounded_buffer.h"
+#include "_impl/standalone_device_bridge.h"
 
 #include <algorithm>
 #include <cassert>
@@ -32,7 +33,7 @@ struct ClapWebviewGui {
     const clap_host_webview *extHostWebview = nullptr;
 
     ClapWebviewGui(const clap_plugin *plugin=nullptr, const clap_host *host=nullptr)
-        : plugin(plugin), host(host) {
+        : plugin(plugin), host(host), standaloneDevices(host) {
         extPluginGui = &pluginGuiProxy;
     }
 
@@ -42,6 +43,7 @@ struct ClapWebviewGui {
         destroy();
         plugin = nullptr;
         host = nullptr;
+        standaloneDevices.reset(nullptr);
         pluginWebview = nullptr;
         hostWebview = nullptr;
         extHostWebview = nullptr;
@@ -54,6 +56,7 @@ struct ClapWebviewGui {
         destroy();
         plugin = initPlugin;
         host = initHost;
+        standaloneDevices.reset(host);
         initialiseCurrentIdentity();
     }
 
@@ -62,6 +65,7 @@ struct ClapWebviewGui {
             return;
         clearSelf(plugin);
         destroy();
+        standaloneDevices.reset(host);
         initialiseCurrentIdentity();
     }
 
@@ -134,7 +138,13 @@ struct ClapWebviewGui {
             ptr = WebviewGui::create(platform, startUrl.c_str(), baseDir);
         } else {
             ptr = WebviewGui::create(platform, startUrl.c_str(), [this](const char *path, WebviewGui::Resource &resource){
-                if (!isOnGuiThread() || !pluginWebview || !pluginWebview->get_resource || !plugin)
+                if (!isOnGuiThread())
+                    return false;
+
+                if (standaloneDevices.provideResource(path, resource))
+                    return detail::resourceSizeAllowed(resource.bytes.size());
+
+                if (!pluginWebview || !pluginWebview->get_resource || !plugin)
                     return false;
 
                 char mediaType[256] = {0};
@@ -167,6 +177,11 @@ struct ClapWebviewGui {
                     return false;
                 }
                 resource.mediaType = mediaType;
+                standaloneDevices.injectIntoHtml(resource);
+                if (!detail::resourceSizeAllowed(resource.bytes.size())) {
+                    resource.bytes.clear();
+                    return false;
+                }
                 return true;
             });
         }
@@ -176,8 +191,16 @@ struct ClapWebviewGui {
         nativeWebview = std::unique_ptr<WebviewGui>{ptr};
         nativePlatform = platform;
         nativeWebview->receive = [this](const unsigned char *bytes, size_t length){
-            if (isOnGuiThread() && detail::messageSizeAllowed(length)
-                && pluginWebview && pluginWebview->receive && plugin)
+            if (!isOnGuiThread() || !detail::messageSizeAllowed(length))
+                return;
+
+            if (standaloneDevices.receive(bytes, length,
+                                          [this](const unsigned char *message, size_t messageSize) {
+                                              return send(message, messageSize);
+                                          }))
+                return;
+
+            if (pluginWebview && pluginWebview->receive && plugin)
                 pluginWebview->receive(plugin, (const void *)bytes, uint32_t(length));
         };
         usingHostWebview = false;
@@ -256,7 +279,13 @@ struct ClapWebviewGui {
                 return false;
         }
 
-        return parent != nullptr && nativeWebview->attach(parent);
+        if (parent == nullptr || !nativeWebview->attach(parent))
+            return false;
+
+        // Some hosts size their native window from get_size() but do not issue an
+        // initial set_size() call. Apply the remembered CLAP size immediately so
+        // the embedded WebView has a drawable frame before the first user resize.
+        return nativeWebview->trySetSize(width, height);
     }
 
     bool setTransient(const clap_window *) { return false; }
@@ -314,8 +343,8 @@ private:
         }
         return pluginWebview != nullptr
             && pluginWebview->get_uri != nullptr
-            && pluginWebview->get_resource != nullptr
-            && pluginWebview->receive != nullptr;
+            && pluginWebview->receive != nullptr
+            && pluginWebview->get_resource != nullptr;
     }
 
     bool resolveHostWebviewExtension() noexcept {
@@ -344,6 +373,7 @@ private:
 
     void initialiseCurrentIdentity() {
         uiThread.bindToCurrentThread();
+        standaloneDevices.reset(host);
         pluginWebview = nullptr;
         hostWebview = nullptr;
         extHostWebview = nullptr;
@@ -359,6 +389,7 @@ private:
     uint32_t width = 400, height = 250;
     const clap_plugin *plugin = nullptr;
     const clap_host *host = nullptr;
+    detail::StandaloneDeviceBridge standaloneDevices;
     detail::ThreadAffinity uiThread;
     std::unique_ptr<WebviewGui> nativeWebview;
     WebviewGui::Platform nativePlatform = WebviewGui::NONE;
