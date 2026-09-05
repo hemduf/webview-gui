@@ -1,6 +1,7 @@
 #pragma once
 
-#include "preset_codec.h"
+#include "preset_codec_error.h"
+#include "preset_document.h"
 
 #include <cstdint>
 #include <optional>
@@ -12,8 +13,9 @@
 namespace webview_gui::examples::presets {
 
 // Format-neutral user-preset storage boundary. This interface deliberately has
-// no filesystem dependency so WCLAP/WASI and browser/host-backed persistence can
-// use the same preset document/codec contract as native desktop storage.
+// no filesystem or codec implementation dependency so WCLAP/WASI and
+// browser/host-backed persistence can use the same preset document/status
+// contract without pulling CHOC/native storage into module translation units.
 enum class PresetStorageKind : std::uint8_t {
     Unavailable,
     Native,
