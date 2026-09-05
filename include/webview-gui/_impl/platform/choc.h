@@ -324,10 +324,14 @@ WebviewGui * WebviewGui::create(WebviewGui::Platform p,
 			return choc::value::Value{true};
 		});
 
-		const auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
-		if (bridgeBootstrap.empty() || !wv.addInitScript(bridgeBootstrap))
+		auto bridgeBootstrap = detail::bridgeBootstrapInitScript();
+		if (bridgeBootstrap.empty())
 			return;
-		if (!initScript.empty() && !wv.addInitScript(initScript))
+		if (!initScript.empty()) {
+			bridgeBootstrap += '\n';
+			bridgeBootstrap += initScript;
+		}
+		if (!wv.addInitScript(bridgeBootstrap))
 			return;
 
 		wv.navigate(startUri);
