@@ -5,8 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(WEBVIEW_GUI_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../..)
 set(WEBVIEW_GUI_PRESET_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../common/presets)
-set(WEBVIEW_GUI_CHOC_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../include/webview-gui/_impl/platform/choc)
+include("${WEBVIEW_GUI_ROOT}/cmake/WebviewGuiChocDependency.cmake")
+webview_gui_resolve_choc_dependency()
+if(NOT WEBVIEW_GUI_CHOC_INCLUDE_DIRS)
+    message(FATAL_ERROR "Preset core tests could not resolve the repository-pinned CHOC dependency")
+endif()
 
 add_executable(webview_gui_preset_core_tests
     preset_document_tests.cpp
@@ -21,7 +26,7 @@ add_executable(webview_gui_preset_codec_tests
 )
 target_include_directories(webview_gui_preset_codec_tests PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_features(webview_gui_preset_codec_tests PRIVATE cxx_std_17)
 
@@ -30,7 +35,7 @@ add_executable(webview_gui_preset_codec_string_safety_tests
 )
 target_include_directories(webview_gui_preset_codec_string_safety_tests PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_features(webview_gui_preset_codec_string_safety_tests PRIVATE cxx_std_17)
 
@@ -39,7 +44,7 @@ add_executable(webview_gui_preset_factory_catalog_tests
 )
 target_include_directories(webview_gui_preset_factory_catalog_tests PRIVATE
     ${WEBVIEW_GUI_PRESET_INCLUDE_DIR}
-    ${WEBVIEW_GUI_CHOC_INCLUDE_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_features(webview_gui_preset_factory_catalog_tests PRIVATE cxx_std_17)
 
