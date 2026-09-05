@@ -140,3 +140,7 @@ add_test(NAME webview_gui_examples_preset_native_ci_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
         -P ${CMAKE_CURRENT_LIST_DIR}/preset_native_ci_contract.cmake)
+add_test(NAME webview_gui_examples_preset_final_qualification_contract
+    COMMAND ${CMAKE_COMMAND}
+        -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
+        -P ${CMAKE_CURRENT_LIST_DIR}/preset_final_qualification_contract.cmake)
