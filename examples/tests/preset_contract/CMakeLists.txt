@@ -122,6 +122,20 @@ target_include_directories(webview_gui_preset_browser_state_tests PRIVATE
 target_link_libraries(webview_gui_preset_browser_state_tests PRIVATE clap)
 target_compile_features(webview_gui_preset_browser_state_tests PRIVATE cxx_std_17)
 
+add_executable(webview_gui_preset_browser_controller_tests
+    preset_browser_controller_tests.cpp
+)
+target_include_directories(webview_gui_preset_browser_controller_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../common
+    ${CMAKE_CURRENT_LIST_DIR}/../..
+    ${WEBVIEW_GUI_PRESET_TEST_CHOC_DIR}
+)
+target_link_libraries(webview_gui_preset_browser_controller_tests PRIVATE
+    clap
+    webview_gui_preset_contract_native_support
+)
+target_compile_features(webview_gui_preset_browser_controller_tests PRIVATE cxx_std_17)
+
 enable_testing()
 add_test(NAME webview_gui_examples_preset_contract
     COMMAND webview_gui_preset_contract_tests)
@@ -135,6 +149,8 @@ add_test(NAME webview_gui_examples_preset_load
     COMMAND webview_gui_preset_load_tests)
 add_test(NAME webview_gui_examples_preset_browser_state
     COMMAND webview_gui_preset_browser_state_tests)
+add_test(NAME webview_gui_examples_preset_browser_controller
+    COMMAND webview_gui_preset_browser_controller_tests)
 add_test(NAME webview_gui_examples_preset_plugin_load_contract
     COMMAND ${CMAKE_COMMAND}
         -DWEBVIEW_GUI_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}/../../..
