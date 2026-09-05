@@ -1,6 +1,7 @@
 #include "../../common/preset_browser_model.h"
 
 #include <cassert>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
