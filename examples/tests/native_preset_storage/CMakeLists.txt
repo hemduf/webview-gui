@@ -6,9 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(WEBVIEW_GUI_EXAMPLES_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
+set(WEBVIEW_GUI_ROOT ${WEBVIEW_GUI_EXAMPLES_DIR}/..)
 set(WEBVIEW_GUI_COMMON_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/common)
 set(WEBVIEW_GUI_PRESET_DIR ${WEBVIEW_GUI_COMMON_DIR}/presets)
-set(WEBVIEW_GUI_CHOC_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/../include/webview-gui/_impl/platform/choc)
+include("${WEBVIEW_GUI_ROOT}/cmake/WebviewGuiChocDependency.cmake")
+webview_gui_resolve_choc_dependency()
+if(NOT WEBVIEW_GUI_CHOC_INCLUDE_DIRS)
+    message(FATAL_ERROR "Native preset storage tests could not resolve the repository-pinned CHOC dependency")
+endif()
 
 add_library(webview_gui_native_preset_storage STATIC
     ${WEBVIEW_GUI_PRESET_DIR}/native_preset_storage.cpp
@@ -16,7 +21,7 @@ add_library(webview_gui_native_preset_storage STATIC
 target_include_directories(webview_gui_native_preset_storage PUBLIC
     ${WEBVIEW_GUI_COMMON_DIR}
     ${WEBVIEW_GUI_PRESET_DIR}
-    ${WEBVIEW_GUI_CHOC_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_compile_features(webview_gui_native_preset_storage PUBLIC cxx_std_17)
 if(WIN32)
