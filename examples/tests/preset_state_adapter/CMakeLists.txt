@@ -18,11 +18,16 @@ FetchContent_Declare(webview_gui_preset_adapter_clap
 FetchContent_MakeAvailable(webview_gui_preset_adapter_clap)
 
 set(WEBVIEW_GUI_EXAMPLES_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
+set(WEBVIEW_GUI_ROOT ${WEBVIEW_GUI_EXAMPLES_DIR}/..)
 set(WEBVIEW_GUI_GAIN_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/gain)
 set(WEBVIEW_GUI_POLYSYNTH_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/polysynth)
 set(WEBVIEW_GUI_COMMON_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/common)
 set(WEBVIEW_GUI_PRESET_DIR ${WEBVIEW_GUI_COMMON_DIR}/presets)
-set(WEBVIEW_GUI_CHOC_DIR ${WEBVIEW_GUI_EXAMPLES_DIR}/../include/webview-gui/_impl/platform/choc)
+include("${WEBVIEW_GUI_ROOT}/cmake/WebviewGuiChocDependency.cmake")
+webview_gui_resolve_choc_dependency()
+if(NOT WEBVIEW_GUI_CHOC_INCLUDE_DIRS)
+    message(FATAL_ERROR "Preset state adapter tests could not resolve the repository-pinned CHOC dependency")
+endif()
 
 add_executable(webview_gui_preset_gain_state_adapter_tests
     gain_preset_state_tests.cpp
@@ -31,7 +36,7 @@ target_include_directories(webview_gui_preset_gain_state_adapter_tests PRIVATE
     ${WEBVIEW_GUI_GAIN_DIR}
     ${WEBVIEW_GUI_COMMON_DIR}
     ${WEBVIEW_GUI_PRESET_DIR}
-    ${WEBVIEW_GUI_CHOC_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_link_libraries(webview_gui_preset_gain_state_adapter_tests PRIVATE clap)
 target_compile_features(webview_gui_preset_gain_state_adapter_tests PRIVATE cxx_std_17)
@@ -43,7 +48,7 @@ target_include_directories(webview_gui_preset_polysynth_state_adapter_tests PRIV
     ${WEBVIEW_GUI_POLYSYNTH_DIR}
     ${WEBVIEW_GUI_COMMON_DIR}
     ${WEBVIEW_GUI_PRESET_DIR}
-    ${WEBVIEW_GUI_CHOC_DIR}
+    ${WEBVIEW_GUI_CHOC_INCLUDE_DIRS}
 )
 target_link_libraries(webview_gui_preset_polysynth_state_adapter_tests PRIVATE clap)
 target_compile_features(webview_gui_preset_polysynth_state_adapter_tests PRIVATE cxx_std_17)
