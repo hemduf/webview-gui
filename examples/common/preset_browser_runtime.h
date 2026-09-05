@@ -138,10 +138,13 @@ public:
 private:
     [[nodiscard]] static bool looksLikePresetBrowserRequest(const void *buffer,
                                                             std::size_t size) noexcept {
-        if (!buffer || size < 3u)
+        if (!buffer || size < 4u)
             return false;
         const auto *bytes = static_cast<const std::uint8_t *>(buffer);
-        return bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'P';
+        // WVP1 is already the PolySynth parameter-edit protocol. Match the
+        // complete versioned magic so the preset layer can coexist without
+        // stealing existing parameter/gesture traffic.
+        return bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'P' && bytes[3] == '2';
     }
 
     [[nodiscard]] static PresetBrowserRuntimeResult failure(
