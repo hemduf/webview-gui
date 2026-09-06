@@ -9,6 +9,10 @@ on:
       - 'include/webview-gui/clap-webview-gui.h'
       - 'include/webview-gui/_impl/webview-gui.hxx'
       - 'include/webview-gui/_impl/platform/webview-only.h'
+      - 'examples/cmake/WebResources.cmake'
+      - 'examples/cmake/GenerateWebResources.cmake'
+      - 'examples/polysynth/ui/**'
+      - 'examples/polysynth/wclap/**'
       - 'tests/wclap_contract/**'
       - '.github/workflows/wclap-contract.yml'
   workflow_dispatch:
@@ -27,6 +31,13 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20.19.4'
+          cache: npm
+          cache-dependency-path: examples/polysynth/ui/package-lock.json
 
       - name: Install Linux WebView dependencies
         run: |
