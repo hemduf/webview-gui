@@ -192,7 +192,9 @@ int main() {
     processInput.addMod(4u, 1011u, -0.50, 43, 0, 2, 64); // Pan
     processInput.addMod(5u, 1001u, 0.75, 42, 0, 1, 60); // Waveform: not modulatable
     processInput.addMod(6u, 1000u, 0.20, 42, 0, 1, 60); // Master: global-only, targeted invalid
-    processInput.addMod(7u, 1000u, 0.15); // valid global Master modulation
+    processInput.addMod(7u, 1004u, 0.30, 42, 0, 16, 60); // invalid MIDI channel
+    processInput.addMod(8u, 1004u, 0.35, 42, 0, 1, 128); // invalid MIDI key
+    processInput.addMod(9u, 1000u, 0.15); // valid global Master modulation
 
     clap_process_t process{};
     process.frames_count = 16u;
@@ -203,8 +205,8 @@ int main() {
         std::cerr << "proxy process rejected valid modulation input\n";
         return 1;
     }
-    if (gProcessModCount != 6u) {
-        std::cerr << "proxy changed the host event stream delivered to the DSP\n";
+    if (gProcessModCount != 8u) {
+        std::cerr << "proxy changed the raw host event stream delivered to the inner plug-in\n";
         return 2;
     }
 
