@@ -141,6 +141,19 @@ add_test(
     COMMAND webview_gui_polysynth_modulation_telemetry_contract
 )
 
+add_executable(webview_gui_polysynth_modulation_queue_contract
+    polysynth_modulation_queue_contract.cpp
+)
+target_include_directories(webview_gui_polysynth_modulation_queue_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth/wclap"
+    "${clap_SOURCE_DIR}/include"
+)
+
+add_test(
+    NAME webview_gui_polysynth_modulation_queue_contract
+    COMMAND webview_gui_polysynth_modulation_queue_contract
+)
+
 add_executable(webview_gui_polysynth_wclap_state_passthrough_contract
     polysynth_wclap_state_passthrough_contract.cpp
 )
