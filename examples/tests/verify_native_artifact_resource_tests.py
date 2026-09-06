@@ -55,7 +55,8 @@ class NativeArtifactResourceTests(unittest.TestCase):
                 b"prefix\0"
                 b"com.webview-gui.example.polysynth\0"
                 b"<title>webview-gui PolySynth</title>\0"
-                b"/polysynth.js\0suffix"
+                b"/assets/index-12345678.js\0"
+                b"application/javascript; charset=utf-8\0suffix"
             )
             stage_factory_bank(workspace, product)
 
