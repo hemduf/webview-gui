@@ -47,7 +47,7 @@ public:
             const auto *header = events->get(events, index);
             if (!header || header->size < sizeof(clap_event_header_t))
                 return false;
-            if (header->time > process.frames_count)
+            if (header->time >= process.frames_count)
                 return false;
             if (havePreviousEvent && header->time < previousEventTime)
                 return false;
