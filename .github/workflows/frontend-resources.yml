@@ -3,22 +3,26 @@ name: Frontend resource qualification
 on:
   pull_request:
     paths:
+      - 'examples/common/ui/**'
       - 'examples/gain/ui/**'
       - 'examples/polysynth/ui/**'
       - 'examples/cmake/WebResources.cmake'
       - 'examples/cmake/GenerateWebResources.cmake'
       - 'examples/tests/web_resources_contract/**'
+      - 'examples/tests/webview_bridge_transport_tests.mjs'
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - '.github/workflows/frontend-resources.yml'
   push:
     branches: [main]
     paths:
+      - 'examples/common/ui/**'
       - 'examples/gain/ui/**'
       - 'examples/polysynth/ui/**'
       - 'examples/cmake/WebResources.cmake'
       - 'examples/cmake/GenerateWebResources.cmake'
       - 'examples/tests/web_resources_contract/**'
+      - 'examples/tests/webview_bridge_transport_tests.mjs'
       - 'examples/CMakeLists.txt'
       - 'cmake/WebviewGuiWclap.cmake'
       - '.github/workflows/frontend-resources.yml'
@@ -44,6 +48,8 @@ jobs:
           cache-dependency-path: |
             examples/gain/ui/package-lock.json
             examples/polysynth/ui/package-lock.json
+      - name: Qualify native/host-owned WebView UI transport
+        run: node examples/tests/webview_bridge_transport_tests.mjs
       - name: Qualify Gain Vite/resource pipeline
         run: cmake -S examples/tests/web_resources_contract -B build-web-resources -G Ninja
       - run: cmake --build build-web-resources --target webview_gui_web_resources_contract --parallel
