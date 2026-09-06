@@ -38,8 +38,8 @@ jobs:
         run: cmake -S tests/standalone_device_bridge -B build/standalone-device-bridge -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build/standalone-device-bridge --config Release --parallel 2
-      - name: Run protocol contract
-        run: ctest --test-dir build/standalone-device-bridge -C Release --output-on-failure -R '^webview_gui_standalone_device_bridge_tests$'
+      - name: Run protocol and CSP contracts
+        run: ctest --test-dir build/standalone-device-bridge -C Release --output-on-failure
 
   bridge-macos-webview-smoke:
     runs-on: macos-latest

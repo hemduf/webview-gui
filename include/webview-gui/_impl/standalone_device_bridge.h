@@ -30,6 +30,17 @@ public:
         return available() ? std::string{kScript} : std::string{};
     }
 
+    bool serveResource(const char *path, WebviewGui::Resource &resource) noexcept {
+        // Keep the bridge stylesheet same-origin so strict plug-in CSP policies
+        // such as `style-src 'self'` can load it without unsafe-inline.
+        if (!path || std::strcmp(path, kStylePath) != 0 || !available())
+            return false;
+
+        resource.mediaType = "text/css; charset=utf-8";
+        resource.bytes.assign(kStyle, kStyle + std::strlen(kStyle));
+        return true;
+    }
+
     void injectIntoHtml(WebviewGui::Resource &resource) noexcept {
         // Keep DOM augmentation strictly standalone-only. DAW hosts do not expose
         // the private device-control extension and receive the plug-in resource
@@ -41,9 +52,9 @@ public:
         if (html.find(kInjectionMarker) != std::string::npos)
             return;
 
-        // Only style is injected into the page. The controller itself is a native
-        // init script, so page CSP cannot block it and no CSP weakening is needed.
-        const std::string injection = std::string{"\n"} + kStyle + "\n";
+        // The controller itself is a native init script. Styling is loaded through
+        // a bridge-owned same-origin resource so page CSP stays strict.
+        const std::string injection = std::string{"\n"} + kStyleLink + "\n";
         const auto body = html.rfind("</body>");
         if (body == std::string::npos)
             html += injection;
@@ -110,6 +121,7 @@ public:
 
 private:
     static constexpr const char *kInjectionMarker = "webview-gui-standalone-devices";
+    static constexpr const char *kStylePath = "/__webview_gui/standalone-devices.css";
     static constexpr uint32_t kMaxItems = 256;
 
     const clap_wrapper_host_standalone_device_control *resolve() noexcept {
@@ -278,8 +290,10 @@ private:
     const clap_host_t *host_ = nullptr;
     const clap_wrapper_host_standalone_device_control *extension_ = nullptr;
 
-    inline static constexpr const char kStyle[] = R"css(<style id="webview-gui-standalone-devices">
-#wvg-io-button{position:fixed;top:10px;right:10px;z-index:2147483646;border:1px solid rgba(255,255,255,.18);background:#202124;color:#f5f5f5;border-radius:7px;padding:7px 10px;font:600 12px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+    inline static constexpr const char kStyleLink[] =
+        "<link id=\"webview-gui-standalone-devices\" rel=\"stylesheet\" href=\"/__webview_gui/standalone-devices.css\">";
+
+    inline static constexpr const char kStyle[] = R"css(#wvg-io-button{position:fixed;top:10px;right:10px;z-index:2147483646;border:1px solid rgba(255,255,255,.18);background:#202124;color:#f5f5f5;border-radius:7px;padding:7px 10px;font:600 12px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.25)}
 #wvg-io-panel{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.58);display:none;align-items:center;justify-content:center;font-family:system-ui,sans-serif;color:#f5f5f5}
 #wvg-io-panel[data-open="1"]{display:flex}
 #wvg-io-card{width:min(560px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:auto;background:#18191b;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:18px;box-sizing:border-box;box-shadow:0 18px 60px rgba(0,0,0,.5)}
@@ -288,7 +302,7 @@ private:
 #wvg-io-card select{width:100%;box-sizing:border-box;background:#25272a;color:#f5f5f5;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:7px}
 .wvg-midi{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.wvg-midi-list{display:grid;gap:6px;margin-top:6px}.wvg-midi label{display:flex;align-items:center;gap:7px;font-size:12px}.wvg-io-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.wvg-io-actions button,#wvg-io-close{background:#292b2e;color:#f5f5f5;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:7px 10px;cursor:pointer}
 @media(max-width:560px){.wvg-io-grid,.wvg-midi{grid-template-columns:1fr}}
-</style>)css";
+)css";
 
     inline static constexpr const char kScript[] = R"js((() => {
 "use strict";
