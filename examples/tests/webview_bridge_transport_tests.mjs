@@ -205,7 +205,7 @@ function makeWvt2(dropped, records) {
   assert.equal(Object.keys(state.current).length, 1);
 
   state = applyModulationTelemetry(state, {
-    dropped: 0,
+    dropped: 1,
     events: [{ kind: polysynth.TELEMETRY_KIND.RESET, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: -1, channel: -1, key: -1, amount: 0 }],
   });
   assert.equal(Object.keys(state.current).length, 0);
