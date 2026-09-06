@@ -14,6 +14,7 @@ enum class ModulationTelemetryKind : std::uint32_t {
     Modulation = 1u,
     NoteOn = 2u,
     NoteEnd = 3u,
+    Reset = 4u,
 };
 
 struct ModulationTelemetryRecord {
@@ -41,8 +42,9 @@ public:
     ModulationTelemetryQueue(const ModulationTelemetryQueue &) = delete;
     ModulationTelemetryQueue &operator=(const ModulationTelemetryQueue &) = delete;
 
-    // Reset is called only while processing is stopped (activate/deactivate/reset
-    // lifecycle), so it never races the single RT producer.
+    // Reset is called only at CLAP lifecycle synchronization points where audio
+    // processing is stopped or otherwise excluded, so it never races the single
+    // RT producer.
     void reset() noexcept {
         readIndex_.store(0u, std::memory_order_relaxed);
         writeIndex_.store(0u, std::memory_order_relaxed);
