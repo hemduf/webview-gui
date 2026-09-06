@@ -556,19 +556,23 @@ int main() {
         return 16;
 
     const auto &detail = host.lastModulationTelemetry;
-    if (host.lastModulationTelemetrySize != 76u ||
+    if (host.lastModulationTelemetrySize != 108u ||
         detail[0] != 'W' || detail[1] != 'V' || detail[2] != 'T' || detail[3] != '2' ||
         wclap_detail::loadU32Le(detail.data() + 4u) != 0u ||
-        wclap_detail::loadU32Le(detail.data() + 8u) != 2u)
+        wclap_detail::loadU32Le(detail.data() + 8u) != 3u)
         return 17;
-    const auto *noteRecord = detail.data() + 12u;
+    const auto *resetRecord = detail.data() + 12u;
+    if (wclap_detail::loadU32Le(resetRecord + 0u) !=
+        static_cast<std::uint32_t>(wclap_detail::ModulationTelemetryKind::Reset))
+        return 18;
+    const auto *noteRecord = resetRecord + 32u;
     if (wclap_detail::loadU32Le(noteRecord + 0u) !=
             static_cast<std::uint32_t>(wclap_detail::ModulationTelemetryKind::NoteOn) ||
         wclap_detail::loadU32Le(noteRecord + 4u) != 0u ||
         wclap_detail::loadU32Le(noteRecord + 8u) != CLAP_INVALID_ID ||
         loadI32Le(noteRecord + 12u) != 42 || loadI32Le(noteRecord + 16u) != 0 ||
         loadI32Le(noteRecord + 20u) != 0 || loadI32Le(noteRecord + 24u) != 60)
-        return 18;
+        return 19;
     const auto *modRecord = noteRecord + 32u;
     if (wclap_detail::loadU32Le(modRecord + 0u) !=
             static_cast<std::uint32_t>(wclap_detail::ModulationTelemetryKind::Modulation) ||
@@ -577,17 +581,17 @@ int main() {
         loadI32Le(modRecord + 12u) != 42 || loadI32Le(modRecord + 16u) != 0 ||
         loadI32Le(modRecord + 20u) != 0 || loadI32Le(modRecord + 24u) != 60 ||
         !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(modRecord + 28u)), 0.25f))
-        return 19;
+        return 20;
 
     gui->destroy(plugin);
     if (webview->receive(plugin, sync.data(), sync.size()))
-        return 20;
+        return 21;
 
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
     if (!inner.destroyed)
-        return 21;
+        return 22;
 
     return 0;
 }
