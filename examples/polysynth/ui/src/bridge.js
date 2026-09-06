@@ -1,3 +1,5 @@
+import { postToHost } from "../../../common/ui/post_to_host.js";
+
 export const PRESET = Object.freeze({ SNAPSHOT: 1, LOAD: 2, NEXT: 3, PREVIOUS: 4, INIT: 5, SAVE_AS: 6, DELETE: 7, REFRESH: 8 });
 export const PRESET_KIND = Object.freeze({ NONE: 0, FACTORY: 2, USER: 3 });
 
@@ -12,11 +14,11 @@ export function sendEdit(kind, paramId, value = 0) {
   const view = new DataView(buffer);
   view.setUint32(8, paramId, true);
   view.setFloat64(16, value, true);
-  window.parent.postMessage(buffer, "*");
+  postToHost(buffer);
 }
 
 export function requestSync() {
-  window.parent.postMessage(new Uint8Array([0x57, 0x56, 0x53, 0x31]).buffer, "*");
+  postToHost(new Uint8Array([0x57, 0x56, 0x53, 0x31]).buffer);
 }
 
 export function requestPreset(command, kind = PRESET_KIND.NONE, identity = "", name = "", overwrite = false) {
@@ -34,7 +36,7 @@ export function requestPreset(command, kind = PRESET_KIND.NONE, identity = "", n
   view.setUint16(10, nameBytes.length, true);
   bytes.set(identityBytes, 12);
   bytes.set(nameBytes, 12 + identityBytes.length);
-  window.parent.postMessage(buffer, "*");
+  postToHost(buffer);
 }
 
 function readString(bytes, view, state, length) {
