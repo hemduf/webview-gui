@@ -251,6 +251,82 @@ int main() {
             return 1;
     }
 
+    // A CLAP event offset is always inside [0, frames_count).  In particular,
+    // frames_count itself belongs to the next block and must not mutate state
+    // after rendering zero samples with the new value.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(block.frames(), kGainParamId, -6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (eventProcessor.process(process) || eventProcessor.processor().gainDb() != 0.0) {
+            std::cerr << "event at frames_count was accepted or mutated retained state\n";
+            return 1;
+        }
+    }
+
+    // The final valid sample remains automatable, including multiple events at
+    // the same final timestamp; ordering must match the host event list.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(block.frames() - 1u, kGainParamId, -6.0) ||
+            !events.pushParamValue(block.frames() - 1u, kGainParamId, 6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (!eventProcessor.process(process) || eventProcessor.processor().gainDb() != 6.0)
+            return 1;
+        if (!expectConstantRange(block.outputChannel(0), 0, block.frames() - 1u, 1.0f,
+                                 "last-sample pre") ||
+            !expectSample(block.outputChannel(0)[block.frames() - 1u], plusSix,
+                          "last-sample value", block.frames() - 1u))
+            return 1;
+    }
+
+    // Values strictly beyond the block were already invalid and remain so.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(block.frames() + 1u, kGainParamId, -6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (eventProcessor.process(process) || eventProcessor.processor().gainDb() != 0.0) {
+            std::cerr << "event beyond frames_count was accepted or mutated retained state\n";
+            return 1;
+        }
+    }
+
     // Bypass is a normal CLAP parameter event and must also switch at the exact
     // sample boundary without discarding the stored gain value.
     {
