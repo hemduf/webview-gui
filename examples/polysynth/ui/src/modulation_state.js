@@ -28,11 +28,6 @@ function validNoteLifecycle(event) {
 }
 
 export function applyModulationTelemetry(previous, message) {
-  const reset = message.events.some(item => item.kind === TELEMETRY_KIND.RESET);
-  if (reset) {
-    return { dropped: message.dropped, activeNotes: {}, current: {}, last: null };
-  }
-
   const overflowed = message.dropped !== previous.dropped;
   if (overflowed) {
     // Drop-newest means the records delivered with the first changed drop count
@@ -42,11 +37,20 @@ export function applyModulationTelemetry(previous, message) {
     return { dropped: message.dropped, activeNotes: {}, current: {}, last: previous.last };
   }
 
-  const activeNotes = { ...previous.activeNotes };
-  const current = { ...previous.current };
+  let activeNotes = { ...previous.activeNotes };
+  let current = { ...previous.current };
   let last = previous.last;
 
   for (const item of message.events) {
+    if (item.kind === TELEMETRY_KIND.RESET) {
+      // RESET is ordered in the same SPSC stream as later note/modulation
+      // records. Clear everything observed before it, but keep processing the
+      // remainder of this batch so post-reset state is not silently lost.
+      activeNotes = {};
+      current = {};
+      last = null;
+      continue;
+    }
     if (item.kind === TELEMETRY_KIND.NOTE_ON) {
       if (!validNoteLifecycle(item)) continue;
       const key = noteKey(item);
