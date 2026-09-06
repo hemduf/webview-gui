@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { PRESET, PRESET_KIND, TELEMETRY_KIND, parseHostMessage, requestPreset, requestSync, sendEdit } from "./bridge.js";
+import { PRESET, PRESET_KIND, parseHostMessage, requestPreset, requestSync, sendEdit } from "./bridge.js";
+import { applyModulationTelemetry, emptyModulation, formatAddress, formatAmount, modulationKey } from "./modulation_state.js";
 
 const params = [
   { group: "Oscillator", id: 1001, label: "Waveform", type: "select", options: [[0, "Sine"], [1, "Saw"], [2, "Square"]], initial: 0 },
@@ -19,7 +20,6 @@ const params = [
 const groups = ["Oscillator", "Filter", "Amp Envelope", "Output"];
 const expressionNames = ["volume", "pan", "tuning", "vibrato", "expression", "brightness", "pressure"];
 const emptyPreset = { currentKind: PRESET_KIND.NONE, currentIdentity: "", currentName: "Init", dirty: false, userMutations: false, entries: [] };
-const emptyModulation = { dropped: 0, current: {}, activeNotes: {}, last: null };
 
 function displayValue(spec, value) {
   if (spec.id === 1001) return spec.options[Math.max(0, Math.min(2, Math.trunc(value)))]?.[1] ?? "?";
@@ -30,30 +30,6 @@ function displayValue(spec, value) {
 function slug(value) {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return `${normalized || "preset"}.wvpreset`;
-}
-function noteKey(event) {
-  return `${event.noteId}|${event.port}|${event.channel}|${event.key}`;
-}
-function modulationKey(event) {
-  return `${event.paramId}|${event.noteId}|${event.port}|${event.channel}|${event.key}`;
-}
-function isGlobalModulation(event) {
-  return event.noteId < 0 && event.port < 0 && event.channel < 0 && event.key < 0;
-}
-function noteMatchesModulation(note, modulation) {
-  return (modulation.noteId < 0 || modulation.noteId === note.noteId) &&
-    (modulation.port < 0 || modulation.port === note.port) &&
-    (modulation.channel < 0 || modulation.channel === note.channel) &&
-    (modulation.key < 0 || modulation.key === note.key);
-}
-function formatAddress(event) {
-  if (!event) return "—";
-  if (isGlobalModulation(event)) return "global";
-  const part = (label, value) => `${label}${value < 0 ? "*" : value}`;
-  return [part("note ", event.noteId), part("port ", event.port), part("ch ", event.channel), part("key ", event.key)].join(" · ");
-}
-function formatAmount(value) {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(3)}`;
 }
 
 export default function App() {
@@ -92,34 +68,7 @@ export default function App() {
       else if (message.type === "base") {
         if (!openGestures.current.has(message.id)) setValues(previous => ({ ...previous, [message.id]: message.value }));
       } else if (message.type === "telemetry") setTelemetry(message);
-      else if (message.type === "modulationTelemetry") {
-        setModulation(previous => {
-          const overflowed = message.dropped !== previous.dropped;
-          const activeNotes = overflowed ? {} : { ...previous.activeNotes };
-          const current = overflowed ? {} : { ...previous.current };
-          let last = previous.last;
-          for (const item of message.events) {
-            if (item.kind === TELEMETRY_KIND.NOTE_ON) {
-              activeNotes[noteKey(item)] = item;
-              continue;
-            }
-            if (item.kind === TELEMETRY_KIND.NOTE_END) {
-              delete activeNotes[noteKey(item)];
-              for (const [key, target] of Object.entries(current)) {
-                if (!isGlobalModulation(target) && !Object.values(activeNotes).some(note => noteMatchesModulation(note, target))) delete current[key];
-              }
-              continue;
-            }
-            if (item.kind === TELEMETRY_KIND.MODULATION) {
-              last = item;
-              const key = modulationKey(item);
-              if (item.amount === 0) delete current[key];
-              else if (isGlobalModulation(item) || Object.values(activeNotes).some(note => noteMatchesModulation(note, item))) current[key] = item;
-            }
-          }
-          return { dropped: message.dropped, activeNotes, current, last };
-        });
-      }
+      else if (message.type === "modulationTelemetry") setModulation(previous => applyModulationTelemetry(previous, message));
     };
     const closeAll = () => { for (const id of [...openGestures.current]) end(id); };
     window.addEventListener("message", onMessage);
