@@ -142,6 +142,9 @@ struct ClapWebviewGui {
                 if (!isOnGuiThread())
                     return false;
 
+                if (standaloneDevices.serveResource(path, resource))
+                    return detail::resourceSizeAllowed(resource.bytes.size());
+
                 if (!pluginWebview || !pluginWebview->get_resource || !plugin)
                     return false;
 
