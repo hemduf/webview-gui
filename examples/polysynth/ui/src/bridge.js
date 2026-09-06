@@ -1,5 +1,6 @@
 export const PRESET = Object.freeze({ SNAPSHOT: 1, LOAD: 2, NEXT: 3, PREVIOUS: 4, INIT: 5, SAVE_AS: 6, DELETE: 7, REFRESH: 8 });
 export const PRESET_KIND = Object.freeze({ NONE: 0, FACTORY: 2, USER: 3 });
+export const TELEMETRY_KIND = Object.freeze({ MODULATION: 1, NOTE_ON: 2, NOTE_END: 3 });
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -87,9 +88,38 @@ function parsePreset(data) {
   } catch (_) { return null; }
 }
 
+function parseModulationTelemetry(data) {
+  if (!(data instanceof ArrayBuffer) || data.byteLength < 12) return null;
+  const bytes = new Uint8Array(data);
+  if (bytes[0] !== 0x57 || bytes[1] !== 0x56 || bytes[2] !== 0x54 || bytes[3] !== 0x32) return null;
+  const view = new DataView(data);
+  const count = view.getUint32(8, true);
+  if (count > 127 || data.byteLength !== 12 + count * 32) return null;
+  const events = [];
+  for (let index = 0; index < count; ++index) {
+    const offset = 12 + index * 32;
+    const kind = view.getUint32(offset, true);
+    const amount = view.getFloat32(offset + 28, true);
+    if ((kind !== TELEMETRY_KIND.MODULATION && kind !== TELEMETRY_KIND.NOTE_ON && kind !== TELEMETRY_KIND.NOTE_END) || !Number.isFinite(amount)) return null;
+    events.push({
+      kind,
+      sampleOffset: view.getUint32(offset + 4, true),
+      paramId: view.getUint32(offset + 8, true),
+      noteId: view.getInt32(offset + 12, true),
+      port: view.getInt32(offset + 16, true),
+      channel: view.getInt32(offset + 20, true),
+      key: view.getInt32(offset + 24, true),
+      amount,
+    });
+  }
+  return { type: "modulationTelemetry", dropped: view.getUint32(4, true), events };
+}
+
 export function parseHostMessage(data) {
   const preset = parsePreset(data);
   if (preset) return preset;
+  const modulationTelemetry = parseModulationTelemetry(data);
+  if (modulationTelemetry) return modulationTelemetry;
   if (!(data instanceof ArrayBuffer)) return null;
   const bytes = new Uint8Array(data);
   const view = new DataView(data);

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PRESET, PRESET_KIND, parseHostMessage, requestPreset, requestSync, sendEdit } from "./bridge.js";
+import { applyModulationTelemetry, emptyModulation, formatAddress, formatAmount, modulationKey } from "./modulation_state.js";
 
 const params = [
   { group: "Oscillator", id: 1001, label: "Waveform", type: "select", options: [[0, "Sine"], [1, "Saw"], [2, "Square"]], initial: 0 },
@@ -12,7 +13,7 @@ const params = [
   { group: "Amp Envelope", id: 1007, label: "Decay", min: 0, max: 10, step: 0.01, initial: 0.1 },
   { group: "Amp Envelope", id: 1008, label: "Sustain", min: 0, max: 1, step: 0.01, initial: 0.8 },
   { group: "Amp Envelope", id: 1009, label: "Release", min: 0.001, max: 10, step: 0.01, initial: 0.25 },
-  { group: "Output", id: 1000, label: "Master gain", min: -60, max: 12, step: 0.1, initial: 0 },
+  { group: "Output", id: 1000, label: "Master gain", min: -60, max: 12, step: 0.1, initial: 0, mod: true },
   { group: "Output", id: 1011, label: "Pan", min: -1, max: 1, step: 0.01, initial: 0, mod: true },
   { group: "Output", id: 1012, label: "Amp level", min: 0, max: 1, step: 0.01, initial: 1, mod: true },
 ];
@@ -35,6 +36,7 @@ export default function App() {
   const initialValues = useMemo(() => Object.fromEntries(params.map(spec => [spec.id, spec.initial])), []);
   const [values, setValues] = useState(initialValues);
   const [telemetry, setTelemetry] = useState({ voices: 0, left: 0, right: 0, modId: 0xffffffff, modAmount: 0, expressionId: 0xffffffff, expressionValue: 0 });
+  const [modulation, setModulation] = useState(emptyModulation);
   const [preset, setPreset] = useState(emptyPreset);
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState("");
@@ -66,6 +68,7 @@ export default function App() {
       else if (message.type === "base") {
         if (!openGestures.current.has(message.id)) setValues(previous => ({ ...previous, [message.id]: message.value }));
       } else if (message.type === "telemetry") setTelemetry(message);
+      else if (message.type === "modulationTelemetry") setModulation(previous => applyModulationTelemetry(previous, message));
     };
     const closeAll = () => { for (const id of [...openGestures.current]) end(id); };
     window.addEventListener("message", onMessage);
@@ -91,6 +94,8 @@ export default function App() {
   const factoryEntries = filtered.filter(entry => entry.kind === PRESET_KIND.FACTORY);
   const userEntries = filtered.filter(entry => entry.kind === PRESET_KIND.USER);
   const selection = preset.currentIdentity ? `${preset.currentKind}:${preset.currentIdentity}` : "";
+  const currentModulations = Object.values(modulation.current);
+  const currentForParameter = id => currentModulations.filter(item => item.paramId === id);
   const loadSelection = value => {
     const split = value.indexOf(":");
     if (split <= 0) return;
@@ -122,8 +127,8 @@ export default function App() {
       </section>
 
       <div className="grid grid-cols-3 gap-3 max-[680px]:grid-cols-1">
-        {groups.map(group => <section key={group} className="rounded-lg border border-neutral-700 bg-neutral-900 p-3"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">{group}</h2>{params.filter(spec => spec.group === group).map(spec => <label key={spec.id} className="my-2 grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1 text-sm"><span>{spec.label}</span><span className="font-mono text-xs text-neutral-300">{displayValue(spec, values[spec.id] ?? spec.initial)} {spec.mod && telemetry.modId === spec.id && Number.isFinite(telemetry.modAmount) ? <span className="text-sky-300">{telemetry.modAmount >= 0 ? "+" : ""}{telemetry.modAmount.toFixed(2)}</span> : null}</span>{spec.type === "select" ? <select className="col-span-2 w-full rounded border border-neutral-600 bg-neutral-950 p-1" value={values[spec.id] ?? spec.initial} onChange={event => { const value = Number(event.currentTarget.value); begin(spec.id); setParam(spec.id, value); end(spec.id); }}>{spec.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : <input className="col-span-2 w-full" type="range" min={spec.min} max={spec.max} step={spec.step} value={values[spec.id] ?? spec.initial} onPointerDown={() => begin(spec.id)} onInput={event => setParam(spec.id, Number(event.currentTarget.value))} onPointerUp={() => end(spec.id)} onPointerCancel={() => end(spec.id)} onKeyUp={() => end(spec.id)} onBlur={() => end(spec.id)} />}</label>)}</section>)}
-        <section className="rounded-lg border border-neutral-700 bg-neutral-900 p-3"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">Voice Inspector</h2><div className="grid gap-2 text-sm"><div className="flex justify-between gap-3"><span>Last modulation</span><span className="font-mono text-xs">{telemetry.modId === 0xffffffff ? "—" : `${telemetry.modId}: ${telemetry.modAmount.toFixed(3)}`}</span></div><div className="flex justify-between gap-3"><span>Last expression</span><span className="font-mono text-xs">{telemetry.expressionId === 0xffffffff ? "—" : `${expressionNames[telemetry.expressionId] ?? telemetry.expressionId}: ${telemetry.expressionValue.toFixed(3)}`}</span></div><small className="text-neutral-400">Base parameter values stay separate from per-note modulation and note-expression telemetry.</small></div></section>
+        {groups.map(group => <section key={group} className="rounded-lg border border-neutral-700 bg-neutral-900 p-3"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">{group}</h2>{params.filter(spec => spec.group === group).map(spec => { const mods = spec.mod ? currentForParameter(spec.id) : []; return <label key={spec.id} className="my-2 grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1 text-sm"><span>{spec.label}</span><span className="font-mono text-xs text-neutral-300">{displayValue(spec, values[spec.id] ?? spec.initial)} {mods.length === 1 ? <span className="text-sky-300">{formatAmount(mods[0].amount)}</span> : mods.length > 1 ? <span className="text-sky-300">{mods.length} targets</span> : null}</span>{spec.type === "select" ? <select className="col-span-2 w-full rounded border border-neutral-600 bg-neutral-950 p-1" value={values[spec.id] ?? spec.initial} onChange={event => { const value = Number(event.currentTarget.value); begin(spec.id); setParam(spec.id, value); end(spec.id); }}>{spec.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : <input className="col-span-2 w-full" type="range" min={spec.min} max={spec.max} step={spec.step} value={values[spec.id] ?? spec.initial} onPointerDown={() => begin(spec.id)} onInput={event => setParam(spec.id, Number(event.currentTarget.value))} onPointerUp={() => end(spec.id)} onPointerCancel={() => end(spec.id)} onKeyUp={() => end(spec.id)} onBlur={() => end(spec.id)} />}</label>; })}</section>)}
+        <section className="rounded-lg border border-neutral-700 bg-neutral-900 p-3"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">Voice Inspector</h2><div className="grid gap-2 text-sm"><div className="flex justify-between gap-3"><span>Last modulation</span><span className="text-right font-mono text-xs">{modulation.last ? `${modulation.last.paramId} ${formatAmount(modulation.last.amount)} · ${formatAddress(modulation.last)}` : telemetry.modId === 0xffffffff ? "—" : `${telemetry.modId}: ${telemetry.modAmount.toFixed(3)}`}</span></div><div className="flex justify-between gap-3"><span>Current modulation</span><span className="text-right font-mono text-xs">{currentModulations.length === 0 ? "—" : `${currentModulations.length} target${currentModulations.length === 1 ? "" : "s"}`}</span></div>{currentModulations.slice(0, 8).map(item => <div key={modulationKey(item)} className="flex justify-between gap-3 text-xs"><span>{item.paramId}</span><span className="text-right font-mono text-sky-300">{formatAmount(item.amount)} · {formatAddress(item)}</span></div>)}<div className="flex justify-between gap-3"><span>Last expression</span><span className="font-mono text-xs">{telemetry.expressionId === 0xffffffff ? "—" : `${expressionNames[telemetry.expressionId] ?? telemetry.expressionId}: ${telemetry.expressionValue.toFixed(3)}`}</span></div>{modulation.dropped > 0 && <small className="text-amber-300">Telemetry overflow: current modulation state was invalidated ({modulation.dropped} dropped).</small>}<small className="text-neutral-400">Base parameter values stay separate from per-note modulation and note-expression telemetry.</small></div></section>
       </div>
     </main>
   );

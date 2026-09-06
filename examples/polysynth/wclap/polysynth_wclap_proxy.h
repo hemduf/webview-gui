@@ -2,6 +2,7 @@
 
 #include "../polysynth_plugin.h"
 #include "../polysynth_parameters.h"
+#include "polysynth_modulation_telemetry.h"
 #include "webview_gui_example_polysynth_web_resources.h"
 #include "webview-gui/clap-webview-gui.h"
 
@@ -434,6 +435,7 @@ struct ProxyState {
     const clap_host_t *host = nullptr;
     ::webview_gui::ClapWebviewGui gui;
     UiParameterQueue uiQueue{};
+    ModulationTelemetryQueue modulationTelemetry{};
     bool guiCreated = false;
 
     std::uint32_t activeVoicesRt = 0u;
@@ -458,6 +460,7 @@ struct ProxyState {
         lastModAmountRt = 0.0f;
         lastExpressionIdRt = CLAP_INVALID_ID;
         lastExpressionValueRt = 0.0f;
+        modulationTelemetry.reset();
         activeVoices.store(0u, std::memory_order_release);
         peakLeftBits.store(0u, std::memory_order_release);
         peakRightBits.store(0u, std::memory_order_release);
@@ -467,7 +470,29 @@ struct ProxyState {
         lastExpressionValueBits.store(0u, std::memory_order_release);
     }
 
-    void observeInput(const clap_input_events_t *events) noexcept {
+    static bool supportsModulationAddress(const ParameterSpec &spec,
+                                          const clap_event_param_mod_t &event) noexcept {
+        if ((spec.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
+            event.note_id < -1 || event.port_index < -1 || event.channel < -1 ||
+            event.channel > 15 || event.key < -1 || event.key > 127)
+            return false;
+        if (event.note_id >= 0 &&
+            (spec.flags & CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID) == 0u)
+            return false;
+        if (event.port_index >= 0 &&
+            (spec.flags & CLAP_PARAM_IS_MODULATABLE_PER_PORT) == 0u)
+            return false;
+        if (event.channel >= 0 &&
+            (spec.flags & CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL) == 0u)
+            return false;
+        if (event.key >= 0 &&
+            (spec.flags & CLAP_PARAM_IS_MODULATABLE_PER_KEY) == 0u)
+            return false;
+        return true;
+    }
+
+    void observeInput(const clap_input_events_t *events,
+                      bool normalizeSampleOffset = false) noexcept {
         if (!events || !events->size || !events->get)
             return;
         const auto count = events->size(events);
@@ -476,19 +501,40 @@ struct ProxyState {
             if (!header || header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
                 header->size < sizeof(clap_event_header_t))
                 continue;
+            const auto sampleOffset = normalizeSampleOffset ? 0u : header->time;
             if (header->type == CLAP_EVENT_NOTE_ON && header->size >= sizeof(clap_event_note_t)) {
+                const auto &event = *reinterpret_cast<const clap_event_note_t *>(header);
                 if (activeVoicesRt < kPolySynthDefaultVoiceCount)
                     ++activeVoicesRt;
                 else
                     ++fullNoteOnCreditsRt;
+                ModulationTelemetryRecord record{};
+                record.kind = ModulationTelemetryKind::NoteOn;
+                record.sampleOffset = sampleOffset;
+                record.noteId = event.note_id;
+                record.portIndex = event.port_index;
+                record.channel = event.channel;
+                record.key = event.key;
+                (void)modulationTelemetry.push(record);
                 continue;
             }
             if (header->type == CLAP_EVENT_PARAM_MOD &&
                 header->size >= sizeof(clap_event_param_mod_t)) {
                 const auto &event = *reinterpret_cast<const clap_event_param_mod_t *>(header);
-                if (parameterSpecForId(event.param_id) && std::isfinite(event.amount)) {
+                const auto *spec = parameterSpecForId(event.param_id);
+                if (spec && supportsModulationAddress(*spec, event) && std::isfinite(event.amount)) {
                     lastModParamIdRt = event.param_id;
                     lastModAmountRt = static_cast<float>(event.amount);
+                    ModulationTelemetryRecord record{};
+                    record.kind = ModulationTelemetryKind::Modulation;
+                    record.sampleOffset = sampleOffset;
+                    record.paramId = event.param_id;
+                    record.noteId = event.note_id;
+                    record.portIndex = event.port_index;
+                    record.channel = event.channel;
+                    record.key = event.key;
+                    record.amount = static_cast<float>(event.amount);
+                    (void)modulationTelemetry.push(record);
                 }
                 continue;
             }
@@ -507,10 +553,27 @@ struct ProxyState {
         if (!header || header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
             header->type != CLAP_EVENT_NOTE_END || header->size < sizeof(clap_event_note_t))
             return;
+        const auto &event = *reinterpret_cast<const clap_event_note_t *>(header);
         if (fullNoteOnCreditsRt != 0u)
             --fullNoteOnCreditsRt;
         else if (activeVoicesRt != 0u)
             --activeVoicesRt;
+        ModulationTelemetryRecord record{};
+        record.kind = ModulationTelemetryKind::NoteEnd;
+        record.sampleOffset = header->time;
+        record.noteId = event.note_id;
+        record.portIndex = event.port_index;
+        record.channel = event.channel;
+        record.key = event.key;
+        (void)modulationTelemetry.push(record);
+    }
+
+    void publishEventTelemetry() noexcept {
+        activeVoices.store(activeVoicesRt, std::memory_order_release);
+        lastModParamId.store(lastModParamIdRt, std::memory_order_release);
+        lastModAmountBits.store(floatBits(lastModAmountRt), std::memory_order_release);
+        lastExpressionId.store(lastExpressionIdRt, std::memory_order_release);
+        lastExpressionValueBits.store(floatBits(lastExpressionValueRt), std::memory_order_release);
     }
 
     void publishProcessTelemetry(const clap_process_t &process) noexcept {
@@ -525,13 +588,9 @@ struct ProxyState {
                 }
             }
         }
-        activeVoices.store(activeVoicesRt, std::memory_order_release);
         peakLeftBits.store(floatBits(leftPeak), std::memory_order_release);
         peakRightBits.store(floatBits(rightPeak), std::memory_order_release);
-        lastModParamId.store(lastModParamIdRt, std::memory_order_release);
-        lastModAmountBits.store(floatBits(lastModAmountRt), std::memory_order_release);
-        lastExpressionId.store(lastExpressionIdRt, std::memory_order_release);
-        lastExpressionValueBits.store(floatBits(lastExpressionValueRt), std::memory_order_release);
+        publishEventTelemetry();
     }
 };
 
@@ -552,12 +611,10 @@ struct TelemetryOutputEvents {
         if (!events || !events->ctx)
             return false;
         auto &self = *static_cast<TelemetryOutputEvents *>(events->ctx);
-        if (!self.downstream || !self.downstream->try_push ||
-            !self.downstream->try_push(self.downstream, event))
-            return false;
         if (self.state)
             self.state->observeOutput(event);
-        return true;
+        return self.downstream && self.downstream->try_push &&
+               self.downstream->try_push(self.downstream, event);
     }
 };
 
@@ -800,20 +857,26 @@ struct PolySynthWclapPluginProxy {
         if (!self || !self->innerParams)
             return;
         if (self->state->uiQueue.isActive()) {
+            self->state->observeInput(in, true);
             self->innerParams->flush(self->innerPlugin, in, out);
+            self->state->publishEventTelemetry();
             return;
         }
 
         std::array<clap_event_param_value_t, UiParameterQueue::kCapacity> uiValues{};
         const auto uiCount = self->state->uiQueue.drain(out, uiValues);
         if (uiCount == 0u) {
+            self->state->observeInput(in, true);
             self->innerParams->flush(self->innerPlugin, in, out);
+            self->state->publishEventTelemetry();
             return;
         }
         MergedInputEvents mergedInput;
         if (!mergedInput.prepare(uiValues.data(), uiCount, in))
             return;
+        self->state->observeInput(in, true);
         self->innerParams->flush(self->innerPlugin, &mergedInput.input, out);
+        self->state->publishEventTelemetry();
     }
 
     static bool CLAP_ABI guiIsApiSupported(const clap_plugin_t *outer,
@@ -1001,7 +1064,39 @@ struct PolySynthWclapPluginProxy {
                    state->lastExpressionId.load(std::memory_order_acquire));
         storeU32Le(telemetry.data() + 28u,
                    state->lastExpressionValueBits.load(std::memory_order_acquire));
-        return state->gui.send(telemetry.data(), telemetry.size());
+        if (!state->gui.send(telemetry.data(), telemetry.size()))
+            return false;
+
+        std::array<ModulationTelemetryRecord,
+                   ModulationTelemetryQueue::kMaximumPending> records{};
+        const auto recordCount = state->modulationTelemetry.copyPending(records);
+        constexpr std::size_t kHeaderSize = 12u;
+        constexpr std::size_t kRecordSize = 32u;
+        std::array<std::uint8_t,
+                   kHeaderSize + ModulationTelemetryQueue::kMaximumPending * kRecordSize> payload{};
+        payload[0] = 'W';
+        payload[1] = 'V';
+        payload[2] = 'T';
+        payload[3] = '2';
+        storeU32Le(payload.data() + 4u, state->modulationTelemetry.droppedCount());
+        storeU32Le(payload.data() + 8u, recordCount);
+        for (std::uint32_t index = 0u; index < recordCount; ++index) {
+            const auto &record = records[index];
+            auto *destination = payload.data() + kHeaderSize + index * kRecordSize;
+            storeU32Le(destination + 0u, static_cast<std::uint32_t>(record.kind));
+            storeU32Le(destination + 4u, record.sampleOffset);
+            storeU32Le(destination + 8u, record.paramId);
+            storeU32Le(destination + 12u, static_cast<std::uint32_t>(record.noteId));
+            storeU32Le(destination + 16u, static_cast<std::uint32_t>(record.portIndex));
+            storeU32Le(destination + 20u, static_cast<std::uint32_t>(record.channel));
+            storeU32Le(destination + 24u, static_cast<std::uint32_t>(record.key));
+            storeU32Le(destination + 28u, floatBits(record.amount));
+        }
+        const auto payloadSize = kHeaderSize + static_cast<std::size_t>(recordCount) * kRecordSize;
+        if (!state->gui.send(payload.data(), static_cast<std::uint32_t>(payloadSize)))
+            return false;
+        state->modulationTelemetry.consume(recordCount);
+        return true;
     }
 
     inline static const clap_plugin_params_t paramsProxy{

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import * as gain from "../gain/ui/src/bridge.js";
 import * as polysynth from "../polysynth/ui/src/bridge.js";
+import { applyModulationTelemetry, emptyModulation, modulationKey } from "../polysynth/ui/src/modulation_state.js";
 
 function withWindow(mockWindow, callback) {
   const previous = globalThis.window;
@@ -45,6 +46,27 @@ function bytesOf(call) {
   assert.ok(call.data instanceof ArrayBuffer);
   assert.equal(call.targetOrigin, "*");
   return new Uint8Array(call.data);
+}
+
+function makeWvt2(dropped, records) {
+  const buffer = new ArrayBuffer(12 + records.length * 32);
+  const bytes = new Uint8Array(buffer);
+  bytes.set([0x57, 0x56, 0x54, 0x32]);
+  const view = new DataView(buffer);
+  view.setUint32(4, dropped, true);
+  view.setUint32(8, records.length, true);
+  records.forEach((record, index) => {
+    const offset = 12 + index * 32;
+    view.setUint32(offset, record.kind, true);
+    view.setUint32(offset + 4, record.sampleOffset ?? 0, true);
+    view.setUint32(offset + 8, record.paramId ?? 0xffffffff, true);
+    view.setInt32(offset + 12, record.noteId ?? -1, true);
+    view.setInt32(offset + 16, record.port ?? -1, true);
+    view.setInt32(offset + 20, record.channel ?? -1, true);
+    view.setInt32(offset + 24, record.key ?? -1, true);
+    view.setFloat32(offset + 28, record.amount ?? 0, true);
+  });
+  return buffer;
 }
 
 {
@@ -99,4 +121,70 @@ function bytesOf(call) {
   assert.deepEqual([...bytesOf(hosted.calls[1])], [0x57, 0x56, 0x53, 0x31]);
 }
 
-console.log("WebView UI transport routes native top-level pages to window.postMessage and host-owned pages to parent.postMessage");
+{
+  const wire = makeWvt2(0, [
+    { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 1, noteId: 42, port: 0, channel: 1, key: 60 },
+    { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 3, paramId: 1004, noteId: 42, port: 0, channel: 1, key: 60, amount: 0.25 },
+    { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 4, paramId: 1011, amount: -0.5 },
+  ]);
+  const parsed = polysynth.parseHostMessage(wire);
+  assert.equal(parsed.type, "modulationTelemetry");
+  assert.equal(parsed.dropped, 0);
+  assert.equal(parsed.events.length, 3);
+  assert.deepEqual(parsed.events[1], {
+    kind: polysynth.TELEMETRY_KIND.MODULATION,
+    sampleOffset: 3,
+    paramId: 1004,
+    noteId: 42,
+    port: 0,
+    channel: 1,
+    key: 60,
+    amount: 0.25,
+  });
+  assert.equal(parsed.events[2].noteId, -1);
+  assert.equal(parsed.events[2].amount, -0.5);
+
+  const malformed = wire.slice(0, wire.byteLength - 1);
+  assert.equal(polysynth.parseHostMessage(malformed), null);
+}
+
+{
+  let state = emptyModulation;
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 0, paramId: 0xffffffff, noteId: 42, port: 0, channel: 1, key: 60, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 0, paramId: 0xffffffff, noteId: 43, port: 0, channel: 2, key: 64, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 2, paramId: 1003, noteId: 42, port: 0, channel: 1, key: 60, amount: 0.1 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 3, paramId: 1004, noteId: 42, port: 0, channel: 1, key: 60, amount: 0.25 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 4, paramId: 1011, noteId: 43, port: 0, channel: 2, key: 64, amount: -0.5 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 5, paramId: 1000, noteId: -1, port: -1, channel: -1, key: -1, amount: 0.15 },
+    ],
+  });
+
+  assert.equal(Object.keys(state.current).length, 4, "simultaneous parameter/voice modulation must coexist");
+  assert.equal(Object.keys(state.activeNotes).length, 2);
+  assert.equal(state.last.paramId, 1000);
+  assert.ok(state.current[modulationKey({ paramId: 1004, noteId: 42, port: 0, channel: 1, key: 60 })]);
+  assert.ok(state.current[modulationKey({ paramId: 1011, noteId: 43, port: 0, channel: 2, key: 64 })]);
+
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [{ kind: polysynth.TELEMETRY_KIND.NOTE_END, sampleOffset: 7, paramId: 0xffffffff, noteId: 42, port: 0, channel: 1, key: 60, amount: 0 }],
+  });
+  assert.equal(Object.keys(state.activeNotes).length, 1);
+  assert.equal(Object.values(state.current).some(item => item.noteId === 42), false, "ended voice modulation must not remain current");
+  assert.equal(Object.values(state.current).some(item => item.paramId === 1011), true, "overlapping live voice modulation must remain");
+  assert.equal(Object.values(state.current).some(item => item.paramId === 1000), true, "global modulation must survive voice end");
+  assert.equal(state.last.paramId, 1000, "NOTE_END must not erase historical last modulation");
+
+  state = applyModulationTelemetry(state, {
+    dropped: 1,
+    events: [],
+  });
+  assert.equal(Object.keys(state.current).length, 0, "overflow must fail closed instead of leaving stale current modulation");
+  assert.equal(Object.keys(state.activeNotes).length, 0);
+  assert.equal(state.last.paramId, 1000, "overflow invalidates current state, not historical last-event context");
+}
+
+console.log("WebView transport and PolySynth WVT2 modulation telemetry contracts passed");

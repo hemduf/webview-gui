@@ -119,6 +119,28 @@ add_test(
     COMMAND webview_gui_polysynth_wclap_proxy_contract
 )
 
+add_executable(webview_gui_polysynth_modulation_telemetry_contract
+    polysynth_modulation_telemetry_contract.cpp
+)
+target_include_directories(webview_gui_polysynth_modulation_telemetry_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../include"
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth"
+    "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth/wclap"
+    "${clap_SOURCE_DIR}/include"
+)
+target_compile_definitions(webview_gui_polysynth_modulation_telemetry_contract PRIVATE
+    WEBVIEW_GUI_TESTING=1
+    WEBVIEW_GUI_WEBVIEW_ONLY=1
+)
+target_link_libraries(webview_gui_polysynth_modulation_telemetry_contract PRIVATE
+    webview-gui
+)
+
+add_test(
+    NAME webview_gui_polysynth_modulation_telemetry_contract
+    COMMAND webview_gui_polysynth_modulation_telemetry_contract
+)
+
 add_executable(webview_gui_polysynth_wclap_state_passthrough_contract
     polysynth_wclap_state_passthrough_contract.cpp
 )

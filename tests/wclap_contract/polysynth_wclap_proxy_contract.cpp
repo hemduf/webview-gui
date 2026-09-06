@@ -215,6 +215,8 @@ struct HostState {
     std::uint32_t processRequests = 0u;
     std::uint32_t sends = 0u;
     std::array<std::uint8_t, 32> lastTelemetry{};
+    std::array<std::uint8_t, 4096> lastModulationTelemetry{};
+    std::uint32_t lastModulationTelemetrySize = 0u;
 
     HostState() noexcept {
         params.rescan = hostParamsRescan;
@@ -274,10 +276,14 @@ struct HostState {
         if (!self || (!buffer && size != 0u))
             return false;
         ++self->sends;
-        if (size == self->lastTelemetry.size()) {
-            const auto *bytes = static_cast<const std::uint8_t *>(buffer);
-            if (bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'T' && bytes[3] == '1')
-                std::memcpy(self->lastTelemetry.data(), bytes, size);
+        const auto *bytes = static_cast<const std::uint8_t *>(buffer);
+        if (size == self->lastTelemetry.size() && bytes &&
+            bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'T' && bytes[3] == '1') {
+            std::memcpy(self->lastTelemetry.data(), bytes, size);
+        } else if (size >= 12u && size <= self->lastModulationTelemetry.size() && bytes &&
+                   bytes[0] == 'W' && bytes[1] == 'V' && bytes[2] == 'T' && bytes[3] == '2') {
+            std::memcpy(self->lastModulationTelemetry.data(), bytes, size);
+            self->lastModulationTelemetrySize = size;
         }
         return true;
     }
@@ -389,6 +395,10 @@ bool near(float a, float b) noexcept {
     return std::fabs(a - b) < 1.0e-6f;
 }
 
+std::int32_t loadI32Le(const std::uint8_t *source) noexcept {
+    return static_cast<std::int32_t>(wclap_detail::loadU32Le(source));
+}
+
 } // namespace
 
 int main() {
@@ -440,7 +450,9 @@ int main() {
         return 8;
 
     const std::array<std::uint8_t, 4> sync{{'W','V','S','1'}};
-    if (!webview->receive(plugin, sync.data(), sync.size()) || host.sends != 14u)
+    if (!webview->receive(plugin, sync.data(), sync.size()) || host.sends != 15u ||
+        host.lastModulationTelemetrySize != 12u ||
+        wclap_detail::loadU32Le(host.lastModulationTelemetry.data() + 8u) != 0u)
         return 9;
 
     const auto beginGain = editMessage(1u, 1000u);
@@ -530,7 +542,7 @@ int main() {
 
     const auto sendsBeforeTelemetry = host.sends;
     if (!webview->receive(plugin, sync.data(), sync.size()) ||
-        host.sends != sendsBeforeTelemetry + 14u)
+        host.sends != sendsBeforeTelemetry + 15u)
         return 15;
 
     const auto &telemetry = host.lastTelemetry;
@@ -543,15 +555,39 @@ int main() {
         !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(telemetry.data() + 28u)), 0.7f))
         return 16;
 
+    const auto &detail = host.lastModulationTelemetry;
+    if (host.lastModulationTelemetrySize != 76u ||
+        detail[0] != 'W' || detail[1] != 'V' || detail[2] != 'T' || detail[3] != '2' ||
+        wclap_detail::loadU32Le(detail.data() + 4u) != 0u ||
+        wclap_detail::loadU32Le(detail.data() + 8u) != 2u)
+        return 17;
+    const auto *noteRecord = detail.data() + 12u;
+    if (wclap_detail::loadU32Le(noteRecord + 0u) !=
+            static_cast<std::uint32_t>(wclap_detail::ModulationTelemetryKind::NoteOn) ||
+        wclap_detail::loadU32Le(noteRecord + 4u) != 0u ||
+        wclap_detail::loadU32Le(noteRecord + 8u) != CLAP_INVALID_ID ||
+        loadI32Le(noteRecord + 12u) != 42 || loadI32Le(noteRecord + 16u) != 0 ||
+        loadI32Le(noteRecord + 20u) != 0 || loadI32Le(noteRecord + 24u) != 60)
+        return 18;
+    const auto *modRecord = noteRecord + 32u;
+    if (wclap_detail::loadU32Le(modRecord + 0u) !=
+            static_cast<std::uint32_t>(wclap_detail::ModulationTelemetryKind::Modulation) ||
+        wclap_detail::loadU32Le(modRecord + 4u) != 0u ||
+        wclap_detail::loadU32Le(modRecord + 8u) != 1004u ||
+        loadI32Le(modRecord + 12u) != 42 || loadI32Le(modRecord + 16u) != 0 ||
+        loadI32Le(modRecord + 20u) != 0 || loadI32Le(modRecord + 24u) != 60 ||
+        !near(wclap_detail::floatFromBits(wclap_detail::loadU32Le(modRecord + 28u)), 0.25f))
+        return 19;
+
     gui->destroy(plugin);
     if (webview->receive(plugin, sync.data(), sync.size()))
-        return 17;
+        return 20;
 
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
     if (!inner.destroyed)
-        return 18;
+        return 21;
 
     return 0;
 }
