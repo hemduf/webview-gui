@@ -95,9 +95,9 @@ function makeWvt2(dropped, records) {
 {
   const top = topLevelWindow();
   withWindow(top.window, () => {
-    polysynth.sendEdit(1, 1004, 4400.0); // continuous cutoff
-    polysynth.sendEdit(2, 1001, 2.0);    // stepped waveform
-    polysynth.sendEdit(3, 1000, -3.0);   // output master gain
+    polysynth.sendEdit(1, 1004, 4400.0);
+    polysynth.sendEdit(2, 1001, 2.0);
+    polysynth.sendEdit(3, 1000, -3.0);
     polysynth.requestPreset(polysynth.PRESET.PREVIOUS);
   });
 
@@ -178,10 +178,10 @@ function makeWvt2(dropped, records) {
     events: [{ kind: polysynth.TELEMETRY_KIND.NOTE_END, sampleOffset: 7, paramId: 0xffffffff, noteId: 42, port: 0, channel: 1, key: 60, amount: 0 }],
   });
   assert.equal(Object.keys(state.activeNotes).length, 1);
-  assert.equal(Object.values(state.current).some(item => item.noteId === 42), false, "ended voice modulation must not remain current");
-  assert.equal(Object.values(state.current).some(item => item.paramId === 1011), true, "overlapping live voice modulation must remain");
-  assert.equal(Object.values(state.current).some(item => item.paramId === 1000), true, "global modulation must survive voice end");
-  assert.equal(state.last.paramId, 1000, "NOTE_END must not erase historical last modulation");
+  assert.equal(Object.values(state.current).some(item => item.noteId === 42), false);
+  assert.equal(Object.values(state.current).some(item => item.paramId === 1011), true);
+  assert.equal(Object.values(state.current).some(item => item.paramId === 1000), true);
+  assert.equal(state.last.paramId, 1000);
 
   state = applyModulationTelemetry(state, {
     dropped: 1,
@@ -192,7 +192,7 @@ function makeWvt2(dropped, records) {
   });
   assert.equal(Object.keys(state.current).length, 0, "overflow must discard the entire pre-drop batch instead of replaying potentially stale modulation");
   assert.equal(Object.keys(state.activeNotes).length, 0, "overflow must discard pre-drop NOTE_ON records as well");
-  assert.equal(state.last.paramId, 1000, "overflow invalidates current state, not historical last-event context");
+  assert.equal(state.last.paramId, 1000);
 
   state = applyModulationTelemetry(state, {
     dropped: 1,
@@ -201,16 +201,47 @@ function makeWvt2(dropped, records) {
       { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 11, paramId: 1004, noteId: 100, port: 0, channel: 4, key: 69, amount: 0.3 },
     ],
   });
-  assert.equal(Object.keys(state.activeNotes).length, 1, "records observed after the invalidation boundary may rebuild current state");
+  assert.equal(Object.keys(state.activeNotes).length, 1);
   assert.equal(Object.keys(state.current).length, 1);
 
   state = applyModulationTelemetry(state, {
     dropped: 0,
     events: [{ kind: polysynth.TELEMETRY_KIND.RESET, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: -1, channel: -1, key: -1, amount: 0 }],
   });
-  assert.equal(Object.keys(state.current).length, 0, "lifecycle reset must clear current modulation");
-  assert.equal(Object.keys(state.activeNotes).length, 0, "lifecycle reset must clear tracked voices");
-  assert.equal(state.last, null, "lifecycle reset must clear historical modulation to match native telemetry reset");
+  assert.equal(Object.keys(state.current).length, 0);
+  assert.equal(Object.keys(state.activeNotes).length, 0);
+  assert.equal(state.last, null);
+}
+
+{
+  let state = emptyModulation;
+  const anonymousNote = { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: 0, channel: 5, key: 72, amount: 0 };
+  state = applyModulationTelemetry(state, { dropped: 0, events: [anonymousNote, anonymousNote] });
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [{ kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 1, paramId: 1004, noteId: -1, port: 0, channel: 5, key: 72, amount: 0.4 }],
+  });
+  const anonymousKey = "-1|0|5|72";
+  assert.equal(state.activeNotes[anonymousKey].generationCount, 2, "no-note-id overlapping generations must not collapse into one lifecycle bit");
+  assert.equal(Object.keys(state.current).length, 1);
+
+  const anonymousEnd = { kind: polysynth.TELEMETRY_KIND.NOTE_END, sampleOffset: 2, paramId: 0xffffffff, noteId: -1, port: 0, channel: 5, key: 72, amount: 0 };
+  state = applyModulationTelemetry(state, { dropped: 0, events: [anonymousEnd] });
+  assert.equal(state.activeNotes[anonymousKey].generationCount, 1, "first NOTE_END must leave the overlapping generation active");
+  assert.equal(Object.keys(state.current).length, 1, "targeted modulation remains current while a matching generation survives");
+  state = applyModulationTelemetry(state, { dropped: 0, events: [anonymousEnd] });
+  assert.equal(Object.keys(state.activeNotes).length, 0);
+  assert.equal(Object.keys(state.current).length, 0, "last matching NOTE_END clears targeted modulation");
+
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 3, paramId: 0xffffffff, noteId: 7, port: 2, channel: 1, key: 60, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 4, paramId: 1004, noteId: 7, port: 2, channel: 1, key: 60, amount: 0.6 },
+    ],
+  });
+  assert.equal(Object.keys(state.activeNotes).length, 0, "nonexistent PolySynth note ports must not create UI voice generations");
+  assert.equal(Object.keys(state.current).length, 0, "modulation addressed only to a nonexistent port must not appear current");
 }
 
 console.log("WebView transport and PolySynth WVT2 modulation telemetry contracts passed");
