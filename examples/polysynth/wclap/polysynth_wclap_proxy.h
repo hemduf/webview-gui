@@ -470,6 +470,12 @@ struct ProxyState {
         lastExpressionValueBits.store(0u, std::memory_order_release);
     }
 
+    void queueTelemetryReset() noexcept {
+        ModulationTelemetryRecord record{};
+        record.kind = ModulationTelemetryKind::Reset;
+        (void)modulationTelemetry.push(record);
+    }
+
     static bool supportsModulationAddress(const ParameterSpec &spec,
                                           const clap_event_param_mod_t &event) noexcept {
         if ((spec.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
@@ -708,6 +714,7 @@ struct PolySynthWclapPluginProxy {
         self->active = true;
         self->state->uiQueue.setActive(true);
         self->state->resetTelemetry();
+        self->state->queueTelemetryReset();
         return true;
     }
 
@@ -719,6 +726,7 @@ struct PolySynthWclapPluginProxy {
         self->innerPlugin->deactivate(self->innerPlugin);
         self->active = false;
         self->state->resetTelemetry();
+        self->state->queueTelemetryReset();
     }
 
     static bool CLAP_ABI proxyStartProcessing(const clap_plugin_t *outer) {
@@ -740,6 +748,7 @@ struct PolySynthWclapPluginProxy {
         if (self->innerPlugin && self->innerPlugin->reset)
             self->innerPlugin->reset(self->innerPlugin);
         self->state->resetTelemetry();
+        self->state->queueTelemetryReset();
     }
 
     static clap_process_status CLAP_ABI proxyProcess(const clap_plugin_t *outer,
@@ -762,7 +771,7 @@ struct PolySynthWclapPluginProxy {
 
         self->state->observeInput(process->in_events);
         TelemetryOutputEvents telemetryOutput{self->state, process->out_events};
-        innerProcess.out_events = &telemetryOutput.output;
+        innerProcess.out_events = process->out_events ? &telemetryOutput.output : nullptr;
         const auto status = self->innerPlugin->process(self->innerPlugin, &innerProcess);
         if (status != CLAP_PROCESS_ERROR)
             self->state->publishProcessTelemetry(*process);
