@@ -114,20 +114,27 @@ int main()
     require(!initScript.empty(), "fake standalone extension did not produce an init script");
 
     bool htmlServed = false;
+    bool styleServed = false;
     auto gui = WebviewGui::createUnique(
         WebviewGui::COCOA,
         "/index.html",
         [&](const char *path, WebviewGui::Resource &resource)
         {
+            if (bridge.serveResource(path, resource)) {
+                styleServed = true;
+                return true;
+            }
+
             if (!path || std::strcmp(path, "/index.html") != 0)
                 return false;
 
-            // Match the real Gain/PolySynth CSP. The standalone controller is a
-            // native WebKit init script, so `script-src 'self'` must not block it.
+            // Match the real Gain/PolySynth CSP. The controller is a native WebKit
+            // init script and its CSS must load from the bridge-owned same-origin
+            // resource without weakening `style-src 'self'`.
             static constexpr const char html[] =
                 "<!doctype html><html><head>"
                 "<meta http-equiv=\"Content-Security-Policy\" "
-                "content=\"default-src 'none'; style-src 'unsafe-inline'; "
+                "content=\"default-src 'none'; style-src 'self'; "
                 "script-src 'self'; img-src data:\">"
                 "<title>standalone-bridge</title></head>"
                 "<body><main>editor</main></body></html>";
@@ -157,6 +164,8 @@ int main()
     pumpFor(std::chrono::milliseconds{1400});
 
     require(htmlServed, "editor HTML was never requested");
+    require(styleServed,
+            "strict-CSP WKWebView never requested the bridge-owned modal stylesheet");
     const auto queries = queryCount.load(std::memory_order_relaxed);
     require(queries > 0, "native standalone init script never reached the CHOC bridge");
     require(queries <= 6,
