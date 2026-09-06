@@ -13,12 +13,33 @@
 namespace {
 
 using webview_gui::examples::test_support::CapturedOutputEvents;
+using webview_gui::examples::test_support::InputEvents;
 using webview_gui::examples::test_support::StereoFloatBlock;
 
 uint32_t gRequestFlushCount = 0;
 uint32_t gRequestProcessCount = 0;
+uint32_t gGainSnapshotCount = 0;
+uint32_t gBypassSnapshotCount = 0;
+std::array<uint8_t, 16> gLastGainSnapshot{};
+std::array<uint8_t, 16> gLastBypassSnapshot{};
 
-bool CLAP_ABI hostWebviewSend(const clap_host_t *, const void *, uint32_t) { return true; }
+bool CLAP_ABI hostWebviewSend(const clap_host_t *, const void *buffer, uint32_t size) {
+    if (!buffer && size != 0u)
+        return false;
+    if (size != 16u)
+        return true;
+    const auto *bytes = static_cast<const uint8_t *>(buffer);
+    if (bytes[0] != 'W' || bytes[1] != 'V' || bytes[2] != 'U' || bytes[3] != '1')
+        return true;
+    if (bytes[4] == 1u) {
+        std::memcpy(gLastGainSnapshot.data(), bytes, size);
+        ++gGainSnapshotCount;
+    } else if (bytes[4] == 2u) {
+        std::memcpy(gLastBypassSnapshot.data(), bytes, size);
+        ++gBypassSnapshotCount;
+    }
+    return true;
+}
 void CLAP_ABI hostParamsRescan(const clap_host_t *, clap_param_rescan_flags) {}
 void CLAP_ABI hostParamsClear(const clap_host_t *, clap_id, clap_param_clear_flags) {}
 void CLAP_ABI hostParamsRequestFlush(const clap_host_t *) { ++gRequestFlushCount; }
@@ -81,6 +102,20 @@ constexpr uint8_t kUiBypass = 2;
 void storeU64Le(uint8_t *destination, uint64_t value) noexcept {
     for (unsigned i = 0; i < 8; ++i)
         destination[i] = static_cast<uint8_t>((value >> (i * 8u)) & 0xffu);
+}
+
+uint64_t loadU64Le(const uint8_t *source) noexcept {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        value |= static_cast<uint64_t>(source[i]) << (i * 8u);
+    return value;
+}
+
+double snapshotValue(const std::array<uint8_t, 16> &message) noexcept {
+    const auto bits = loadU64Le(message.data() + 8u);
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 std::array<uint8_t, 16> makeUiMessage(uint8_t kind, uint8_t parameter, double value = 0.0) {
@@ -224,6 +259,62 @@ int main() {
         return 11;
     }
 
+    // Host/DAW automation must change audio at the exact sample and then be the
+    // same base value reported by clap.params and the WebView WVU1 snapshot.
+    {
+        StereoFloatBlock automationBlock(4);
+        automationBlock.fillInput(1.0f, 1.0f);
+        InputEvents hostEvents;
+        if (!hostEvents.pushParamValue(2u, kGainParamId, -12.0) ||
+            !hostEvents.pushParamValue(3u, kBypassParamId, 1.0)) {
+            return 12;
+        }
+        CapturedOutputEvents automationOutput;
+        clap_process_t automationProcess{};
+        automationProcess.frames_count = automationBlock.frames();
+        automationProcess.audio_inputs = automationBlock.input();
+        automationProcess.audio_outputs = automationBlock.output();
+        automationProcess.audio_inputs_count = 1;
+        automationProcess.audio_outputs_count = 1;
+        automationProcess.in_events = hostEvents.clapInputEvents();
+        automationProcess.out_events = automationOutput.clapOutputEvents();
+
+        if (plugin->process(plugin, &automationProcess) != CLAP_PROCESS_CONTINUE) {
+            std::cerr << "Host automation process block failed\n";
+            return 13;
+        }
+
+        const float minusSix = static_cast<float>(std::pow(10.0, -6.0 / 20.0));
+        const float minusTwelve = static_cast<float>(std::pow(10.0, -12.0 / 20.0));
+        if (std::fabs(automationBlock.outputChannel(0)[0] - minusSix) > 1.0e-6f ||
+            std::fabs(automationBlock.outputChannel(0)[1] - minusSix) > 1.0e-6f ||
+            std::fabs(automationBlock.outputChannel(0)[2] - minusTwelve) > 1.0e-6f ||
+            std::fabs(automationBlock.outputChannel(0)[3] - 1.0f) > 1.0e-6f) {
+            std::cerr << "Host automation did not reach DSP on exact sample boundaries\n";
+            return 14;
+        }
+
+        double gain = 0.0;
+        double bypass = 0.0;
+        if (!params->get_value(plugin, kGainParamId, &gain) ||
+            !params->get_value(plugin, kBypassParamId, &bypass) ||
+            std::fabs(gain + 12.0) > 1.0e-9 || bypass != 1.0) {
+            std::cerr << "Host automation did not update host-visible base snapshots\n";
+            return 15;
+        }
+
+        gGainSnapshotCount = 0u;
+        gBypassSnapshotCount = 0u;
+        constexpr std::array<uint8_t, 4> sync{{'W', 'V', 'Q', '1'}};
+        if (!webview->receive(plugin, sync.data(), sync.size()) ||
+            gGainSnapshotCount != 1u || gBypassSnapshotCount != 1u ||
+            std::fabs(snapshotValue(gLastGainSnapshot) + 12.0) > 1.0e-9 ||
+            snapshotValue(gLastBypassSnapshot) != 1.0) {
+            std::cerr << "WebView snapshot diverged from DAW-automated base values\n";
+            return 16;
+        }
+    }
+
     // Active plug-ins must request processing and emit/apply the edit from process(),
     // because both Gain parameters are marked CLAP_PARAM_REQUIRES_PROCESS.
     const auto bypassBegin = makeUiMessage(kUiGestureBegin, kUiBypass);
@@ -238,7 +329,7 @@ int main() {
         plugin->deactivate(plugin);
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 12;
+        return 17;
     }
 
     StereoFloatBlock block(4);
@@ -262,7 +353,7 @@ int main() {
         plugin->deactivate(plugin);
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 13;
+        return 18;
     }
 
     for (uint32_t frame = 0; frame < block.frames(); ++frame) {
@@ -273,7 +364,7 @@ int main() {
             plugin->deactivate(plugin);
             gui->destroy(plugin);
             plugin->destroy(plugin);
-            return 14;
+            return 19;
         }
     }
 
@@ -283,7 +374,7 @@ int main() {
         plugin->deactivate(plugin);
         gui->destroy(plugin);
         plugin->destroy(plugin);
-        return 15;
+        return 20;
     }
 
     plugin->stop_processing(plugin);
@@ -299,10 +390,10 @@ int main() {
     const auto *fallbackPlugin =
         factory->create_plugin(factory, &kHostWithoutParams, kGainPluginId);
     if (!fallbackPlugin)
-        return 16;
+        return 21;
     if (!fallbackPlugin->init(fallbackPlugin)) {
         fallbackPlugin->destroy(fallbackPlugin);
-        return 17;
+        return 22;
     }
 
     const auto *fallbackWebview = static_cast<const clap_plugin_webview_t *>(
@@ -312,7 +403,7 @@ int main() {
     if (!fallbackWebview || !fallbackGui ||
         !fallbackGui->create(fallbackPlugin, CLAP_WINDOW_API_WEBVIEW, false)) {
         fallbackPlugin->destroy(fallbackPlugin);
-        return 18;
+        return 23;
     }
 
     const auto fallbackBegin = makeUiMessage(kUiGestureBegin, kUiGain);
@@ -325,14 +416,14 @@ int main() {
         std::cerr << "WebView edit did not fall back to request_process without host params\n";
         fallbackGui->destroy(fallbackPlugin);
         fallbackPlugin->destroy(fallbackPlugin);
-        return 19;
+        return 24;
     }
 
     if (!fallbackPlugin->activate(fallbackPlugin, 48000.0, 1, 64) ||
         !fallbackPlugin->start_processing(fallbackPlugin)) {
         fallbackGui->destroy(fallbackPlugin);
         fallbackPlugin->destroy(fallbackPlugin);
-        return 20;
+        return 25;
     }
 
     StereoFloatBlock fallbackBlock(2);
@@ -355,7 +446,7 @@ int main() {
         fallbackPlugin->deactivate(fallbackPlugin);
         fallbackGui->destroy(fallbackPlugin);
         fallbackPlugin->destroy(fallbackPlugin);
-        return 21;
+        return 26;
     }
 
     const float minusThree = static_cast<float>(std::pow(10.0, -3.0 / 20.0));
@@ -364,10 +455,10 @@ int main() {
             std::fabs(fallbackBlock.outputChannel(1)[frame] - minusThree) > 1.0e-6f) {
             std::cerr << "request_process fallback edit was not applied before audio processing\n";
             fallbackPlugin->stop_processing(fallbackPlugin);
-            fallbackPlugin->deactivate(fallbackPlugin);
+            fallbackPlugin->deactivate(plugin);
             fallbackGui->destroy(fallbackPlugin);
             fallbackPlugin->destroy(fallbackPlugin);
-            return 22;
+            return 27;
         }
     }
 
