@@ -144,6 +144,11 @@ function makeWvt2(dropped, records) {
   assert.equal(parsed.events[2].noteId, -1);
   assert.equal(parsed.events[2].amount, -0.5);
 
+  const reset = polysynth.parseHostMessage(makeWvt2(0, [{ kind: polysynth.TELEMETRY_KIND.RESET }]));
+  assert.equal(reset.type, "modulationTelemetry");
+  assert.equal(reset.events.length, 1);
+  assert.equal(reset.events[0].kind, polysynth.TELEMETRY_KIND.RESET);
+
   const malformed = wire.slice(0, wire.byteLength - 1);
   assert.equal(polysynth.parseHostMessage(malformed), null);
 }
@@ -185,6 +190,14 @@ function makeWvt2(dropped, records) {
   assert.equal(Object.keys(state.current).length, 0, "overflow must fail closed instead of leaving stale current modulation");
   assert.equal(Object.keys(state.activeNotes).length, 0);
   assert.equal(state.last.paramId, 1000, "overflow invalidates current state, not historical last-event context");
+
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [{ kind: polysynth.TELEMETRY_KIND.RESET, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: -1, channel: -1, key: -1, amount: 0 }],
+  });
+  assert.equal(Object.keys(state.current).length, 0, "lifecycle reset must clear current modulation");
+  assert.equal(Object.keys(state.activeNotes).length, 0, "lifecycle reset must clear tracked voices");
+  assert.equal(state.last, null, "lifecycle reset must clear historical modulation to match native telemetry reset");
 }
 
 console.log("WebView transport and PolySynth WVT2 modulation telemetry contracts passed");
