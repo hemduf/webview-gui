@@ -122,6 +122,8 @@ target_compile_definitions(webview_gui_polysynth_wclap_proxy_contract PRIVATE
     WEBVIEW_GUI_TESTING=1
     WEBVIEW_GUI_WEBVIEW_ONLY=1
 )
+add_dependencies(webview_gui_polysynth_wclap_proxy_contract
+    webview_gui_example_polysynth_web)
 target_link_libraries(webview_gui_polysynth_wclap_proxy_contract PRIVATE
     webview-gui
     webview_gui_example_polysynth_web
@@ -145,6 +147,8 @@ target_compile_definitions(webview_gui_polysynth_modulation_telemetry_contract P
     WEBVIEW_GUI_TESTING=1
     WEBVIEW_GUI_WEBVIEW_ONLY=1
 )
+add_dependencies(webview_gui_polysynth_modulation_telemetry_contract
+    webview_gui_example_polysynth_web)
 target_link_libraries(webview_gui_polysynth_modulation_telemetry_contract PRIVATE
     webview-gui
     webview_gui_example_polysynth_web
@@ -181,6 +185,8 @@ target_compile_definitions(webview_gui_polysynth_wclap_state_passthrough_contrac
     WEBVIEW_GUI_TESTING=1
     WEBVIEW_GUI_WEBVIEW_ONLY=1
 )
+add_dependencies(webview_gui_polysynth_wclap_state_passthrough_contract
+    webview_gui_example_polysynth_web)
 target_link_libraries(webview_gui_polysynth_wclap_state_passthrough_contract PRIVATE
     webview-gui
     webview_gui_example_polysynth_web
