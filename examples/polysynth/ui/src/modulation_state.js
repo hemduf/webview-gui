@@ -23,11 +23,17 @@ export function noteMatchesModulation(note, modulation) {
 
 export function applyModulationTelemetry(previous, message) {
   const overflowed = message.dropped !== previous.dropped;
-  const activeNotes = overflowed ? {} : { ...previous.activeNotes };
-  const current = overflowed ? {} : { ...previous.current };
+  let activeNotes = overflowed ? {} : { ...previous.activeNotes };
+  let current = overflowed ? {} : { ...previous.current };
   let last = previous.last;
 
   for (const item of message.events) {
+    if (item.kind === TELEMETRY_KIND.RESET) {
+      activeNotes = {};
+      current = {};
+      last = null;
+      continue;
+    }
     if (item.kind === TELEMETRY_KIND.NOTE_ON) {
       activeNotes[noteKey(item)] = item;
       continue;
