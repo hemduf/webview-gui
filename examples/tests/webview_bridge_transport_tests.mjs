@@ -185,11 +185,24 @@ function makeWvt2(dropped, records) {
 
   state = applyModulationTelemetry(state, {
     dropped: 1,
-    events: [],
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 8, paramId: 0xffffffff, noteId: 99, port: 0, channel: 3, key: 67, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 9, paramId: 1004, noteId: 99, port: 0, channel: 3, key: 67, amount: 0.8 },
+    ],
   });
-  assert.equal(Object.keys(state.current).length, 0, "overflow must fail closed instead of leaving stale current modulation");
-  assert.equal(Object.keys(state.activeNotes).length, 0);
+  assert.equal(Object.keys(state.current).length, 0, "overflow must discard the entire pre-drop batch instead of replaying potentially stale modulation");
+  assert.equal(Object.keys(state.activeNotes).length, 0, "overflow must discard pre-drop NOTE_ON records as well");
   assert.equal(state.last.paramId, 1000, "overflow invalidates current state, not historical last-event context");
+
+  state = applyModulationTelemetry(state, {
+    dropped: 1,
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 10, paramId: 0xffffffff, noteId: 100, port: 0, channel: 4, key: 69, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 11, paramId: 1004, noteId: 100, port: 0, channel: 4, key: 69, amount: 0.3 },
+    ],
+  });
+  assert.equal(Object.keys(state.activeNotes).length, 1, "records observed after the invalidation boundary may rebuild current state");
+  assert.equal(Object.keys(state.current).length, 1);
 
   state = applyModulationTelemetry(state, {
     dropped: 0,
