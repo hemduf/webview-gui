@@ -73,9 +73,9 @@ function bytesOf(call) {
 {
   const top = topLevelWindow();
   withWindow(top.window, () => {
-    polysynth.sendEdit(1, 1005, 0.25); // continuous parameter
-    polysynth.sendEdit(2, 1000, 2.0);  // stepped parameter
-    polysynth.sendEdit(3, 1012, -3.0); // output parameter
+    polysynth.sendEdit(1, 1004, 4400.0); // continuous cutoff
+    polysynth.sendEdit(2, 1001, 2.0);    // stepped waveform
+    polysynth.sendEdit(3, 1000, -3.0);   // output master gain
     polysynth.requestPreset(polysynth.PRESET.PREVIOUS);
   });
 
