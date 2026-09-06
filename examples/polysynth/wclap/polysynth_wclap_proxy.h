@@ -473,7 +473,8 @@ struct ProxyState {
     static bool supportsModulationAddress(const ParameterSpec &spec,
                                           const clap_event_param_mod_t &event) noexcept {
         if ((spec.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
-            event.note_id < -1 || event.port_index < -1 || event.channel < -1 || event.key < -1)
+            event.note_id < -1 || event.port_index < -1 || event.channel < -1 ||
+            event.channel > 15 || event.key < -1 || event.key > 127)
             return false;
         if (event.note_id >= 0 &&
             (spec.flags & CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID) == 0u)
