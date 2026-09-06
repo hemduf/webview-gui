@@ -251,6 +251,91 @@ int main() {
             return 1;
     }
 
+    // The last legal event offset is frames_count - 1. Equal-timestamp events
+    // at that offset remain ordered and affect exactly the final sample.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(7, kGainParamId, -6.0) ||
+            !events.pushParamValue(7, kGainParamId, 6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (!eventProcessor.process(process)) {
+            std::cerr << "final-sample automation was rejected\n";
+            return 1;
+        }
+        if (!expectConstantRange(block.outputChannel(0), 0, 7, 1.0f,
+                                 "final-sample pre") ||
+            !expectConstantRange(block.outputChannel(0), 7, 8, plusSix,
+                                 "final-sample post") ||
+            eventProcessor.processor().gainDb() != 6.0) {
+            std::cerr << "final-sample automation ordering was not preserved\n";
+            return 1;
+        }
+    }
+
+    // An event at frames_count is outside the current block. Reject it before
+    // rendering or mutating retained processor state so host/UI snapshots cannot
+    // observe a value that affected zero samples in the block.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(block.frames(), kGainParamId, -6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (eventProcessor.process(process)) {
+            std::cerr << "event at frames_count was accepted\n";
+            return 1;
+        }
+        if (eventProcessor.processor().gainDb() != 0.0) {
+            std::cerr << "rejected frames_count event mutated retained gain\n";
+            return 1;
+        }
+    }
+
+    // Offsets beyond the block are rejected with the same atomicity guarantee.
+    {
+        GainEventProcessor eventProcessor;
+        StereoFloatBlock block(8);
+        block.fillInput(1.0f, 1.0f);
+        InputEvents events;
+        if (!events.pushParamValue(block.frames() + 1u, kGainParamId, -6.0))
+            return 1;
+
+        clap_process_t process{};
+        process.frames_count = block.frames();
+        process.audio_inputs = block.input();
+        process.audio_outputs = block.output();
+        process.audio_inputs_count = 1;
+        process.audio_outputs_count = 1;
+        process.in_events = events.clapInputEvents();
+
+        if (eventProcessor.process(process) || eventProcessor.processor().gainDb() != 0.0) {
+            std::cerr << "out-of-block event was not rejected atomically\n";
+            return 1;
+        }
+    }
+
     // Bypass is a normal CLAP parameter event and must also switch at the exact
     // sample boundary without discarding the stored gain value.
     {
