@@ -34,6 +34,38 @@ ctest --test-dir build-examples --output-on-failure -R '^webview_gui_examples_'
 
 The skeleton is intentionally DSP-free. It exists only to qualify CLAP factory/lifetime glue, `clap-helpers` integration, plugin-safe private linkage to `webview-gui`, dependency isolation and cross-platform CLAP packaging before Gain and PolySynth are layered on top.
 
+## Frontend projects and embedded WebView resources
+
+Gain and PolySynth use normal offline frontend projects under `examples/gain/ui/` and `examples/polysynth/ui/`. Each project is authored with **Vite 7.1.4**, **React 19.1.1**, and **Tailwind CSS 4.1.13**. CI uses Node.js **20.19.4** with npm 10.8.x; local example builds require Node.js >= 20.19.0. Both directories commit `package-lock.json`, and production builds use `npm ci` rather than resolving ambient package versions.
+
+To work on either frontend independently:
+
+```bash
+cd examples/gain/ui       # or examples/polysynth/ui
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+```
+
+The normal CMake example build does not require a separate frontend command. When Gain or PolySynth is enabled, `webview_gui_add_web_resources()` installs the pinned frontend dependencies into the build tree, runs Vite, cleans the previous `dist/`, and converts the complete production tree into a generated binary-safe C++ resource table. For example:
+
+```bash
+cmake -S examples -B build-examples -G Ninja \
+  -DWEBVIEW_GUI_SOURCE_DIR="$PWD" \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_GAIN=ON \
+  -DWEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH=ON
+cmake --build build-examples --parallel
+```
+
+The generated resource API stores each URI, MIME type, byte pointer, and explicit byte count. Nested/hashed Vite assets and binary files therefore do not rely on C-string termination or source-tree paths. Resource lookup is allocation-free and is used only by the WebView resource callback; no Node/Vite/resource-generation or WebView work is reachable from `process()`.
+
+Native CLAP, VST3, AU and standalone wrappers all link the same generated resource target. WCLAP packaging copies the **same Vite `dist/` tree** into the `.wclap` bundle before adding canonical preset resources, so there is no second browser application or divergent frontend build. Every production editor is self-contained and requires no CDN or runtime dev server.
+
+To add an image, font, JSON file or other static asset, place it under the frontend `public/` directory when it needs a stable root URI, or import/reference it from `src/` when Vite should fingerprint it. MIME handling covers the supported web asset types and falls back to `application/octet-stream` for arbitrary binary data. Source/config/package changes are build dependencies; the build recreates `dist/` before generation so deleted assets cannot survive in native or WCLAP artifacts.
+
+Production source maps are disabled. Set `WEBVIEW_GUI_UI_SOURCEMAPS=1` only when invoking Vite manually for a development build; CMake release/resource builds intentionally force them off.
+
+The frontend toolchain remains example-only: the repository's default library configuration keeps `WEBVIEW_GUI_BUILD_EXAMPLES=OFF`, does not call the resource helper, and therefore does not discover Node/npm or expose frontend implementation details through the installed `webview-gui` package.
+
 ## Native CLAP validator reproduction
 
 Gain and PolySynth keep native CLAP validation in their owner workflows. The validator is pinned to `free-audio/clap-validator` 0.4.1 commit `152b9823e992d782c5c1fd33bca0295478b919aa`; the CI Rust toolchain is 1.95.0. The pinned validator has two Preset Discovery defects relevant to the current CLAP SDK, so CI applies the repository-owned, drift-checked `patch_clap_validator_preset_discovery.cmake` before compiling it. From a clean repository checkout:
@@ -86,7 +118,7 @@ This table is the completed #32/#37 CLAP surface. Every interface marked `Implem
 | `clap.state` | Implemented | The bounded 68-byte version-10 payload preserves the complete version-9 52-byte prefix and appends four IEEE-754 floats for Attack, Decay, Sustain, and Release. Version-1 and version-2 24-byte payloads, version-3 28-byte payloads, version-4 32-byte payloads, version-5 36-byte payloads, version-6 40-byte payloads, version-7 44-byte payloads, version-8 48-byte payloads, and version-9 52-byte payloads remain loadable. Amp Envelope defaults to Attack 0.01 s, Decay 0.1 s, Sustain 0.8, and Release 0.25 s when loading pre-v10 state; Filter Cutoff, Filter Resonance, Filter Env, and Amp Level keep their previous migration defaults. Ephemeral modulation/note-expression state is never serialized. Malformed, truncated, trailing, non-finite, out-of-range, or invalid stepped data is rejected before host snapshots are mutated. |
 | `clap.state-context/2` | Implemented | Uses the same validated state payload for the supported CLAP state contexts; context handling does not introduce audio-thread I/O or mutable GUI state. |
 | `clap.voice-info` | Implemented | Reports the configured active voice count/capacity after activation and advertises overlapping-note support consistently with the fixed-capacity allocator. |
-| `clap.tail` | Implemented | The Release parameter converted to samples at the active sample rate is published through a lock-free tail snapshot. The reported value is the exact bounded maximum of the current default Release and every active voice generation's NOTE_ON Release snapshot, so shortening the default can never under-report an older voice and the tail can still decrease as soon as the last longer generation retires. Active audio-thread changes call `host.tail.changed()` only when the published value changes; inactive/main-thread parameter changes retain the new Release without issuing that audio-thread-only callback. No delay/reverb/feedback source extends the tail. |
+| `clap.tail` | Implemented | The Release parameter converted to samples at the active sample rate is published through a lock-free tail snapshot. The reported value is the exact bounded maximum of the current default Release and every active voice generation's NOTE_ON Release snapshot, so shortening the default can never under-report a older voice and the tail can still decrease as soon as the last longer generation retires. Active audio-thread changes call `host.tail.changed()` only when the published value changes; inactive/main-thread parameter changes retain the new Release without issuing that audio-thread-only callback. No delay/reverb/feedback source extends the tail. |
 | `clap.remote-controls/2` | Implemented | Four stable non-preset pages are published through both pinned IDs: `Oscillator / Tuning` maps Fine Tune, Waveform, and Coarse Tune; `Output / Performance` maps Master Gain, Pan, and Amp Level; `Filter / Tone` maps Filter Cutoff, Filter Resonance, and Filter Env; and `Amp Envelope / ADSR` maps Attack, Decay, Sustain, and Release. Every unused slot is `CLAP_INVALID_ID`; page IDs and host parameter mappings are stable and fully covered by deterministic contracts. |
 | `clap.gui` + `clap.webview` | Implemented | Native CLAP and WCLAP share the compact bundled WebView editor delivered by #33. GUI edits emit normal CLAP begin/value/end gestures, host/base-value updates synchronize back to the editor, and bounded RT voice/meter/modulation/note-expression telemetry uses latest-wins snapshots. `process()` never calls the WebView. |
 | `clap.render` | Intentionally not advertised | The current DSP has no alternate offline-quality algorithm, so render mode does not influence processing. The pinned CLAP contract explicitly advises not implementing this extension when the information has no effect. |
@@ -237,7 +269,6 @@ cmake -S examples -B build-formats \
   -DWEBVIEW_GUI_EXAMPLES_FORMAT_VST3=ON \
   -DWEBVIEW_GUI_EXAMPLES_FORMAT_STANDALONE=ON \
   -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON
-
 cmake --build build-formats --config Release --parallel --target \
   webview_gui_example_gain_formats_all \
   webview_gui_example_polysynth_formats_all
