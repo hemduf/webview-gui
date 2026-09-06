@@ -21,6 +21,12 @@ export function noteMatchesModulation(note, modulation) {
     (modulation.key < 0 || modulation.key === note.key);
 }
 
+function validNoteLifecycle(event) {
+  return event.noteId >= -1 && event.port === 0 &&
+    event.channel >= 0 && event.channel <= 15 &&
+    event.key >= 0 && event.key <= 127;
+}
+
 export function applyModulationTelemetry(previous, message) {
   const reset = message.events.some(item => item.kind === TELEMETRY_KIND.RESET);
   if (reset) {
@@ -42,16 +48,29 @@ export function applyModulationTelemetry(previous, message) {
 
   for (const item of message.events) {
     if (item.kind === TELEMETRY_KIND.NOTE_ON) {
-      activeNotes[noteKey(item)] = item;
+      if (!validNoteLifecycle(item)) continue;
+      const key = noteKey(item);
+      const previousGeneration = activeNotes[key];
+      const generationCount = item.noteId < 0
+        ? (previousGeneration?.generationCount ?? 0) + 1
+        : 1;
+      activeNotes[key] = { ...item, generationCount };
       continue;
     }
     if (item.kind === TELEMETRY_KIND.NOTE_END) {
-      delete activeNotes[noteKey(item)];
+      if (!validNoteLifecycle(item)) continue;
+      const key = noteKey(item);
+      const existing = activeNotes[key];
+      if (existing?.generationCount > 1) {
+        activeNotes[key] = { ...existing, generationCount: existing.generationCount - 1 };
+      } else {
+        delete activeNotes[key];
+      }
       const remainingNotes = Object.values(activeNotes);
-      for (const [key, target] of Object.entries(current)) {
+      for (const [targetKey, target] of Object.entries(current)) {
         if (!isGlobalModulation(target) &&
             !remainingNotes.some(note => noteMatchesModulation(note, target))) {
-          delete current[key];
+          delete current[targetKey];
         }
       }
       continue;
