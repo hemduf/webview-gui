@@ -349,3 +349,58 @@ TEST_CASE("native WKWebView CSP blocks JavaScript eval while bridge remains oper
 
     CHECK_FALSE(evalExecuted.load(std::memory_order_acquire));
 }
+
+TEST_CASE("native top-level WebView transport uses the explicit self route without reflecting native delivery")
+{
+    auto gui = WebviewGui::createUnique(
+        WebviewGui::COCOA,
+        "/index.html",
+        [](const char* path, WebviewGui::Resource& resource)
+        {
+            if (!path || std::string(path) != "/index.html")
+                return false;
+
+            // This is the exact ownership decision used by the Gain and PolySynth
+            // frontend bridges. On a native top-level document it must call the
+            // bootstrap-overridden window.postMessage directly rather than rely on
+            // window.parent.postMessage parent/self semantics.
+            static constexpr char html[] =
+                "<!doctype html><html><head><title>explicit-native-route</title></head><body>"
+                "<script>"
+                "window.addEventListener('message',e=>{window.__lastNativeMessage=e.data;});"
+                "setTimeout(()=>{"
+                "const b=new Uint8Array([87,86,71,49,2,1,0,0,0,0,0,0,0,0,24,192]).buffer;"
+                "if(window.parent===window)window.postMessage(b,'*');"
+                "else window.parent.postMessage(b,'*');"
+                "},50);"
+                "</script>"
+                "</body></html>";
+            resource.mediaType = "text/html";
+            resource.bytes.assign(html, html + sizeof(html) - 1);
+            return true;
+        });
+
+    REQUIRE(gui != nullptr);
+
+    const std::vector<unsigned char> expected{
+        0x57, 0x56, 0x47, 0x31, 0x02, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0xc0,
+    };
+    std::vector<std::vector<unsigned char>> received;
+    gui->receive = [&](const unsigned char* bytes, std::size_t size)
+    {
+        received.emplace_back(bytes, bytes + size);
+    };
+
+    REQUIRE(pumpMainRunLoopUntil([&] { return !received.empty(); }));
+    REQUIRE(received.size() == 1);
+    CHECK(received.front() == expected);
+
+    // Native -> page delivery must remain a normal message event. The page above
+    // observes it but does not echo it, so a second native receive would expose an
+    // accidental reflection loop in the bootstrap.
+    const std::vector<unsigned char> outbound{0x57, 0x56, 0x55, 0x31, 0x01};
+    gui->send(outbound.data(), outbound.size());
+    pumpMainRunLoopFor(std::chrono::milliseconds{500});
+    CHECK(received.size() == 1);
+}

@@ -29,12 +29,14 @@ PRODUCT_MARKERS = {
     "WebviewGuiGain": (
         b"com.webview-gui.example.gain",
         b"<title>webview-gui Gain</title>",
-        b"/gain.js",
+        b"/assets/index-",
+        b"application/javascript; charset=utf-8",
     ),
     "WebviewGuiPolySynth": (
         b"com.webview-gui.example.polysynth",
         b"<title>webview-gui PolySynth</title>",
-        b"/polysynth.js",
+        b"/assets/index-",
+        b"application/javascript; charset=utf-8",
     ),
 }
 

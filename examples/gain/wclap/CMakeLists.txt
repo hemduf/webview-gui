@@ -11,8 +11,8 @@ set(WEBVIEW_GUI_EXAMPLES_BUILD_GAIN ON CACHE BOOL "" FORCE)
 set(WEBVIEW_GUI_EXAMPLES_BUILD_POLYSYNTH OFF CACHE BOOL "" FORCE)
 set(WEBVIEW_GUI_EXAMPLES_BUILD_WRAPPERS OFF CACHE BOOL "" FORCE)
 
-# Reuse the current Gain core, CLAP SDK/helper pins and embedded HTML/JS editor
-# from the normal example tree. WCLAP owns only the reactor entry/package layer.
+# Reuse the current Gain core, CLAP SDK/helper pins and generated Vite resource
+# target from the normal example tree. WCLAP owns only the reactor entry/package layer.
 add_subdirectory(
     "${CMAKE_CURRENT_LIST_DIR}/../.."
     "${CMAKE_CURRENT_BINARY_DIR}/current-examples"
@@ -49,6 +49,7 @@ include("${WEBVIEW_GUI_SOURCE_DIR}/cmake/WebviewGuiWclap.cmake")
 webview_gui_configure_wclap_target(webview_gui_example_gain_wclap
     OUTPUT_NAME WebviewGuiGain
     COMPILE_TARGETS webview_gui_example_gain_clap_core
+    WEB_RESOURCE_TARGET webview_gui_example_gain_web
     RESOURCE_DIRECTORY "${WEBVIEW_GUI_EXAMPLES_PRESET_RESOURCE_DIRECTORY}"
 )
 

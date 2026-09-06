@@ -2,6 +2,7 @@
 
 #include "../polysynth_plugin.h"
 #include "../polysynth_parameters.h"
+#include "webview_gui_example_polysynth_web_resources.h"
 #include "webview-gui/clap-webview-gui.h"
 
 #include <clap/clap.h>
@@ -23,216 +24,8 @@ namespace webview_gui::examples::polysynth::wclap {
 namespace detail {
 
 inline constexpr char kEditorUri[] = "/index.html";
-inline constexpr char kEditorMime[] = "text/html; charset=utf-8";
-inline constexpr char kEditorScriptUri[] = "/polysynth.js";
-inline constexpr char kEditorScriptMime[] = "text/javascript; charset=utf-8";
 inline constexpr std::uint32_t kEditorWidth = 760u;
 inline constexpr std::uint32_t kEditorHeight = 580u;
-
-inline constexpr char kEditorHtml[] = R"html(<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src data:">
-<title>webview-gui PolySynth</title>
-<style>
-:root { color-scheme: dark; font-family: system-ui, sans-serif; background:#151515; color:#f1f1f1; }
-* { box-sizing:border-box; }
-body { margin:0; min-height:100vh; background:#151515; }
-main { padding:18px; display:grid; gap:16px; }
-header { display:flex; gap:20px; align-items:center; justify-content:space-between; }
-h1 { font-size:18px; margin:0; }
-.telemetry { display:flex; gap:14px; align-items:center; font-size:12px; opacity:.9; }
-.grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-section { border:1px solid #343434; border-radius:8px; padding:12px; background:#1c1c1c; }
-h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; opacity:.75; }
-.control { display:grid; grid-template-columns:1fr auto; gap:5px 10px; margin:9px 0; align-items:center; }
-.control input,.control select { grid-column:1 / -1; width:100%; }
-.value { font-variant-numeric:tabular-nums; opacity:.8; }
-.mod { min-width:4.5em; text-align:right; color:#9bd2ff; font-variant-numeric:tabular-nums; }
-meter { width:90px; height:10px; }
-small { opacity:.65; }
-@media (max-width:680px) { .grid { grid-template-columns:1fr; } }
-</style>
-</head>
-<body>
-<main>
-<header>
-  <div><h1>PolySynth</h1><small>WCLAP / CLAP WebView reference editor</small></div>
-  <div class="telemetry">
-    <span>Voices <strong id="voices">0</strong>/16</span>
-    <span>L <meter id="meter-l" min="0" max="1" value="0"></meter></span>
-    <span>R <meter id="meter-r" min="0" max="1" value="0"></meter></span>
-  </div>
-</header>
-<div class="grid">
-<section><h2>Oscillator</h2>
-  <label class="control">Waveform <span class="value" data-value="1001">Sine</span>
-    <select data-param="1001"><option value="0">Sine</option><option value="1">Saw</option><option value="2">Square</option></select></label>
-  <label class="control">Coarse <span class="value" data-value="1002">0</span>
-    <input data-param="1002" type="range" min="-48" max="48" step="1" value="0"></label>
-  <label class="control">Fine <span><span class="value" data-value="1003">0.0</span> <span class="mod" data-mod="1003"></span></span>
-    <input data-param="1003" type="range" min="-100" max="100" step="0.1" value="0"></label>
-</section>
-<section><h2>Filter</h2>
-  <label class="control">Cutoff <span><span class="value" data-value="1004">6000</span> <span class="mod" data-mod="1004"></span></span>
-    <input data-param="1004" type="range" min="20" max="20000" step="1" value="6000"></label>
-  <label class="control">Resonance <span><span class="value" data-value="1005">0.00</span> <span class="mod" data-mod="1005"></span></span>
-    <input data-param="1005" type="range" min="0" max="0.99" step="0.01" value="0"></label>
-  <label class="control">Env amount <span><span class="value" data-value="1010">0.00</span> <span class="mod" data-mod="1010"></span></span>
-    <input data-param="1010" type="range" min="-1" max="1" step="0.01" value="0"></label>
-</section>
-<section><h2>Amp Envelope</h2>
-  <label class="control">Attack <span class="value" data-value="1006">0.01</span>
-    <input data-param="1006" type="range" min="0" max="10" step="0.01" value="0.01"></label>
-  <label class="control">Decay <span class="value" data-value="1007">0.10</span>
-    <input data-param="1007" type="range" min="0" max="10" step="0.01" value="0.1"></label>
-  <label class="control">Sustain <span class="value" data-value="1008">0.80</span>
-    <input data-param="1008" type="range" min="0" max="1" step="0.01" value="0.8"></label>
-  <label class="control">Release <span class="value" data-value="1009">0.25</span>
-    <input data-param="1009" type="range" min="0.001" max="10" step="0.01" value="0.25"></label>
-</section>
-<section><h2>Output</h2>
-  <label class="control">Master gain <span class="value" data-value="1000">0.0</span>
-    <input data-param="1000" type="range" min="-60" max="12" step="0.1" value="0"></label>
-  <label class="control">Pan <span><span class="value" data-value="1011">0.00</span> <span class="mod" data-mod="1011"></span></span>
-    <input data-param="1011" type="range" min="-1" max="1" step="0.01" value="0"></label>
-  <label class="control">Amp level <span><span class="value" data-value="1012">1.00</span> <span class="mod" data-mod="1012"></span></span>
-    <input data-param="1012" type="range" min="0" max="1" step="0.01" value="1"></label>
-</section>
-<section><h2>Voice Inspector</h2>
-  <div class="control">Last modulation <span id="last-mod">—</span></div>
-  <div class="control">Last expression <span id="last-expression">—</span></div>
-  <small>Base parameter values stay separate from per-note modulation and note-expression telemetry.</small>
-</section>
-</div>
-</main>
-<script src="polysynth.js" defer></script>
-</body>
-</html>
-)html";
-
-inline constexpr char kEditorScript[] = R"js((() => {
-"use strict";
-const EDIT_SIZE = 24;
-const openGestures = new Set();
-const controls = new Map();
-for (const element of document.querySelectorAll("[data-param]"))
-  controls.set(Number(element.dataset.param), element);
-
-const valueLabels = new Map();
-for (const element of document.querySelectorAll("[data-value]"))
-  valueLabels.set(Number(element.dataset.value), element);
-
-const modLabels = new Map();
-for (const element of document.querySelectorAll("[data-mod]"))
-  modLabels.set(Number(element.dataset.mod), element);
-
-const voices = document.getElementById("voices");
-const meterL = document.getElementById("meter-l");
-const meterR = document.getElementById("meter-r");
-const lastMod = document.getElementById("last-mod");
-const lastExpression = document.getElementById("last-expression");
-const expressionNames = ["volume", "pan", "tuning", "vibrato", "expression", "brightness", "pressure"];
-
-function edit(kind, paramId, value = 0) {
-  const buffer = new ArrayBuffer(EDIT_SIZE);
-  const bytes = new Uint8Array(buffer);
-  bytes.set([0x57,0x56,0x50,0x31]); // WVP1
-  bytes[4] = kind;
-  const view = new DataView(buffer);
-  view.setUint32(8, paramId, true);
-  view.setFloat64(16, value, true);
-  window.parent.postMessage(buffer, "*");
-}
-
-function begin(paramId) {
-  if (openGestures.has(paramId)) return;
-  openGestures.add(paramId);
-  edit(1, paramId);
-}
-function end(paramId) {
-  if (!openGestures.has(paramId)) return;
-  openGestures.delete(paramId);
-  edit(3, paramId);
-}
-function setValue(paramId, value) {
-  if (!Number.isFinite(value)) return;
-  begin(paramId);
-  edit(2, paramId, value);
-}
-function requestSync() {
-  const buffer = new Uint8Array([0x57,0x56,0x53,0x31]).buffer; // WVS1
-  window.parent.postMessage(buffer, "*");
-}
-function displayValue(id, value) {
-  const label = valueLabels.get(id);
-  if (!label) return;
-  if (id === 1001) label.textContent = ["Sine","Saw","Square"][Math.max(0,Math.min(2,Math.trunc(value)))] ?? "?";
-  else if (id === 1002 || id === 1004) label.textContent = String(Math.round(value));
-  else if (id === 1000 || id === 1003) label.textContent = value.toFixed(1);
-  else label.textContent = value.toFixed(2);
-}
-function applyBase(id, value) {
-  if (!Number.isFinite(value)) return;
-  const control = controls.get(id);
-  if (control && !openGestures.has(id)) control.value = String(value);
-  displayValue(id, value);
-}
-function clearModsExcept(id) {
-  for (const [paramId,label] of modLabels) if (paramId !== id) label.textContent = "";
-}
-
-window.addEventListener("message", event => {
-  if (!(event.data instanceof ArrayBuffer)) return;
-  const bytes = new Uint8Array(event.data);
-  const view = new DataView(event.data);
-  if (bytes.length === 16 && bytes[0]===0x57 && bytes[1]===0x56 && bytes[2]===0x42 && bytes[3]===0x31) {
-    applyBase(view.getUint32(4,true), view.getFloat64(8,true));
-    return;
-  }
-  if (bytes.length === 32 && bytes[0]===0x57 && bytes[1]===0x56 && bytes[2]===0x54 && bytes[3]===0x31) {
-    voices.textContent = String(view.getUint32(4,true));
-    meterL.value = String(Math.min(1,Math.max(0,view.getFloat32(8,true))));
-    meterR.value = String(Math.min(1,Math.max(0,view.getFloat32(12,true))));
-    const modId = view.getUint32(16,true);
-    const modAmount = view.getFloat32(20,true);
-    clearModsExcept(modId);
-    const mod = modLabels.get(modId);
-    if (mod && Number.isFinite(modAmount)) mod.textContent = `${modAmount >= 0 ? "+" : ""}${modAmount.toFixed(2)}`;
-    lastMod.textContent = modId === 0xffffffff ? "—" : `${modId}: ${modAmount.toFixed(3)}`;
-    const expressionId = view.getUint32(24,true);
-    const expressionValue = view.getFloat32(28,true);
-    lastExpression.textContent = expressionId === 0xffffffff ? "—" : `${expressionNames[expressionId] ?? expressionId}: ${expressionValue.toFixed(3)}`;
-  }
-});
-
-for (const [id,control] of controls) {
-  if (control.tagName === "SELECT") {
-    control.addEventListener("change", () => {
-      begin(id); setValue(id, Number(control.value)); displayValue(id, Number(control.value)); end(id);
-    });
-    continue;
-  }
-  control.addEventListener("pointerdown", () => begin(id));
-  control.addEventListener("input", () => {
-    const value = Number(control.value);
-    setValue(id, value); displayValue(id, value);
-  });
-  control.addEventListener("change", () => end(id));
-  control.addEventListener("pointerup", () => end(id));
-  control.addEventListener("pointercancel", () => end(id));
-  control.addEventListener("blur", () => end(id));
-}
-
-window.addEventListener("pagehide", () => {
-  for (const id of [...openGestures]) end(id);
-});
-requestSync();
-setInterval(requestSync, 50);
-})());
-)js";
 
 inline bool copyExactText(char *destination, std::size_t capacity, const char *text) noexcept {
     if (!destination || !text)
@@ -1146,22 +939,11 @@ struct PolySynthWclapPluginProxy {
         auto *self = from(outer);
         if (!self || !self->initialized || !path || !stream || !stream->write)
             return false;
-        const char *resourceMime = nullptr;
-        const std::uint8_t *resourceData = nullptr;
-        std::size_t resourceSize = 0u;
-        if (std::strcmp(path, kEditorUri) == 0) {
-            resourceMime = kEditorMime;
-            resourceData = reinterpret_cast<const std::uint8_t *>(kEditorHtml);
-            resourceSize = sizeof(kEditorHtml) - 1u;
-        } else if (std::strcmp(path, kEditorScriptUri) == 0) {
-            resourceMime = kEditorScriptMime;
-            resourceData = reinterpret_cast<const std::uint8_t *>(kEditorScript);
-            resourceSize = sizeof(kEditorScript) - 1u;
-        } else {
+        const auto *resource = ::webview_gui::examples::polysynth::resources::find(path);
+        if (!resource)
             return false;
-        }
-        return copyExactText(mime, mimeCapacity, resourceMime) &&
-               writeAll(stream, resourceData, resourceSize);
+        return copyExactText(mime, mimeCapacity, resource->mimeType.data()) &&
+               writeAll(stream, resource->data, resource->size);
     }
 
     static bool CLAP_ABI webviewReceive(const clap_plugin_t *outer,
