@@ -1,5 +1,3 @@
-import { postToHost } from "../../../common/ui/post_to_host.js";
-
 export const PARAM = Object.freeze({ GAIN: 1, BYPASS: 2 });
 export const EDIT = Object.freeze({ BEGIN: 1, VALUE: 2, END: 3 });
 export const PRESET = Object.freeze({ SNAPSHOT: 1, LOAD: 2, NEXT: 3, PREVIOUS: 4, INIT: 5, SAVE_AS: 6, DELETE: 7, REFRESH: 8 });
@@ -8,6 +6,14 @@ export const PRESET_KIND = Object.freeze({ NONE: 0, FACTORY: 2, USER: 3 });
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const syncRequest = new Uint8Array([0x57, 0x56, 0x51, 0x31]).buffer;
+
+function postToHost(data) {
+  if (window.parent === window) {
+    window.postMessage(data, "*");
+    return;
+  }
+  window.parent.postMessage(data, "*");
+}
 
 export function sendParameter(kind, parameter, value = 0) {
   const buffer = new ArrayBuffer(16);
