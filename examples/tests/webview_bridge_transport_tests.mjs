@@ -126,11 +126,12 @@ function makeWvt2(dropped, records) {
     { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 1, noteId: 42, port: 0, channel: 1, key: 60 },
     { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 3, paramId: 1004, noteId: 42, port: 0, channel: 1, key: 60, amount: 0.25 },
     { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 4, paramId: 1011, amount: -0.5 },
+    { kind: polysynth.TELEMETRY_KIND.RESET },
   ]);
   const parsed = polysynth.parseHostMessage(wire);
   assert.equal(parsed.type, "modulationTelemetry");
   assert.equal(parsed.dropped, 0);
-  assert.equal(parsed.events.length, 3);
+  assert.equal(parsed.events.length, 4);
   assert.deepEqual(parsed.events[1], {
     kind: polysynth.TELEMETRY_KIND.MODULATION,
     sampleOffset: 3,
@@ -143,6 +144,7 @@ function makeWvt2(dropped, records) {
   });
   assert.equal(parsed.events[2].noteId, -1);
   assert.equal(parsed.events[2].amount, -0.5);
+  assert.equal(parsed.events[3].kind, polysynth.TELEMETRY_KIND.RESET);
 
   const malformed = wire.slice(0, wire.byteLength - 1);
   assert.equal(polysynth.parseHostMessage(malformed), null);
@@ -185,6 +187,14 @@ function makeWvt2(dropped, records) {
   assert.equal(Object.keys(state.current).length, 0, "overflow must fail closed instead of leaving stale current modulation");
   assert.equal(Object.keys(state.activeNotes).length, 0);
   assert.equal(state.last.paramId, 1000, "overflow invalidates current state, not historical last-event context");
+
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [{ kind: polysynth.TELEMETRY_KIND.RESET, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: -1, channel: -1, key: -1, amount: 0 }],
+  });
+  assert.equal(Object.keys(state.current).length, 0);
+  assert.equal(Object.keys(state.activeNotes).length, 0);
+  assert.equal(state.last, null, "plugin lifecycle reset must clear historical and current modulation context");
 }
 
 console.log("WebView transport and PolySynth WVT2 modulation telemetry contracts passed");
