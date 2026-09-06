@@ -214,6 +214,29 @@ function makeWvt2(dropped, records) {
 }
 
 {
+  let state = applyModulationTelemetry(emptyModulation, {
+    dropped: 0,
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 0, paramId: 0xffffffff, noteId: 21, port: 0, channel: 1, key: 60, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 1, paramId: 1004, noteId: 21, port: 0, channel: 1, key: 60, amount: 0.2 },
+    ],
+  });
+  state = applyModulationTelemetry(state, {
+    dropped: 0,
+    events: [
+      { kind: polysynth.TELEMETRY_KIND.RESET, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: -1, channel: -1, key: -1, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 2, paramId: 0xffffffff, noteId: 55, port: 0, channel: 3, key: 67, amount: 0 },
+      { kind: polysynth.TELEMETRY_KIND.MODULATION, sampleOffset: 3, paramId: 1004, noteId: 55, port: 0, channel: 3, key: 67, amount: 0.45 },
+    ],
+  });
+  assert.equal(Object.keys(state.activeNotes).length, 1, "ordered RESET must not discard NOTE_ON records that follow it in the same WVT2 batch");
+  assert.ok(state.activeNotes["55|0|3|67"]);
+  assert.equal(Object.keys(state.current).length, 1, "ordered RESET must not discard modulation that follows it in the same WVT2 batch");
+  assert.equal(state.last.paramId, 1004);
+  assert.equal(state.last.noteId, 55);
+}
+
+{
   let state = emptyModulation;
   const anonymousNote = { kind: polysynth.TELEMETRY_KIND.NOTE_ON, sampleOffset: 0, paramId: 0xffffffff, noteId: -1, port: 0, channel: 5, key: 72, amount: 0 };
   state = applyModulationTelemetry(state, { dropped: 0, events: [anonymousNote, anonymousNote] });
