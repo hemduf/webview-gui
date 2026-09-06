@@ -299,8 +299,7 @@ int main() {
         !contains(html, "script-src 'self'") ||
         !contains(html, "type=\"module\"") ||
         contains(html, "http://") || contains(html, "https://") || contains(html, "//cdn.")) {
-        std::cerr << "bundled Gain editor is not a self-contained Vite entry point
-";
+        std::cerr << "bundled Gain editor is not a self-contained Vite entry point\n";
         plugin->destroy(plugin);
         return 9;
     }
@@ -309,8 +308,7 @@ int main() {
     const auto fallbackMarker = html.find("<script type=\"module\" src=\"");
     const auto marker = scriptMarker != std::string::npos ? scriptMarker : fallbackMarker;
     if (marker == std::string::npos) {
-        std::cerr << "Vite entry does not reference its module asset
-";
+        std::cerr << "Vite entry does not reference its module asset\n";
         plugin->destroy(plugin);
         return 90;
     }
@@ -334,16 +332,14 @@ int main() {
                                &scriptOutput.stream) ||
         std::strcmp(scriptMime, "application/javascript; charset=utf-8") != 0 ||
         scriptOutput.bytes.empty()) {
-        std::cerr << "bundled Vite JavaScript asset was not served correctly
-";
+        std::cerr << "bundled Vite JavaScript asset was not served correctly\n";
         plugin->destroy(plugin);
         return 93;
     }
     const std::string script(scriptOutput.bytes.begin(), scriptOutput.bytes.end());
     if (contains(script, "http://") || contains(script, "https://") ||
         contains(script, "XMLHttpRequest")) {
-        std::cerr << "Gain frontend introduced a remote runtime dependency
-";
+        std::cerr << "Gain frontend introduced a remote runtime dependency\n";
         plugin->destroy(plugin);
         return 94;
     }
