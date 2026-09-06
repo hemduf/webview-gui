@@ -23,6 +23,18 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+# The PolySynth WCLAP proxy includes and calls the generated frontend resource
+# API. Build that API through the same Vite -> generated C++ pipeline used by
+# the real example so this standalone contract remains clean-checkout safe.
+include("${CMAKE_CURRENT_LIST_DIR}/../../examples/cmake/WebResources.cmake")
+if(NOT TARGET webview_gui_example_polysynth_web)
+    webview_gui_add_web_resources(
+        TARGET webview_gui_example_polysynth_web
+        SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../examples/polysynth/ui"
+        NAMESPACE "webview_gui::examples::polysynth::resources"
+    )
+endif()
+
 add_executable(webview_gui_wclap_host_webview_contract
     wclap_host_webview_contract.cpp
 )
@@ -112,6 +124,7 @@ target_compile_definitions(webview_gui_polysynth_wclap_proxy_contract PRIVATE
 )
 target_link_libraries(webview_gui_polysynth_wclap_proxy_contract PRIVATE
     webview-gui
+    webview_gui_example_polysynth_web
 )
 
 add_test(
@@ -134,6 +147,7 @@ target_compile_definitions(webview_gui_polysynth_modulation_telemetry_contract P
 )
 target_link_libraries(webview_gui_polysynth_modulation_telemetry_contract PRIVATE
     webview-gui
+    webview_gui_example_polysynth_web
 )
 
 add_test(
@@ -169,6 +183,7 @@ target_compile_definitions(webview_gui_polysynth_wclap_state_passthrough_contrac
 )
 target_link_libraries(webview_gui_polysynth_wclap_state_passthrough_contract PRIVATE
     webview-gui
+    webview_gui_example_polysynth_web
 )
 
 add_test(
