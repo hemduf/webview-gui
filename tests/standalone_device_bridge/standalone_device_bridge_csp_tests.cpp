@@ -32,6 +32,11 @@ const void *CLAP_ABI getExtension(const clap_host_t *, const char *extension)
         : nullptr;
 }
 
+const void *CLAP_ABI getNoExtension(const clap_host_t *, const char *)
+{
+    return nullptr;
+}
+
 void CLAP_ABI ignoreHostRequest(const clap_host_t *) {}
 
 clap_host_t makeHost()
@@ -83,6 +88,32 @@ int main()
                 "<link id=\"webview-gui-standalone-devices\" rel=\"stylesheet\" "
                 "href=\"/__webview_gui/standalone-devices.css\"") != std::string::npos,
             "standalone modal styling must use a same-origin stylesheet resource");
+
+    WebviewGui::Resource style;
+    require(bridge.serveResource("/__webview_gui/standalone-devices.css", style),
+            "standalone host must serve the bridge-owned stylesheet");
+    require(style.mediaType == "text/css; charset=utf-8",
+            "bridge stylesheet must use a CSS media type");
+    const auto styleText = bytesToString(style);
+    require(styleText.find("#wvg-io-button{position:fixed") != std::string::npos,
+            "bridge stylesheet must keep the Audio / MIDI launcher fixed");
+    require(styleText.find("#wvg-io-panel{position:fixed") != std::string::npos,
+            "bridge stylesheet must keep the settings panel out of document flow");
+    require(styleText.find("#wvg-io-panel[data-open=\"1\"]{display:flex}") != std::string::npos,
+            "bridge stylesheet must preserve modal open state");
+    require(styleText.find("<style") == std::string::npos,
+            "bridge stylesheet response must contain raw CSS only");
+
+    WebviewGui::Resource unrelated;
+    require(!bridge.serveResource("/assets/app.css", unrelated),
+            "bridge must not claim plug-in-owned resources");
+
+    auto nonStandaloneHost = makeHost();
+    nonStandaloneHost.get_extension = getNoExtension;
+    StandaloneDeviceBridge nonStandaloneBridge{&nonStandaloneHost};
+    WebviewGui::Resource hiddenStyle;
+    require(!nonStandaloneBridge.serveResource("/__webview_gui/standalone-devices.css", hiddenStyle),
+            "non-standalone host must not expose the bridge stylesheet");
 
     std::puts("standalone-device-bridge CSP contract passed");
     return 0;
