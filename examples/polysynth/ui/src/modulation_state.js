@@ -22,18 +22,25 @@ export function noteMatchesModulation(note, modulation) {
 }
 
 export function applyModulationTelemetry(previous, message) {
+  const reset = message.events.some(item => item.kind === TELEMETRY_KIND.RESET);
+  if (reset) {
+    return { dropped: message.dropped, activeNotes: {}, current: {}, last: null };
+  }
+
   const overflowed = message.dropped !== previous.dropped;
-  let activeNotes = overflowed ? {} : { ...previous.activeNotes };
-  let current = overflowed ? {} : { ...previous.current };
+  if (overflowed) {
+    // Drop-newest means the records delivered with the first changed drop count
+    // necessarily predate an unknown lost event. Replaying those records could
+    // resurrect a voice/modulation that the missing event ended. Discard the
+    // whole batch and rebuild only from records observed after this invalidation.
+    return { dropped: message.dropped, activeNotes: {}, current: {}, last: previous.last };
+  }
+
+  const activeNotes = { ...previous.activeNotes };
+  const current = { ...previous.current };
   let last = previous.last;
 
   for (const item of message.events) {
-    if (item.kind === TELEMETRY_KIND.RESET) {
-      activeNotes = {};
-      current = {};
-      last = null;
-      continue;
-    }
     if (item.kind === TELEMETRY_KIND.NOTE_ON) {
       activeNotes[noteKey(item)] = item;
       continue;
