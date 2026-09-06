@@ -30,6 +30,19 @@ add_test(
     COMMAND webview_gui_standalone_device_bridge_tests
 )
 
+add_executable(webview_gui_standalone_device_bridge_csp_tests
+    standalone_device_bridge_csp_tests.cpp
+)
+target_include_directories(webview_gui_standalone_device_bridge_csp_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../include
+    ${clap_SOURCE_DIR}/include
+)
+
+add_test(
+    NAME webview_gui_standalone_device_bridge_csp_tests
+    COMMAND webview_gui_standalone_device_bridge_csp_tests
+)
+
 if(APPLE)
     add_subdirectory(
         ${CMAKE_CURRENT_LIST_DIR}/../..
