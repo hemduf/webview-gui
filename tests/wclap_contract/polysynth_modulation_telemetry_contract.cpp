@@ -40,7 +40,8 @@ struct InputList {
                    std::int32_t noteId,
                    std::int16_t port,
                    std::int16_t channel,
-                   std::int16_t key) noexcept {
+                   std::int16_t key,
+                   double velocity = 1.0) noexcept {
         auto &event = notes[noteCount++];
         event = {};
         event.header.size = sizeof(event);
@@ -51,7 +52,7 @@ struct InputList {
         event.port_index = port;
         event.channel = channel;
         event.key = key;
-        event.velocity = 1.0;
+        event.velocity = velocity;
         events[eventCount++] = &event.header;
     }
 
@@ -100,6 +101,7 @@ std::uint32_t gProcessModCount = 0u;
 std::uint32_t gFlushModCount = 0u;
 clap_event_param_mod_t gLastFlushMod{};
 bool gEmitNoteEnd = false;
+bool gInnerSawNullOutEvents = false;
 
 void observeInnerEvents(const clap_input_events_t *events, std::uint32_t &modCount) noexcept {
     if (!events || !events->size || !events->get)
@@ -120,6 +122,7 @@ clap_process_status CLAP_ABI innerProcess(const clap_plugin_t *,
                                           const clap_process_t *process) noexcept {
     if (!process)
         return CLAP_PROCESS_ERROR;
+    gInnerSawNullOutEvents = process->out_events == nullptr;
     observeInnerEvents(process->in_events, gProcessModCount);
     if (gEmitNoteEnd && process->out_events && process->out_events->try_push) {
         clap_event_note_t noteEnd{};
@@ -239,6 +242,24 @@ int main() {
     }
     state.modulationTelemetry.consume(count);
 
+    // Invalid NOTE_ON events still belong to the raw host stream seen by the
+    // inner plug-in, but they must not manufacture a voice/lifecycle generation
+    // in the telemetry layer. The authoritative scheduler accepts only port 0,
+    // note_id >= -1, channel 0..15, key 0..127, finite velocity in [0,1].
+    InputList invalidNoteInput;
+    invalidNoteInput.addNoteOn(0u, 44, 1, 3, 67); // nonexistent note port
+    clap_process_t invalidNoteProcess{};
+    invalidNoteProcess.frames_count = 16u;
+    invalidNoteProcess.in_events = &invalidNoteInput.api;
+    invalidNoteProcess.out_events = &sink.api;
+    if (PolySynthWclapPluginProxy::proxyProcess(&proxy.plugin, &invalidNoteProcess) != CLAP_PROCESS_CONTINUE)
+        return 7;
+    count = state.modulationTelemetry.copyPending(records);
+    if (count != 0u || state.activeVoices.load(std::memory_order_acquire) != 2u) {
+        std::cerr << "invalid NOTE_ON polluted voice/lifecycle telemetry\n";
+        return 8;
+    }
+
     // params.flush() is the second legal host modulation delivery route. Its
     // unavailable sample timestamp is normalized to zero while full addressing
     // and the DSP/base-state separation remain owned by the inner plug-in.
@@ -249,7 +270,7 @@ int main() {
         gLastFlushMod.note_id != 43 || gLastFlushMod.port_index != 0 ||
         gLastFlushMod.channel != 2 || gLastFlushMod.key != 64) {
         std::cerr << "params.flush modulation did not reach the inner DSP unchanged\n";
-        return 7;
+        return 9;
     }
     count = state.modulationTelemetry.copyPending(records);
     if (count != 1u || records[0].kind != ModulationTelemetryKind::Modulation ||
@@ -257,7 +278,7 @@ int main() {
         !sameAddress(records[0], 43, 0, 2, 64) ||
         std::fabs(records[0].amount - 0.40f) > 1.0e-6f) {
         std::cerr << "params.flush modulation was not published with full telemetry address\n";
-        return 8;
+        return 10;
     }
     state.modulationTelemetry.consume(count);
 
@@ -268,13 +289,28 @@ int main() {
     endProcess.frames_count = 16u;
     endProcess.out_events = &sink.api;
     if (PolySynthWclapPluginProxy::proxyProcess(&proxy.plugin, &endProcess) != CLAP_PROCESS_CONTINUE)
-        return 9;
+        return 11;
     count = state.modulationTelemetry.copyPending(records);
     if (count != 1u || records[0].kind != ModulationTelemetryKind::NoteEnd ||
         records[0].sampleOffset != 7u || !sameAddress(records[0], 42, 0, 1, 60) ||
         state.activeVoices.load(std::memory_order_acquire) != 1u) {
         std::cerr << "NOTE_END lifecycle telemetry did not clear one active generation\n";
-        return 10;
+        return 12;
+    }
+    state.modulationTelemetry.consume(count);
+
+    // The proxy must preserve a null host output-event list exactly. Supplying a
+    // non-null telemetry shim where the host passed nullptr changes the inner
+    // plug-in's CLAP contract and can alter NOTE_END/backpressure behaviour.
+    gEmitNoteEnd = false;
+    gInnerSawNullOutEvents = false;
+    clap_process_t nullOutputProcess{};
+    nullOutputProcess.frames_count = 16u;
+    nullOutputProcess.out_events = nullptr;
+    if (PolySynthWclapPluginProxy::proxyProcess(&proxy.plugin, &nullOutputProcess) != CLAP_PROCESS_CONTINUE ||
+        !gInnerSawNullOutEvents) {
+        std::cerr << "proxy did not preserve null process.out_events for the inner plug-in\n";
+        return 13;
     }
 
     return 0;
