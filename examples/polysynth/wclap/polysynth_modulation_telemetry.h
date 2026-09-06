@@ -42,27 +42,23 @@ public:
     ModulationTelemetryQueue(const ModulationTelemetryQueue &) = delete;
     ModulationTelemetryQueue &operator=(const ModulationTelemetryQueue &) = delete;
 
-    // Reset is called only at CLAP lifecycle synchronization points where audio
-    // processing is stopped or otherwise excluded, so it never races the single
-    // RT producer. If this queue has ever published state, retain one Reset record
-    // so a persistent WebView cannot keep displaying stale modulation after
-    // deactivate/reset/reactivate, even when all earlier records were consumed.
+    // Lifecycle reset is a producer-side event, not an index rewind. This keeps
+    // the SPSC ownership invariant intact even when a persistent UI is consuming
+    // concurrently with an active-plugin reset. Older queued records are allowed
+    // to precede Reset; the UI processes the bounded batch in order and therefore
+    // finishes in the cleared state. If the queue is full, push() increments the
+    // cumulative drop counter and the UI fails closed on that overflow instead.
     void reset() noexcept {
-        const bool shouldNotifyReset = hasPublishedState_;
-        readIndex_.store(0u, std::memory_order_relaxed);
-        writeIndex_.store(0u, std::memory_order_relaxed);
-        droppedCount_.store(0u, std::memory_order_relaxed);
-        hasPublishedState_ = false;
-        if (shouldNotifyReset) {
-            ModulationTelemetryRecord record{};
-            record.kind = ModulationTelemetryKind::Reset;
-            (void)push(record);
-        }
+        ModulationTelemetryRecord record{};
+        record.kind = ModulationTelemetryKind::Reset;
+        (void)push(record);
     }
 
-    // Single RT producer. Overflow is deliberately drop-newest: records already
-    // published to the UI retain order and a cumulative counter tells the UI to
-    // invalidate any coalesced current-state view instead of displaying stale data.
+    // Single RT/lifecycle producer. Overflow is deliberately drop-newest: records
+    // already published to the UI retain order and a cumulative counter tells the
+    // UI to invalidate any coalesced current-state view instead of displaying stale
+    // data. CLAP lifecycle calls are serialized against process(), so the producer
+    // may move threads over time but is never concurrent with itself.
     [[nodiscard]] bool push(const ModulationTelemetryRecord &record) noexcept {
         const auto write = writeIndex_.load(std::memory_order_relaxed);
         const auto next = increment(write);
@@ -72,7 +68,6 @@ public:
         }
         records_[write] = record;
         writeIndex_.store(next, std::memory_order_release);
-        hasPublishedState_ = true;
         return true;
     }
 
@@ -116,7 +111,6 @@ private:
     std::atomic<std::uint32_t> readIndex_{0u};
     std::atomic<std::uint32_t> writeIndex_{0u};
     std::atomic<std::uint32_t> droppedCount_{0u};
-    bool hasPublishedState_ = false;
 };
 
 } // namespace webview_gui::examples::polysynth::wclap::detail
