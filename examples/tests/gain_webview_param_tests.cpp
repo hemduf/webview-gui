@@ -455,7 +455,7 @@ int main() {
             std::fabs(fallbackBlock.outputChannel(1)[frame] - minusThree) > 1.0e-6f) {
             std::cerr << "request_process fallback edit was not applied before audio processing\n";
             fallbackPlugin->stop_processing(fallbackPlugin);
-            fallbackPlugin->deactivate(plugin);
+            fallbackPlugin->deactivate(fallbackPlugin);
             fallbackGui->destroy(fallbackPlugin);
             fallbackPlugin->destroy(fallbackPlugin);
             return 27;
