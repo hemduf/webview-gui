@@ -29,6 +29,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: frontend-resources-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   resource-pipeline:
     name: Resources (${{ matrix.os }})
