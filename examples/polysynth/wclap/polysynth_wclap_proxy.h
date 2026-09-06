@@ -470,6 +470,14 @@ struct ProxyState {
         lastExpressionValueBits.store(0u, std::memory_order_release);
     }
 
+    static bool supportsNoteLifecycle(const clap_event_note_t &event) noexcept {
+        return event.note_id >= -1 && event.port_index == 0 &&
+               event.channel >= 0 && event.channel <= 15 &&
+               event.key >= 0 && event.key <= 127 &&
+               std::isfinite(event.velocity) && event.velocity >= 0.0 &&
+               event.velocity <= 1.0;
+    }
+
     static bool supportsModulationAddress(const ParameterSpec &spec,
                                           const clap_event_param_mod_t &event) noexcept {
         if ((spec.flags & CLAP_PARAM_IS_MODULATABLE) == 0u ||
@@ -504,6 +512,8 @@ struct ProxyState {
             const auto sampleOffset = normalizeSampleOffset ? 0u : header->time;
             if (header->type == CLAP_EVENT_NOTE_ON && header->size >= sizeof(clap_event_note_t)) {
                 const auto &event = *reinterpret_cast<const clap_event_note_t *>(header);
+                if (!supportsNoteLifecycle(event))
+                    continue;
                 if (activeVoicesRt < kPolySynthDefaultVoiceCount)
                     ++activeVoicesRt;
                 else
@@ -762,7 +772,7 @@ struct PolySynthWclapPluginProxy {
 
         self->state->observeInput(process->in_events);
         TelemetryOutputEvents telemetryOutput{self->state, process->out_events};
-        innerProcess.out_events = &telemetryOutput.output;
+        innerProcess.out_events = process->out_events ? &telemetryOutput.output : nullptr;
         const auto status = self->innerPlugin->process(self->innerPlugin, &innerProcess);
         if (status != CLAP_PROCESS_ERROR)
             self->state->publishProcessTelemetry(*process);
