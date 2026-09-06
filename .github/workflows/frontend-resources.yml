@@ -3,7 +3,6 @@ name: Frontend resource qualification
 on:
   pull_request:
     paths:
-      - 'examples/common/ui/**'
       - 'examples/gain/ui/**'
       - 'examples/polysynth/ui/**'
       - 'examples/cmake/WebResources.cmake'
@@ -16,7 +15,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'examples/common/ui/**'
       - 'examples/gain/ui/**'
       - 'examples/polysynth/ui/**'
       - 'examples/cmake/WebResources.cmake'
