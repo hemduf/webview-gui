@@ -43,12 +43,16 @@ public:
     ModulationTelemetryQueue &operator=(const ModulationTelemetryQueue &) = delete;
 
     // Lifecycle reset is a producer-side event, not an index rewind. This keeps
-    // the SPSC ownership invariant intact even when a persistent UI is consuming
-    // concurrently with an active-plugin reset. Older queued records are allowed
-    // to precede Reset; the UI processes the bounded batch in order and therefore
-    // finishes in the cleared state. If the queue is full, push() increments the
-    // cumulative drop counter and the UI fails closed on that overflow instead.
+    // the SPSC ownership invariant intact while a persistent UI may be consuming.
+    // The first activate/reset before any telemetry was published is intentionally
+    // silent: there is no prior WebView state to invalidate. Once this producer has
+    // published state, later lifecycle resets enqueue an explicit Reset record so a
+    // persistent editor cannot retain stale modulation across reset/deactivate.
+    // If the queue is full, push() increments the cumulative drop counter and the
+    // UI fails closed on that overflow instead.
     void reset() noexcept {
+        if (!hasPublishedState_)
+            return;
         ModulationTelemetryRecord record{};
         record.kind = ModulationTelemetryKind::Reset;
         (void)push(record);
@@ -68,6 +72,7 @@ public:
         }
         records_[write] = record;
         writeIndex_.store(next, std::memory_order_release);
+        hasPublishedState_ = true;
         return true;
     }
 
@@ -111,6 +116,10 @@ private:
     std::atomic<std::uint32_t> readIndex_{0u};
     std::atomic<std::uint32_t> writeIndex_{0u};
     std::atomic<std::uint32_t> droppedCount_{0u};
+    // Producer-owned only; never touched by the UI consumer. Keeping this as a
+    // plain bool avoids introducing a potentially non-lock-free atomic on the RT
+    // path while preserving the single-producer contract.
+    bool hasPublishedState_ = false;
 };
 
 } // namespace webview_gui::examples::polysynth::wclap::detail
