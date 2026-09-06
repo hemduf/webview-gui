@@ -44,11 +44,20 @@ public:
 
     // Reset is called only at CLAP lifecycle synchronization points where audio
     // processing is stopped or otherwise excluded, so it never races the single
-    // RT producer.
+    // RT producer. If this queue has ever published state, retain one Reset record
+    // so a persistent WebView cannot keep displaying stale modulation after
+    // deactivate/reset/reactivate, even when all earlier records were consumed.
     void reset() noexcept {
+        const bool shouldNotifyReset = hasPublishedState_;
         readIndex_.store(0u, std::memory_order_relaxed);
         writeIndex_.store(0u, std::memory_order_relaxed);
         droppedCount_.store(0u, std::memory_order_relaxed);
+        hasPublishedState_ = false;
+        if (shouldNotifyReset) {
+            ModulationTelemetryRecord record{};
+            record.kind = ModulationTelemetryKind::Reset;
+            (void)push(record);
+        }
     }
 
     // Single RT producer. Overflow is deliberately drop-newest: records already
@@ -63,6 +72,7 @@ public:
         }
         records_[write] = record;
         writeIndex_.store(next, std::memory_order_release);
+        hasPublishedState_ = true;
         return true;
     }
 
@@ -106,6 +116,7 @@ private:
     std::atomic<std::uint32_t> readIndex_{0u};
     std::atomic<std::uint32_t> writeIndex_{0u};
     std::atomic<std::uint32_t> droppedCount_{0u};
+    bool hasPublishedState_ = false;
 };
 
 } // namespace webview_gui::examples::polysynth::wclap::detail
